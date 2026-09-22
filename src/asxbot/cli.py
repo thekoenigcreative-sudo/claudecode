@@ -546,6 +546,9 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--prev-close", type=float, default=40.0)
     dr.add_argument("--unwind", action="store_true", help="also sell the position back")
     dr.set_defaults(fn=cmd_dryrun)
+    from asxbot.arena.cli import add_parsers as _arena_parsers
+
+    _arena_parsers(sub)
     ac = sub.add_parser("alerts-clear", help="clear an alert flag by hand")
     ac.add_argument("key")
     ac.set_defaults(fn=cmd_alerts_clear)

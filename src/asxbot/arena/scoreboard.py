@@ -73,7 +73,7 @@ def score(store: AccountStore, acct: Account, prices: dict[str, float]) -> Score
     # Daily returns from the equity curve, starting at the opening balance.
     curve = [acct.starting_cash] + [m.equity for m in marks]
     rets = []
-    for prev, cur in zip(curve, curve[1:], strict=True):
+    for prev, cur in zip(curve[:-1], curve[1:], strict=True):
         rets.append((cur / prev - 1) * 100.0 if prev else 0.0)
 
     green = sum(1 for r in rets if r > 0)
