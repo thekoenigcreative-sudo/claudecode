@@ -432,3 +432,54 @@ def test_preclose_asks_once_a_day(setup, monkeypatch):
     W.sweep_before_close(fake, pb, now=now)
     W.sweep_before_close(fake, pb, now=now)  # the loop runs every minute; don't re-ask
     assert len(calls) == 1
+
+
+# -- daylight saving -------------------------------------------------------
+@pytest.mark.parametrize(
+    "day,dst,ann_end,stop,slot",
+    [
+        (date(2026, 9, 23), False, "19:30", "19:25", "19:30"),
+        (date(2026, 10, 3), False, "19:30", "19:25", "19:30"),  # the day before it starts
+        (date(2026, 10, 4), True, "20:30", "20:25", "20:30"),  # Sydney DST starts
+        (date(2027, 4, 3), True, "20:30", "20:25", "20:30"),  # the day before it ends
+        (date(2027, 4, 4), False, "19:30", "19:25", "19:30"),  # Sydney DST ends
+    ],
+)
+def test_hours_follow_sydney_daylight_saving(cfg, day, dst, ann_end, stop, slot):
+    from asxbot.arena.hours import (
+        announcement_window,
+        evening_slot,
+        is_dst,
+        order_window,
+        watcher_stop_time,
+    )
+
+    assert is_dst(day) is dst
+    assert announcement_window(cfg, day)[1].strftime("%H:%M") == ann_end
+    assert order_window(cfg, day)[1].strftime("%H:%M") == ann_end
+    assert watcher_stop_time(cfg, day).strftime("%H:%M") == stop
+    assert evening_slot(cfg, day).strftime("%H:%M") == slot
+
+
+def test_only_one_evening_slot_fires_on_a_given_day(cfg):
+    """The task fires at 19:30 and 20:30; exactly one must be due."""
+    from asxbot.arena.hours import is_evening_slot
+
+    for day, due_at in ((date(2026, 9, 23), 19), (date(2026, 10, 5), 20)):
+        fires = [
+            h
+            for h in (19, 20)
+            if is_evening_slot(cfg, datetime(day.year, day.month, day.day, h, 30, tzinfo=SYD))
+        ]
+        assert fires == [due_at], f"{day} should fire only at {due_at}:30, got {fires}"
+
+
+def test_orders_are_accepted_an_hour_later_during_daylight_saving(setup):
+    """A 20:00 order is outside hours in September and inside them in October."""
+    cfg, broker, pb, acct = setup
+    with pytest.raises(ArenaOrderRefused, match="outside arena hours"):
+        _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20, stop=1.15,
+               now=datetime(2026, 9, 23, 20, 0, tzinfo=SYD))  # fmt: skip
+    o = _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20, stop=1.15,
+               now=datetime(2026, 10, 5, 20, 0, tzinfo=SYD))  # fmt: skip
+    assert o.order_id.startswith("ARN-")

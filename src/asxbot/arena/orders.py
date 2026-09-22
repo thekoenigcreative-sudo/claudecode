@@ -20,11 +20,12 @@ would be a risk control that increases risk.
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from asxbot.arena.accounts import Account
 from asxbot.arena.broker import CLOSING_SIDES, OPENING_SIDES, ArenaBroker
+from asxbot.arena.hours import order_window
 from asxbot.arena.levels import Playbook
 from asxbot.config import Config
 from asxbot.log import EventLog, get_logger
@@ -90,11 +91,12 @@ def arena_place_order(
         raise refuse("limit must be positive")
 
     guards = cfg.get("arena.guards") or {}
-    hrs = guards.get("allowed_hours", {})
-    start, end = hrs.get("start", "07:00"), hrs.get("end", "19:30")
     local = now.astimezone(SYD)
-    if not (time.fromisoformat(start) <= local.time() <= time.fromisoformat(end)):
-        raise refuse(f"outside arena hours {start}-{end} Sydney (now {local:%H:%M})")
+    start, end = order_window(cfg, local.date())  # follows Sydney daylight saving
+    if not (start <= local.time() <= end):
+        raise refuse(
+            f"outside arena hours {start:%H:%M}-{end:%H:%M} Sydney (now {local:%H:%M})"
+        )
 
     orders_today = sum(
         1 for o in acct.orders.values() if o.decision_at[:10] == local.date().isoformat()

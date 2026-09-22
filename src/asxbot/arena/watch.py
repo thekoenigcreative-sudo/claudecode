@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as time_cls
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -40,6 +40,7 @@ from asxbot.arena.agents import (
     parse_decision,
     parse_verdict,
 )
+from asxbot.arena.hours import announcement_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.runtime import Arena, make_bot
@@ -540,18 +541,29 @@ def watch(
     )
     alerts = Alerts(cfg.data_dir)
     poller = LivePoller(cfg.data_dir, client, alerts, arena.universe, fetch_pdfs=True)
-    hours = (cfg.get("collector.hours.start"), cfg.get("collector.hours.end"))
+    win = announcement_window(cfg)
+    hours = (win[0].strftime("%H:%M"), win[1].strftime("%H:%M"))
     handled = _load_handled(cfg.data_dir, datetime.now(SYD).date())
     log.info(
         "arena watch: playbook %s at level %s, %d announcements already handled today",
         pb.key, pb.level.number, len(handled),
     )  # fmt: skip
 
+    caught_up = False
     stop_at = None
     if until:
-        h, m = (int(x) for x in until.split(":"))
-        stop_at = datetime.now(SYD).replace(hour=h, minute=m, second=0, microsecond=0)
-        log.info("this watcher will stop at %s", stop_at.strftime("%H:%M"))
+        if until == "auto":
+            t = watcher_stop_time(cfg)
+            stop_at = datetime.now(SYD).replace(
+                hour=t.hour, minute=t.minute, second=0, microsecond=0
+            )
+        else:
+            h, m = (int(x) for x in until.split(":"))
+            stop_at = datetime.now(SYD).replace(hour=h, minute=m, second=0, microsecond=0)
+        log.info(
+            "announcement hours today are %s-%s Sydney; this watcher stops at %s",
+            hours[0], hours[1], stop_at.strftime("%H:%M"),
+        )  # fmt: skip
 
     while True:
         now = datetime.now(SYD)
@@ -574,6 +586,14 @@ def watch(
                 return
             time.sleep(1800)
             continue
+        if not caught_up:
+            caught_up = True
+            try:
+                done = catch_up(arena, pb, now)
+                if done:
+                    log.info("catch-up worked %d announcement(s) from earlier days", len(done))
+            except Exception as e:  # noqa: BLE001
+                log.exception("catch-up failed: %s", e)
         if not in_hours(now, *hours) and not once:
             log.info("outside announcement hours %s-%s Sydney; sleeping", *hours)
             time.sleep(300)
@@ -767,3 +787,64 @@ def parse_decision_action(text: str) -> dict:
             pass
         start = text.rfind("{", 0, start)
     return {"action": "close", "reason": "no readable block; the level is intraday"}
+
+
+# --------------------------------------------------------------------------
+# morning catch-up
+# --------------------------------------------------------------------------
+def catch_up(arena: Arena, pb: Playbook, now: datetime | None = None, days_back: int = 4) -> list:
+    """Work any price-sensitive announcement the watcher never saw.
+
+    Two gaps this closes:
+      * the few minutes between the watcher stopping and announcements actually ending;
+      * anything released after the close on a day the machine was off or asleep.
+
+    ARENA.md: news after the close is queued for the next morning's pre-open. That is
+    exactly what happens here - the decision is made now, and because fills are deferred,
+    a pre-open decision fills at the opening auction price.
+    """
+    now = now or datetime.now(SYD)
+    cfg = arena.cfg
+    results = []
+    live_dir = cfg.data_dir / "announcements" / "live"
+    if not live_dir.exists():
+        return results
+
+    import pandas as pd
+
+    for back in range(days_back, 0, -1):
+        day = (now - timedelta(days=back)).date()
+        path = live_dir / f"{day.isoformat()}.parquet"
+        if not path.exists():
+            continue
+        handled = _load_handled(cfg.data_dir, day)
+        df = pd.read_parquet(path)
+        pending = [
+            r
+            for r in df.itertuples()
+            if bool(r.price_sensitive)
+            and r.code in arena.universe
+            and str(r.ids_id) not in handled
+        ]
+        if not pending:
+            continue
+        log.info(
+            "catch-up: %d price-sensitive announcement(s) from %s were never worked",
+            len(pending), day,
+        )  # fmt: skip
+        for r in pending:
+            a = Announcement(
+                r.code, r.released_at.to_pydatetime(), r.headline, True, str(r.ids_id),
+                r.pdf_url, getattr(r, "pages", None), getattr(r, "size", None),
+            )  # fmt: skip
+            handled.add(str(r.ids_id))
+            _save_handled(cfg.data_dir, day, handled)
+            log.info(
+                "catch-up: working %s %s (released %s)",
+                a.code, a.headline[:60], a.released_at,
+            )  # fmt: skip
+            try:
+                results.append(handle_announcement(arena, pb, a, now))
+            except Exception as e:  # noqa: BLE001
+                log.exception("catch-up on %s failed: %s", a.code, e)
+    return results

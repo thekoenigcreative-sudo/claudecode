@@ -65,7 +65,10 @@ collector:
   max_retries: 4
   backoff_base_s: 10
   poll_interval_s: 60
-  hours: { start: "07:30", end: "19:30", tz: "Australia/Sydney" }
+  # ASX announcements run 07:30-19:30 Sydney, and to 20:30 during daylight saving.
+  # Sydney daylight saving starts the first Sunday in October (4 Oct 2026) and ends the
+  # first Sunday in April. The code picks the right end automatically; see arena/hours.py.
+  hours: { start: "07:30", end: "19:30", end_dst: "20:30", tz: "Australia/Sydney" }
 
 limits:   # enforced in code by place_order; the agent cannot override these
   max_position_aud: 2500
@@ -126,7 +129,7 @@ arena:
     max_orders_per_day: 40           # per account
     max_order_value_aud: 8000        # per single order, whatever leverage allows
     min_order_aud: 500               # ASX minimum marketable parcel
-    allowed_hours: { start: "07:00", end: "19:30", tz: "Australia/Sydney" }
+    allowed_hours: { start: "07:00", end: "19:30", end_dst: "20:30", tz: "Australia/Sydney" }
 
   # Deferred fills (decided 2026-09-22 with Rick).
   # Free quotes are ~20 minutes delayed, so the true price at the moment of a decision is
@@ -162,6 +165,7 @@ arena:
 
   telegram:
     evening_report_time: "19:30"
+    evening_report_time_dst: "20:30"   # announcements run an hour later on daylight saving
     tz: "Australia/Sydney"
 
   # Playbooks. Only ONE is tested at a time (PLAN.md). Numbers are ARENA.md labels.

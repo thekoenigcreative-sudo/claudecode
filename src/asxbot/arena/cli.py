@@ -342,6 +342,35 @@ def cmd_fake(args) -> int:
     return 0
 
 
+def cmd_hours(args) -> int:
+    """Today's announcement window, which moves with Sydney daylight saving."""
+    from asxbot.arena.hours import describe
+
+    cfg = load_config()
+    setup_logging(cfg.data_dir)
+    day = datetime.fromisoformat(args.day).date() if args.day else None
+    print(describe(cfg, day))
+    return 0
+
+
+def cmd_evening_due(args) -> int:
+    """Exit 0 if now is today's evening-report slot. The scheduled task fires at both
+    19:30 and 20:30; the wrong one for today exits here and does nothing."""
+    from asxbot.arena.hours import evening_slot, is_dst, is_evening_slot
+
+    cfg = load_config()
+    setup_logging(cfg.data_dir)
+    now = datetime.now(SYD)
+    if is_evening_slot(cfg, now):
+        print(f"due: today's slot is {evening_slot(cfg, now.date()):%H:%M} Sydney")
+        return 0
+    print(
+        f"not due: today's slot is {evening_slot(cfg, now.date()):%H:%M} Sydney "
+        f"(daylight saving {'ON' if is_dst(now.date()) else 'off'}), now {now:%H:%M}"
+    )
+    return 1
+
+
 def cmd_preclose(args) -> int:
     """Ask the decider about each open position and close it unless it writes a reason."""
     from asxbot.arena.watch import sweep_before_close
@@ -463,7 +492,10 @@ def add_parsers(sub) -> None:
     w.add_argument("--playbook")
     w.add_argument("--once", action="store_true")
     w.add_argument("--interval", type=float)
-    w.add_argument("--until", help="stop at this Sydney time, HH:MM (for the daily task)")
+    w.add_argument(
+        "--until", help='stop at this Sydney time, HH:MM, or "auto" for just before '
+        "announcements end (19:25, or 20:25 on daylight saving)"
+    )
     w.set_defaults(fn=cmd_watch)
 
     fk = a.add_parser("fake-announcement", help="prove the chain end to end, no network")
@@ -478,6 +510,14 @@ def add_parsers(sub) -> None:
     fk.add_argument("--no-bot", action="store_true")
     fk.add_argument("--no-agent", action="store_true")
     fk.set_defaults(fn=cmd_fake)
+
+    hr = a.add_parser("hours", help="today's announcement window (daylight-saving aware)")
+    hr.add_argument("--day")
+    hr.set_defaults(fn=cmd_hours)
+
+    a.add_parser(
+        "evening-due", help="exit 0 if now is today's evening-report slot"
+    ).set_defaults(fn=cmd_evening_due)
 
     pc = a.add_parser("preclose", help="settle Level 1 positions before the close")
     pc.add_argument("--playbook")
