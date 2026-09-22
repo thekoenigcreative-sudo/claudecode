@@ -1,6 +1,6 @@
 # ASX trading assistant — read this first
 
-Personal trading assistant for my own ASX account. **SPEC.md is the single source of truth — read it fully before any work.**
+Personal trading assistant for my own ASX account. **SPEC.md is the single source of truth — read it fully before any work.** **STRATEGIES.md is the strategy testing plan — test every strategy in it under its rules.**
 
 Rules for every session:
 - Honest results over pretty ones. No curve-fitting. If there's no edge after costs, say so plainly.

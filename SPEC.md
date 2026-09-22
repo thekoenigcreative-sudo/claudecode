@@ -22,6 +22,7 @@ A personal trading assistant for my own ASX account. It finds trade ideas, propo
 
 **Baseline to beat:** cross-sectional momentum with a 200-day index regime filter.
 **Benchmark:** ASX 200 total return (dividends included).
+**More strategies:** STRATEGIES.md lists the full set to test (C to G) and the testing rules for all of them.
 
 **Entry (daily-data backtest):** announcements released before the 10:00 open enter at that day's open; later ones enter at the next day's open.
 **Exit:** rules defined before results — at minimum a time-based exit and a stop-loss.

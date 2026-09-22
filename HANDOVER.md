@@ -18,8 +18,8 @@ All nine build stages in SPEC.md section 9 are built, tested and committed on `m
 | 9 IBKR | `src/asxbot/broker/ibkr.py` | `ib_async` adapter behind the broker interface. Refuses unless `paper`/`live`; not installed (`uv pip install -e ".[ibkr]"` when needed). |
 
 Both strategies named in the spec are implemented (A "post-announcement drift", B "drift after a
-volume-confirmed surprise"). No other strategies were requested in this session; if you have
-others in mind, they are not started.
+volume-confirmed surprise"). **Five more strategies (C to G) were added after this handover was
+written: see STRATEGIES.md.** They are not started yet.
 
 ## Where the announcement archive is up to
 
@@ -33,6 +33,9 @@ others in mind, they are not started.
 
 ## Pending
 
+0. **Strategies C to G (STRATEGIES.md), under its testing rules.** Build and run F and G first
+   (price data only, can run while the archive downloads). Build C, D and E; run them once the
+   ASX 300 archive has finished.
 1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed
    `reports/phase1.md`. Strategy A currently rests on 6 archived codes (43 trades); the report
    says so in its warning block.
