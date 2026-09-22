@@ -92,11 +92,6 @@ def arena_place_order(
 
     guards = cfg.get("arena.guards") or {}
     local = now.astimezone(SYD)
-    start, end = order_window(cfg, local.date())  # follows Sydney daylight saving
-    if not (start <= local.time() <= end):
-        raise refuse(
-            f"outside arena hours {start:%H:%M}-{end:%H:%M} Sydney (now {local:%H:%M})"
-        )
 
     orders_today = sum(
         1 for o in acct.orders.values() if o.decision_at[:10] == local.date().isoformat()
@@ -120,6 +115,10 @@ def arena_place_order(
     lvl = playbook.level
 
     # --- closing trades: checked for sanity, never blocked by risk limits ----
+    # The hours check below is deliberately NOT applied to exits. Blocking an exit is a
+    # risk control that increases risk, and it cannot create a phantom fill anyway: fills
+    # come from real traded minutes, so an exit submitted after the close simply rests and
+    # fills at the next minute the stock actually trades.
     if side in CLOSING_SIDES:
         if pos is None:
             raise refuse(f"no position in {ticker} to {side}")
@@ -129,6 +128,11 @@ def arena_place_order(
             raise refuse(f"short {abs(pos.qty)} of {ticker}, cannot cover {qty}")
     else:
         # --- opening trades: the full set of limits -------------------------
+        start, end = order_window(cfg, local.date())  # follows Sydney daylight saving
+        if not (start <= local.time() <= end):
+            raise refuse(
+                f"outside arena hours {start:%H:%M}-{end:%H:%M} Sydney (now {local:%H:%M})"
+            )
         if universe is not None and ticker not in universe:
             raise refuse(f"{ticker} is not in the allowed universe")
         if side == "short":

@@ -483,3 +483,29 @@ def test_orders_are_accepted_an_hour_later_during_daylight_saving(setup):
     o = _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20, stop=1.15,
                now=datetime(2026, 10, 5, 20, 0, tzinfo=SYD))  # fmt: skip
     assert o.order_id.startswith("ARN-")
+
+
+def test_an_exit_is_never_blocked_by_the_hours_guard(setup):
+    """Found live: the pre-close sweep's exit was refused for being outside hours.
+
+    Blocking an exit is a risk control that increases risk. It cannot create a phantom
+    fill either, because fills come from real traded minutes - an exit submitted after the
+    close rests and fills at the next minute the stock actually trades.
+    """
+    from asxbot.arena.accounts import Position
+
+    cfg, broker, pb, acct = setup
+    acct.positions["AAA"] = Position(
+        ticker="AAA", qty=500, avg_cost=1.10, opened_at="2026-01-06T10:00"
+    )
+    after_hours = datetime(2026, 1, 6, 21, 10, tzinfo=SYD)
+
+    # An opening trade at that hour is still refused.
+    with pytest.raises(ArenaOrderRefused, match="outside arena hours"):
+        _place(cfg, broker, acct, pb, ticker="BBB", side="buy", qty=500, limit=1.20,
+               stop=1.15, now=after_hours)  # fmt: skip
+
+    # The exit goes through.
+    o = _place(cfg, broker, acct, pb, ticker="AAA", side="sell", qty=500, limit=1.00,
+               now=after_hours)  # fmt: skip
+    assert o.status == "pending_fill"
