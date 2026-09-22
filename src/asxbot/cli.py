@@ -173,7 +173,9 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     cfg = load_config()
     log = setup_logging(cfg.data_dir)
-    out = run_phase1(cfg, universes=args.universe or None)
+    out = run_phase1(
+        cfg, universes=args.universe or None, in_sample_only=args.in_sample_only
+    )
     log.info("done: %s", out)
     return 0
 
@@ -521,6 +523,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bt = sub.add_parser("backtest", help="run the Phase 1 backtest and write reports/phase1.md")
     bt.add_argument("--universe", nargs="*", choices=["asx300", "small"])
+    bt.add_argument(
+        "--in-sample-only", action="store_true",
+        help="stop every run at the start of the holdout; those years are not simulated",
+    )  # fmt: skip
     bt.set_defaults(fn=cmd_backtest)
     sub.add_parser("scan", help="check today's announcements and write proposals").set_defaults(
         fn=cmd_scan

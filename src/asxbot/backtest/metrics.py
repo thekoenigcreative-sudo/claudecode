@@ -42,6 +42,13 @@ def summarise(
     avg_eq = float(equity.mean()) if len(equity) else float("nan")
     return {
         "trades": n,
+        # Breadth: 43 trades from 6 companies is a different fact from 43 from 40.
+        "companies": int(trades["ticker"].nunique()) if n and "ticker" in trades else 0,
+        "median_hold_sessions": (
+            float(trades["hold_sessions"].median())
+            if n and "hold_sessions" in trades
+            else float("nan")
+        ),
         "win_rate_pct": (wins / n * 100) if n else float("nan"),
         "avg_trade_pct": float(trades["ret_pct"].mean()) if n else float("nan"),
         "median_trade_pct": float(trades["ret_pct"].median()) if n else float("nan"),
@@ -71,9 +78,13 @@ def split_is_oos(
 def trade_stats(trades: pd.DataFrame) -> dict:
     n = len(trades)
     if n == 0:
-        return {"trades": 0, "win_rate_pct": np.nan, "avg_trade_pct": np.nan, "total_pnl_aud": 0.0}
+        return {
+            "trades": 0, "companies": 0, "win_rate_pct": np.nan,
+            "avg_trade_pct": np.nan, "total_pnl_aud": 0.0,
+        }  # fmt: skip
     return {
         "trades": n,
+        "companies": int(trades["ticker"].nunique()) if "ticker" in trades else 0,
         "win_rate_pct": float((trades["pnl"] > 0).mean() * 100),
         "avg_trade_pct": float(trades["ret_pct"].mean()),
         "total_pnl_aud": float(trades["pnl"].sum()),

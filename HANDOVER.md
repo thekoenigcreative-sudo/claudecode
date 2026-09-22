@@ -204,6 +204,28 @@ One gotcha worth knowing: **OpenClaw now polls that bot, and `getUpdates` is exc
 OpenClaw has already consumed the updates. Use `asxbot telegram pair --chat-id <id>`.
 Sending is unaffected — only `getUpdates` is exclusive, not `sendMessage`.
 
+## Phase 1 rerun on the finished archive (23 Sep)
+
+The ASX 300 archive finished at 00:13: 300/300 codes, 415,751 rows, 2002-01-02 to
+2026-09-22. The 25 "skipped" codes in the run stats are not failures - they are the codes
+(360 through ASB, alphabetically first) whose every year was already fetched in the earlier
+run, so there was nothing left to request.
+
+`asxbot backtest --in-sample-only` (new flag; stops every run at the holdout start, and
+changes no frozen parameter) on both universes at 1x and 2x slippage:
+
+**Strategy A does not survive the breadth.** On asx300 it went from 43 trades over 6
+companies to 492 over 155, and the edge went with it: win rate 53.5% -> 44.3%, average
+trade +4.31% -> +0.05% at 1x and -0.33% at 2x, CAGR -0.5% and -2.7% against a 6.9%
+benchmark, worst drawdown -43.7%. It loses money after costs and does not beat buy-and-hold.
+The old result was six companies' luck.
+
+On the small universe A takes no trades at all: the archive covers ASX 300 codes only.
+The report now says NO TRADES rather than claiming a zero-trade run beat a losing baseline.
+
+Not a go/no-go either way: yfinance has no delisted stocks, and the momentum baseline's
+24.5% CAGR is survivorship bias in plain sight. Norgate first.
+
 ## Open items
 
 1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed

@@ -34,6 +34,7 @@ class ReportInput:
     announcement_coverage: str
     params: dict
     oos_start: pd.Timestamp
+    in_sample_only: bool = False
     blocks: list[Block] = field(default_factory=list)
     baselines: dict[tuple[str, float], Result] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -47,16 +48,18 @@ def _f(x, nd=1, suffix=""):
 
 def _summary_table(rows: list[tuple[str, dict]]) -> str:
     head = (
-        "| run | trades | win % | avg trade % | median % | CAGR % | max DD % | turnover x/yr | "
-        "exposure % | costs $ | final $ | flag |\n"
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
+        "| run | trades | companies | win % | avg trade % | median % | median hold | CAGR % | "
+        "max DD % | turnover x/yr | exposure % | costs $ | final $ | flag |\n"
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
     )
     out = head
     for name, s in rows:
         flag = "SMALL SAMPLE" if s.get("small_sample") else ""
         out += (
-            f"| {name} | {s['trades']} | {_f(s['win_rate_pct'])} | {_f(s['avg_trade_pct'], 2)} | "
-            f"{_f(s.get('median_trade_pct'), 2)} | {_f(s['cagr_pct'])} | {_f(s['max_dd_pct'])} | "
+            f"| {name} | {s['trades']} | {s.get('companies', 0)} | {_f(s['win_rate_pct'])} | "
+            f"{_f(s['avg_trade_pct'], 2)} | {_f(s.get('median_trade_pct'), 2)} | "
+            f"{_f(s.get('median_hold_sessions'), 1)} | "
+            f"{_f(s['cagr_pct'])} | {_f(s['max_dd_pct'])} | "
             f"{_f(s['turnover_x_per_year'])} | {_f(s['exposure_pct'])} | "
             f"{_f(s['total_costs_aud'], 0)} | {_f(s['final_equity'], 0)} | {flag} |\n"
         )
@@ -66,14 +69,15 @@ def _summary_table(rows: list[tuple[str, dict]]) -> str:
 def _is_oos_table(res: Result, oos_start: pd.Timestamp, small: int) -> str:
     is_, oos = split_is_oos(res.trades, oos_start)
     out = (
-        "| period | trades | win % | avg trade % | total P&L $ | flag |\n"
-        "|---|---:|---:|---:|---:|---|\n"
+        "| period | trades | companies | win % | avg trade % | total P&L $ | flag |\n"
+        "|---|---:|---:|---:|---:|---:|---|\n"
     )
     for label, t in (("in-sample", is_), (f"out-of-sample (from {oos_start.date()})", oos)):
         s = trade_stats(t)
         flag = "SMALL SAMPLE" if s["trades"] < small else ""
         out += (
-            f"| {label} | {s['trades']} | {_f(s['win_rate_pct'])} | {_f(s['avg_trade_pct'], 2)} | "
+            f"| {label} | {s['trades']} | {s.get('companies', 0)} | {_f(s['win_rate_pct'])} | "
+            f"{_f(s['avg_trade_pct'], 2)} | "
             f"{_f(s['total_pnl_aud'], 0)} | {flag} |\n"
         )
     return out
@@ -118,6 +122,11 @@ def render(r: ReportInput, small_sample: int) -> str:
         L.append(f"- Universe `{name}`: {r.universe_sizes.get(name, 0)} codes. Source: {prov}")
     L.append(f"- Announcement archive coverage: {r.announcement_coverage}")
     L.append(f"- Out-of-sample holdout starts {r.oos_start.date()} (last 3 years).")
+    if r.in_sample_only:
+        L.append(
+            f"- **IN-SAMPLE ONLY: every run stops at {r.oos_start.date()}.** The holdout years "
+            "were not simulated, so nothing in this report has seen them."
+        )
     L.append("- Parameters (frozen 2026-09-22, before any data was fetched):")
     for k, v in r.params.items():
         L.append(f"  - {k}: {v}")
@@ -204,6 +213,15 @@ def verdict(r: ReportInput, small_sample: int) -> str:
             )
     for b in r.blocks:
         s = summarise(b.result.equity, b.result.trades, b.result.exposure, small_sample)
+        if not s["trades"]:
+            # A run that never traded has not beaten anything. Saying "Beats baseline: True"
+            # because a losing baseline lost is the kind of tidy nonsense this report exists
+            # to avoid.
+            lines.append(
+                f"- {b.universe} / {b.strategy} {b.entry_note} @ x{b.slippage_x:g}: NO TRADES - "
+                "nothing to compare. Check whether the archive covers this universe at all."
+            )
+            continue
         base = r.baselines.get((b.universe, b.slippage_x))
         bs = summarise(base.equity, base.trades, base.exposure, small_sample) if base else None
         beats_bench = s["cagr_pct"] > bench["cagr_pct"]

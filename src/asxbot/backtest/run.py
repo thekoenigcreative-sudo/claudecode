@@ -31,7 +31,18 @@ def _coverage(arc_dir: Path, codes: list[str]) -> tuple[str, float]:
     return f"{n}/{len(codes)} codes have an archive file ({frac:.0%})", frac
 
 
-def run_phase1(cfg: Config, universes: list[str] | None = None, out: Path | None = None) -> Path:
+def run_phase1(
+    cfg: Config,
+    universes: list[str] | None = None,
+    out: Path | None = None,
+    in_sample_only: bool = False,
+) -> Path:
+    """`in_sample_only` stops every simulation at the start of the holdout.
+
+    The holdout is not a parameter and is not being changed: it stays the last
+    `backtest.holdout_years` years. This only decides whether those years are simulated at
+    all, so a run can be read without the out-of-sample period having been looked at.
+    """
     store = get_store(cfg)
     start = cfg.get("data.price_history_start")
     bm = build_benchmark(
@@ -77,6 +88,7 @@ def run_phase1(cfg: Config, universes: list[str] | None = None, out: Path | None
             "minimum order": f"${cfg.get('limits.min_order_aud', 500)} (ASX minimum parcel)",
         },
         oos_start=oos_start,
+        in_sample_only=in_sample_only,
     )
     cov_notes = []
     out_dir = cfg.data_dir / "backtest"
@@ -95,7 +107,13 @@ def run_phase1(cfg: Config, universes: list[str] | None = None, out: Path | None
         )  # fmt: skip
         ann = archive.load_all(u.codes)
         cov, frac = _coverage(arc_dir, u.codes)
-        cov_notes.append(f"{uname}: {cov}")
+        span = ""
+        if len(ann):
+            span = (
+                f", {len(ann):,} rows {str(ann['released_at'].min())[:10]}"
+                f" to {str(ann['released_at'].max())[:10]}"
+            )
+        cov_notes.append(f"{uname}: {cov}{span}")
         ev_a = announcement_events(ev_b, ann, panels.dates)
         log.info(
             "%s: %d B events, %d A events, %d announcements", uname, len(ev_b), len(ev_a), len(ann)
@@ -114,6 +132,7 @@ def run_phase1(cfg: Config, universes: list[str] | None = None, out: Path | None
                 costs=costs, starting_capital=cap, max_positions=maxpos,
                 hold_days=int(st["hold_days"]), stop_pct=float(st["stop_loss_pct"]),
                 min_order_aud=float(cfg.get("limits.min_order_aud", 500)),
+                end=oos_start if in_sample_only else None,
             )  # fmt: skip
             runs: list[tuple[str, str, Result]] = []
             r = simulate(panels, ev_a, entry_lag=1, name="A_drift_next_open", **common)
@@ -141,6 +160,7 @@ def run_phase1(cfg: Config, universes: list[str] | None = None, out: Path | None
                 panels, costs, cap, int(bl["top_n"]), int(bl["lookback_months"]),
                 int(bl["skip_months"]), int(bl["regime_sma_days"]),
                 min_order_aud=float(cfg.get("limits.min_order_aud", 500)),
+                end=oos_start if in_sample_only else None,
             )  # fmt: skip
             rin.baselines[(uname, float(mult))] = base
             if len(base.trades):
