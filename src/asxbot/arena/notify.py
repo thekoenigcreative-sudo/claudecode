@@ -22,13 +22,12 @@ from asxbot.config import Config
 from asxbot.log import EventLog, get_logger
 
 log = get_logger("asxbot.arena.notify")
-REASON_CHARS = 180
 
 
-def one_line(text: str, limit: int = REASON_CHARS) -> str:
-    """First sentence-ish of a reason, on one line, short enough for a phone."""
+def one_line(text: str, limit: int | None = None) -> str:
+    """Text flattened onto one line. Reasons are sent in full; only a headline is trimmed."""
     s = " ".join(str(text or "").split())
-    return s if len(s) <= limit else s[: limit - 1].rstrip() + "…"
+    return s if limit is None or len(s) <= limit else s[: limit - 1].rstrip() + "…"
 
 
 def who(placed_by: str) -> str:
