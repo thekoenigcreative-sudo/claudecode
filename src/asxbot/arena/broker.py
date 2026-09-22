@@ -181,6 +181,7 @@ class ArenaBroker:
         fee = self.costs.brokerage(value)
         pos = acct.positions.get(o.ticker)
         realised = 0.0
+        o = _stop_rescaled_to_fill(o, price)
 
         if o.side == "buy":
             acct.cash -= value + fee
@@ -361,6 +362,39 @@ class ArenaBroker:
         if start <= 0:
             return 0.0
         return (acct.equity(self.prices(acct, now.date())) - start) / start * 100.0
+
+
+def _stop_rescaled_to_fill(o: ArenaOrder, price: float) -> ArenaOrder:
+    """Keep a stop on the correct side of the price it actually filled at.
+
+    A stop is chosen as a DISTANCE from the intended entry ("8% below"), but it is carried
+    as a level. With deferred fills the true price can differ from the delayed quote the
+    level was computed against, and a long could fill below its own stop - which would open
+    a position and stop it out in the same minute for two lots of brokerage and no trade.
+
+    So when a fill lands on the wrong side of its own stop, the stop is re-derived at the
+    same proportional distance from the price that was actually paid. The risk the order
+    was checked against is unchanged in percentage terms, and the position gets the stop
+    its author meant.
+    """
+    if o.stop is None or o.side not in OPENING_SIDES or not o.limit:
+        return o
+    wrong_side = (o.side == "buy" and price <= o.stop) or (o.side == "short" and price >= o.stop)
+    if not wrong_side:
+        return o
+    distance = abs(o.limit - o.stop) / o.limit
+    new_stop = price * (1 - distance) if o.side == "buy" else price * (1 + distance)
+    log.warning(
+        "arena %s %s filled at %.4f, on the wrong side of its stop %.4f; the stop is "
+        "re-derived at the same %.2f%% distance from the fill: %.4f",
+        o.account, o.order_id, price, o.stop, distance * 100, new_stop,
+    )  # fmt: skip
+    o.message = (
+        f"{o.message}; stop moved from {o.stop:.4f} to {new_stop:.4f} to stay "
+        f"{distance * 100:.2f}% from the actual fill"
+    ).strip("; ")
+    o.stop = round(new_stop, 4)
+    return o
 
 
 def _session_over(decided: datetime, now: datetime) -> bool:

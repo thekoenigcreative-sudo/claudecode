@@ -299,3 +299,26 @@ def test_short_borrow_is_charged_daily(setup):
     # 3% a year for 10 days.
     assert charged == pytest.approx(1000 * 1.00 * 0.03 * 10 / 365, rel=1e-6)
     assert acct.borrow_paid == pytest.approx(charged)
+
+
+def test_a_stop_on_the_wrong_side_of_the_fill_is_re_derived(setup):
+    """Deferred fills can land far from the delayed quote a stop was computed against.
+
+    A long that fills below its own stop would be opened and stopped out in the same
+    minute, for two lots of brokerage and no trade. The stop's intent is a distance, so
+    it is re-derived at the same distance from the price actually paid.
+    """
+    cfg, broker, pb, acct = setup
+    # Limit 1.20 with a stop at 1.10 is an 8.33% stop. The real 10:01 bar closes at 1.05,
+    # so the fill lands BELOW the stop.
+    o = broker.submit(
+        acct, ticker="AAA", side="buy", qty=100, limit=1.20,
+        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.10,
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    filled = acct.orders[o.order_id]
+    assert filled.status == "filled"
+    pos = acct.positions["AAA"]
+    assert pos.stop < filled.avg_price, "the stop must end up below a long's entry"
+    # Same 8.33% distance, now measured from what was actually paid.
+    assert pos.stop == pytest.approx(filled.avg_price * (1 - 0.10 / 1.20), rel=1e-3)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -281,6 +282,13 @@ def cmd_fake(args) -> int:
     pb = _pb(arena, args.playbook)
     ticker = args.ticker.upper()
     now = datetime.now(SYD)
+    if args.at:
+        h, m = (int(x) for x in args.at.split(":"))
+        now = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        print(
+            f"decision time set to {now:%Y-%m-%d %H:%M} Sydney, so the fill comes from "
+            f"that minute's REAL bar"
+        )
 
     quotes = None
     if args.prev_close:
@@ -309,10 +317,51 @@ def cmd_fake(args) -> int:
         pdf_url="https://example.invalid/fake-announcement",
     )
     print(f"\nFAKE announcement: {a.code} - {a.headline}\n")
+    body = ""
+    if args.text_file:
+        body = pathlib.Path(args.text_file).read_text(encoding="utf-8")
+        print(f"supplying {len(body)} characters of FAKE announcement text to the reader")
     result = handle_announcement(
-        arena, pb, a, now, quotes=quotes, run_bot=not args.no_bot, run_agent=not args.no_agent
-    )
+        arena, pb, a, now, quotes=quotes, run_bot=not args.no_bot,
+        run_agent=not args.no_agent, text=body,
+    )  # fmt: skip
     print(json.dumps(result, indent=2, default=str))
+
+    # Resolve the fill now, so the whole chain is visible in one run.
+    print("\n--- resolving fills from the real minute bars ---")
+    real_now = datetime.now(SYD)
+    for kind in ("agent", "bot"):
+        acct = arena.account(pb, kind)
+        for r in arena.broker.resolve_pending(acct, real_now):
+            print(f"{acct.name} {r.order_id}: {r.status} - {r.detail}")
+        for r in arena.broker.apply_stops(acct, real_now):
+            print(f"{acct.name} STOP {r.order_id}: {r.status} - {r.detail}")
+        acct = arena.account(pb, kind)
+        for t, pos in acct.positions.items():
+            print(f"{acct.name} holds {t} {pos.qty:+d} @ {pos.avg_cost:.4f} stop {pos.stop}")
+    return 0
+
+
+def cmd_reset(args) -> int:
+    """Wipe arena accounts back to their opening balance. Fake money only, never live."""
+    cfg, log, arena = _arena()
+    if not args.yes:
+        print("this deletes every arena account, mark and trade record. Re-run with --yes.")
+        return 2
+    root = cfg.data_dir / "arena"
+    removed = []
+    for sub in ("accounts", "marks", "handled"):
+        d = root / sub
+        if d.exists():
+            for f in sorted(d.glob("*")):
+                if args.account and args.account not in f.stem:
+                    continue
+                f.unlink()
+                removed.append(f"{sub}/{f.name}")
+    for name in removed:
+        print(f"removed {name}")
+    print(f"{len(removed)} file(s) removed; accounts reopen at their starting balance")
+    log.info("arena reset: %d files removed", len(removed))
     return 0
 
 
@@ -409,9 +458,16 @@ def add_parsers(sub) -> None:
     fk.add_argument("--prev-close", type=float, help="use a fake quote built from this close")
     fk.add_argument("--move-pct", type=float, default=12.0)
     fk.add_argument("--vol-mult", type=float, default=8.0)
+    fk.add_argument("--at", help="decision time today, HH:MM Sydney (default: now)")
+    fk.add_argument("--text-file", help="file holding the fake announcement's text")
     fk.add_argument("--no-bot", action="store_true")
     fk.add_argument("--no-agent", action="store_true")
     fk.set_defaults(fn=cmd_fake)
+
+    rs = a.add_parser("reset", help="wipe arena accounts back to their opening balance")
+    rs.add_argument("--yes", action="store_true", help="required: this deletes trade records")
+    rs.add_argument("--account", help="only accounts whose name contains this")
+    rs.set_defaults(fn=cmd_reset)
 
     tg = sub.add_parser("telegram", help="the trader bot's Telegram link")
     t = tg.add_subparsers(dest="tg_cmd", required=True)

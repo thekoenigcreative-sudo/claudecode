@@ -333,6 +333,7 @@ def handle_announcement(
     quotes=None,
     run_bot: bool = True,
     run_agent: bool = True,
+    text: str = "",
 ) -> dict:
     """One announcement, all the way through. Returns what happened, for the log."""
     now = now or datetime.now(SYD)
@@ -351,7 +352,7 @@ def handle_announcement(
     ctx = {
         "dossier": dossier(arena, a.code),
         "reaction": live_reaction(arena, a.code, now, quotes),
-        "text": pdf_text(cfg.data_dir, a),
+        "text": text or pdf_text(cfg.data_dir, a),
     }
     out["has_pdf_text"] = bool(ctx["text"])
 
