@@ -21,7 +21,8 @@ from zoneinfo import ZoneInfo
 from asxbot.announcements.model import Announcement
 from asxbot.backtest.costs import CostModel
 from asxbot.io import write_text_atomic
-from asxbot.live.quotes import Quote, QuoteProvider, avg_volume_20d, median_turnover_20d
+from asxbot.live.quotes import Quote, QuoteProvider
+from asxbot.live.reaction import measure
 from asxbot.log import EventLog, get_logger
 
 log = get_logger("asxbot.live.scanner")
@@ -150,26 +151,21 @@ class Scanner:
         if not a.price_sensitive:
             return None, "not price sensitive"
         daily = self.daily_lookup(a.code)
-        avg_vol = avg_volume_20d(daily)
-        med_turn = median_turnover_20d(daily)
-        if avg_vol is None or med_turn is None:
-            return None, "insufficient daily history"
-        if med_turn < self.turnover_floor:
-            return None, f"turnover {med_turn:,.0f} below floor {self.turnover_floor:,.0f}"
         q = self.quotes.quote(a.code)
         iq = self.quotes.index_quote()
         if q is None or iq is None:
             return None, "no quote"
-        move = (q.last / q.prev_close - 1) * 100
-        idx_move = (iq.last / iq.prev_close - 1) * 100
-        move_rel = move - idx_move
-        frac = max(0.25, session_fraction(now))
-        vmult = q.volume_today / (avg_vol * frac) if avg_vol > 0 else 0.0
-        if move_rel < self.gap_pct:
-            return None, f"move {move_rel:+.1f}% vs index below {self.gap_pct}%"
-        if vmult < self.vol_mult:
-            return None, f"volume {vmult:.1f}x (session-adjusted) below {self.vol_mult}x"
-        return self._build(a, q, move_rel, vmult, med_turn, now), "ok"
+        r = measure(q, iq, daily, now, session_fraction)
+        if r is None:
+            return None, "insufficient daily history"
+        if r.median_turnover < self.turnover_floor:
+            return None, (
+                f"turnover {r.median_turnover:,.0f} below floor {self.turnover_floor:,.0f}"
+            )
+        ok, why = r.passes(self.gap_pct, self.vol_mult)
+        if not ok:
+            return None, why
+        return self._build(a, q, r.move_rel_pct, r.vol_mult, r.median_turnover, now), "ok"
 
     def _build(
         self, a: Announcement, q: Quote, move_rel: float, vmult: float, adv: float, now: datetime

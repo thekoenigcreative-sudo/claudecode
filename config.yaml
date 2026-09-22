@@ -76,3 +76,112 @@ limits:   # enforced in code by place_order; the agent cannot override these
   long_only: true
   limit_orders_only: true
   allowed_universe: [asx300, small]
+
+# ---------------------------------------------------------------------------
+# ARENA — fake money only. See ARENA.md (technical) and PLAN.md (order).
+# Every value below was FROZEN on 2026-09-22, before any arena trade was made.
+# Do not change them to improve results; change them only as a dated new version.
+# ---------------------------------------------------------------------------
+arena:
+  frozen_on: "2026-09-22"
+  starting_aud: 10000          # per account; each playbook has an agent account and a bot account
+  enabled: true
+
+  # The aggression ladder (ARENA.md). A playbook sits at exactly one level.
+  levels:
+    1:
+      name: daily
+      aim: "profit every day"
+      risk_per_trade_pct: 5.0        # distance-to-stop x size, as % of account equity
+      max_open_positions: 8          # per playbook account
+      leverage_asx: 3.0
+      leverage_crypto: 10.0          # unused until a crypto playbook starts
+      daily_loss_limit_pct: 15.0     # then no NEW positions until tomorrow; exits stay allowed
+      holding: intraday              # overnight only with a written reason
+      wake_sensitivity: most
+    2:
+      name: weekly
+      aim: "profit every week"
+      risk_per_trade_pct: 2.0
+      max_open_positions: 6
+      leverage_asx: 1.5
+      leverage_crypto: 3.0
+      daily_loss_limit_pct: 8.0
+      holding: days
+      wake_sensitivity: medium
+    3:
+      name: monthly
+      aim: "profit every month"
+      risk_per_trade_pct: 1.0
+      max_open_positions: 5
+      leverage_asx: 1.0
+      leverage_crypto: 1.0
+      daily_loss_limit_pct: 4.0
+      holding: weeks
+      wake_sensitivity: standard
+
+  # Hard safety guards, not strategy parameters. They exist so a loop or a confused
+  # agent cannot churn the account; they are deliberately far above normal activity.
+  guards:
+    max_orders_per_day: 40           # per account
+    max_order_value_aud: 8000        # per single order, whatever leverage allows
+    min_order_aud: 500               # ASX minimum marketable parcel
+    allowed_hours: { start: "07:00", end: "19:30", tz: "Australia/Sydney" }
+
+  # Deferred fills (decided 2026-09-22 with Rick).
+  # Free quotes are ~20 minutes delayed, so the true price at the moment of a decision is
+  # not knowable when the decision is made. Every arena order is therefore recorded as
+  # pending with its decision timestamp and filled later, from the 1-minute bar covering
+  # that minute. If the stock did not trade in that minute, the fill walks FORWARD to the
+  # next minute that did trade - never to an earlier one. Same rule for stops and exits.
+  fill:
+    minute_price: close      # close | typical | open. `close` is the last price of the
+                             # decision minute: never earlier than the decision, and
+                             # conservative for momentum entries.
+    max_wait_minutes: 390    # give up if no traded minute is found within one session
+    resolve_after_minutes: 22  # don't try to resolve a fill until the free feed has caught up
+    stop_gap_rule: worse_of  # a stop fills at the stop price, or at the bar open if the
+                             # bar opened through it (a gap) - whichever is worse for us
+
+  costs:
+    # Slippage reuses costs.slippage above (base 0.10% + 0.5 x value/ADV, capped 1.0%).
+    # That base ALREADY stands in for the bid-ask spread, so no separate spread is added;
+    # it is replaced by real IBKR quotes when the formal test starts.
+    short_borrow_pct_annual: 3.0   # ASX 200 borrow estimate, charged daily on short value
+
+  shorts:
+    asx_universe: asx200     # ASX shorts allowed only in the realistic borrowable set
+    crypto_requires_futures: true
+
+  telegram:
+    evening_report_time: "19:30"
+    tz: "Australia/Sydney"
+
+  # Playbooks. Only ONE is tested at a time (PLAN.md). Numbers are ARENA.md labels.
+  playbooks:
+    asx_announcements:
+      arena_id: 2
+      title: "ASX announcements"
+      market: asx
+      level: 1
+      enabled: true
+      status: warmup            # build | shakedown | warmup | test | passed | retired
+      warmup_start: "2026-09-23T07:30:00+10:00"
+      data_basis: "free delayed quotes; fills deferred to the true minute bar"
+      # The agent's trigger: every price-sensitive announcement above the liquidity floor.
+      trigger:
+        price_sensitive_only: true
+        turnover_floor_aud: 250000
+      # Starting guidance for the agent (it may deviate, and must write down why).
+      guidance:
+        default_exit: same_day
+        shorts_allowed_in: asx200
+        max_position_pct_of_equity: 40.0
+      # The rule-based yardstick: strategy A, already built and backtested.
+      yardstick:
+        name: announcement_drift_A
+        gap_pct_vs_index: 5.0
+        volume_multiple: 3.0
+        hold_days: 10
+        stop_loss_pct: 8.0
+        long_only: true

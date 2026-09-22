@@ -105,7 +105,11 @@ def load_config(path: str | Path | None = None, env_file: str | Path | None = No
         load_dotenv(env_path, override=False)
     with open(cfg_path, encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
-    env = {k: v for k, v in os.environ.items() if k.startswith(("LIVE_", "IB_", "COLLECTOR_"))}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k.startswith(("LIVE_", "IB_", "COLLECTOR_", "TELEGRAM_"))
+    }
     _validate(raw, env)
     # data dir is always resolved against the real repo root, even for a temp config copy
     return Config(raw=raw, root=root, env=env)
