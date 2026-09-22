@@ -10,6 +10,16 @@ from pathlib import Path
 
 import pandas as pd
 
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)),
+}  # fmt: skip
+
+
+def safe_stem(code: str) -> str:
+    """ASX codes like PRN or CON cannot be file names on Windows. Suffix them."""
+    return f"{code}_" if code.upper() in _WINDOWS_RESERVED else code
+
 
 def _tmp_beside(path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -78,6 +78,93 @@ def cmd_data_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _collector(cfg):
+    from asxbot.alerts import Alerts
+    from asxbot.announcements.http import PacedClient
+
+    client = PacedClient(
+        cfg.data_dir / "announcements" / "cache",
+        cfg.get("collector.user_agent"),
+        pause_s=float(cfg.get("collector.request_pause_s", 3.0)),
+        max_retries=int(cfg.get("collector.max_retries", 4)),
+        backoff_base_s=float(cfg.get("collector.backoff_base_s", 10)),
+    )
+    return client, Alerts(cfg.data_dir)
+
+
+def cmd_ann_history(args: argparse.Namespace) -> int:
+    from asxbot.announcements.history import HistoryArchive
+    from asxbot.data.universe import build_universes, fetch_directory
+
+    cfg = load_config()
+    log = setup_logging(cfg.data_dir)
+    client, alerts = _collector(cfg)
+    a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
+    codes = {"asx300": a.codes, "small": b.codes, "all": a.codes + b.codes}[args.universe]
+    if args.codes:
+        codes = [c.upper() for c in args.codes]
+    directory = fetch_directory(cfg.data_dir, cfg.get("collector.user_agent"))
+    listing = {
+        r.code: (r.listing_date.date() if hasattr(r.listing_date, "date") else None)
+        for r in directory.itertuples()
+    }
+    arc = HistoryArchive(cfg.data_dir, client, alerts)
+    log.info(
+        "history archive: %d codes, budget=%s requests", len(codes), args.max_requests or "none"
+    )
+    stats = arc.run(codes, listing, max_requests=args.max_requests or None)
+    log.info("history archive: %s (requests made: %d)", stats, client.requests_made)
+    return 0
+
+
+def cmd_ann_poll(args: argparse.Namespace) -> int:
+    from asxbot.announcements.live import LivePoller
+    from asxbot.data.universe import build_universes
+
+    cfg = load_config()
+    log = setup_logging(cfg.data_dir)
+    client, alerts = _collector(cfg)
+    a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
+    poller = LivePoller(
+        cfg.data_dir, client, alerts, set(a.codes) | set(b.codes), fetch_pdfs=not args.no_pdf
+    )
+    hours = (cfg.get("collector.hours.start"), cfg.get("collector.hours.end"))
+    if args.now:
+        new = poller.poll_once()
+        for x in new[:20]:
+            log.info(
+                "  %s %s %s %s",
+                x.released_at,
+                x.code,
+                "*" if x.price_sensitive else " ",
+                x.headline,
+            )
+        return 0
+    poller.run(float(cfg.get("collector.poll_interval_s", 60)), hours, once=args.once)
+    return 0
+
+
+def cmd_ann_status(args: argparse.Namespace) -> int:
+    from asxbot.alerts import Alerts
+    from asxbot.announcements.history import status
+
+    cfg = load_config()
+    log = setup_logging(cfg.data_dir)
+    log.info("history: %s", status(cfg.data_dir))
+    for key, msg in Alerts(cfg.data_dir).active():
+        log.warning("ACTIVE ALERT %s: %s", key, msg.replace("\n", " | "))
+    return 0
+
+
+def cmd_alerts_clear(args: argparse.Namespace) -> int:
+    from asxbot.alerts import Alerts
+
+    cfg = load_config()
+    setup_logging(cfg.data_dir)
+    Alerts(cfg.data_dir).clear(args.key)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="asxbot")
     p.add_argument("--version", action="version", version=__version__)
@@ -96,6 +183,25 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("data-status", help="what is in the price cache").set_defaults(
         fn=cmd_data_status
     )
+    ann = sub.add_parser("announcements", help="asx.com.au collector").add_subparsers(
+        dest="sub", required=True
+    )
+    h = ann.add_parser("history", help="build/resume the announcement archive (Ctrl-C to stop)")
+    h.add_argument("--universe", choices=["asx300", "small", "all"], default="all")
+    h.add_argument("--codes", nargs="*", help="only these codes (testing)")
+    h.add_argument("--max-requests", type=int, default=0, help="stop after N requests")
+    h.set_defaults(fn=cmd_ann_history)
+    pl = ann.add_parser("poll", help="live poller for today's announcements")
+    pl.add_argument("--once", action="store_true", help="one cycle, then exit")
+    pl.add_argument("--now", action="store_true", help="fetch once regardless of hours/day")
+    pl.add_argument("--no-pdf", action="store_true")
+    pl.set_defaults(fn=cmd_ann_poll)
+    ann.add_parser("status", help="archive progress and active alerts").set_defaults(
+        fn=cmd_ann_status
+    )
+    ac = sub.add_parser("alerts-clear", help="clear an alert flag by hand")
+    ac.add_argument("key")
+    ac.set_defaults(fn=cmd_alerts_clear)
     return p
 
 

@@ -26,3 +26,9 @@ def test_text_atomic(tmp_path):
     p = write_text_atomic("hello", tmp_path / "r" / "a.md")
     assert p.read_text(encoding="utf-8") == "hello"
     assert not list((tmp_path / "r").glob("*.tmp"))
+
+
+def test_safe_stem_windows_reserved_names():
+    from asxbot.io import safe_stem
+
+    assert safe_stem("PRN") == "PRN_" and safe_stem("CON") == "CON_" and safe_stem("BHP") == "BHP"
