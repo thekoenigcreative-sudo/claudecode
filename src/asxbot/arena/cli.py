@@ -268,7 +268,7 @@ def cmd_watch(args) -> int:
     if not pb.enabled:
         print(f"playbook {pb.key} is not enabled in config.yaml")
         return 2
-    watch(arena, pb, once=args.once, interval_s=args.interval)
+    watch(arena, pb, once=args.once, interval_s=args.interval, until=args.until)
     return 0
 
 
@@ -323,7 +323,7 @@ def cmd_fake(args) -> int:
         print(f"supplying {len(body)} characters of FAKE announcement text to the reader")
     result = handle_announcement(
         arena, pb, a, now, quotes=quotes, run_bot=not args.no_bot,
-        run_agent=not args.no_agent, text=body,
+        run_agent=not args.no_agent, text=body, ignore_warmup=True,
     )  # fmt: skip
     print(json.dumps(result, indent=2, default=str))
 
@@ -449,6 +449,7 @@ def add_parsers(sub) -> None:
     w.add_argument("--playbook")
     w.add_argument("--once", action="store_true")
     w.add_argument("--interval", type=float)
+    w.add_argument("--until", help="stop at this Sydney time, HH:MM (for the daily task)")
     w.set_defaults(fn=cmd_watch)
 
     fk = a.add_parser("fake-announcement", help="prove the chain end to end, no network")

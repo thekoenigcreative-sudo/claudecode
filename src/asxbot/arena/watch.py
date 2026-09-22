@@ -325,6 +325,16 @@ and most announcements deserve it. Do not trade to look busy.
 # --------------------------------------------------------------------------
 # the pipeline
 # --------------------------------------------------------------------------
+def warmup_start(pb: Playbook) -> datetime | None:
+    """When this playbook is allowed to start trading. Nothing trades before it."""
+    raw = pb.raw.get("warmup_start")
+    if not raw:
+        return None
+    dt = datetime.fromisoformat(str(raw))
+    return dt if dt.tzinfo else dt.replace(tzinfo=SYD)
+
+
+
 def handle_announcement(
     arena: Arena,
     pb: Playbook,
@@ -334,12 +344,20 @@ def handle_announcement(
     run_bot: bool = True,
     run_agent: bool = True,
     text: str = "",
+    ignore_warmup: bool = False,
 ) -> dict:
     """One announcement, all the way through. Returns what happened, for the log."""
     now = now or datetime.now(SYD)
     cfg = arena.cfg
     ev = EventLog(cfg.data_dir)
     out: dict = {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline}
+
+    start = warmup_start(pb)
+    if start is not None and now < start and not ignore_warmup:
+        why = f"the warm-up for {pb.key} starts at {start:%Y-%m-%d %H:%M} Sydney; not trading yet"
+        log.info("%s (%s)", why, a.code)
+        ev.append("arena_alerts", {"playbook": pb.key, "ticker": a.code, "skipped": why})
+        return {**out, "skipped": why}
 
     ev.append(
         "arena_alerts",
@@ -479,8 +497,18 @@ def handle_announcement(
 # --------------------------------------------------------------------------
 # the loop
 # --------------------------------------------------------------------------
-def watch(arena: Arena, pb: Playbook, once: bool = False, interval_s: float | None = None) -> None:
-    """Poll for announcements and work each new one. Also resolves fills and stops."""
+def watch(
+    arena: Arena,
+    pb: Playbook,
+    once: bool = False,
+    interval_s: float | None = None,
+    until: str | None = None,
+) -> None:
+    """Poll for announcements and work each new one. Also resolves fills and stops.
+
+    `until` is an HH:MM Sydney time to stop at, so the scheduled task starts a fresh
+    process each morning rather than leaving one running for days.
+    """
     from asxbot.alerts import Alerts
     from asxbot.announcements.http import PacedClient
     from asxbot.announcements.live import LivePoller, in_hours, is_trading_day
@@ -503,8 +531,27 @@ def watch(arena: Arena, pb: Playbook, once: bool = False, interval_s: float | No
         pb.key, pb.level.number, len(handled),
     )  # fmt: skip
 
+    stop_at = None
+    if until:
+        h, m = (int(x) for x in until.split(":"))
+        stop_at = datetime.now(SYD).replace(hour=h, minute=m, second=0, microsecond=0)
+        log.info("this watcher will stop at %s", stop_at.strftime("%H:%M"))
+
     while True:
         now = datetime.now(SYD)
+        if stop_at is not None and now >= stop_at:
+            log.info("reached the stop time %s; the watcher is done for today", until)
+            return
+        start = warmup_start(pb)
+        if start is not None and now < start:
+            log.info(
+                "the warm-up for %s starts at %s; waiting (nothing will be traded before then)",
+                pb.key, start.strftime("%Y-%m-%d %H:%M"),
+            )  # fmt: skip
+            if once:
+                return
+            time.sleep(min(300, max(30, (start - now).total_seconds())))
+            continue
         if not is_trading_day(now.date()):
             log.info("not an ASX trading day; nothing to watch")
             if once:

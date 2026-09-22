@@ -98,3 +98,50 @@ Broker mode stays `sim` until you change `config.yaml` yourself. `paper` needs I
 matter: `collector_access_refused` (asx.com.au refused us: collection has stopped, the system
 runs on price/volume signals only; do not work around it) and `reconcile_mismatch` (broker and
 log disagree). Clear by hand with `asxbot alerts-clear <key>` once you understand the cause.
+
+## The arena (fake money)
+
+Every tactic is run by the AI agent in a fake-money arena before any real money is
+considered. See ARENA.md for the design and PLAN.md for the order tactics are built in.
+
+Each playbook gets two simulated $10,000 accounts: one traded by the agents, one by a
+rule-based yardstick bot that runs the same playbook's plain rule with no model at all.
+The gap between them is the measure of what the agent's judgment adds.
+
+```powershell
+asxbot arena status                 # playbooks, levels, accounts
+asxbot arena scoreboard             # P&L, green/red days, drawdown, agent vs bot
+asxbot arena positions              # open positions and pending fills
+asxbot arena quote --ticker BHP     # the delayed quote and the price reaction
+asxbot arena dossier --ticker BHP   # one-page brief on a stock
+asxbot arena resolve                # fill pending orders, trigger stops
+asxbot arena mark                   # mark every account to market
+asxbot arena report --agent --send  # the evening report, on Telegram
+asxbot arena watch --until 19:25    # the warm-up watcher (the scheduled task runs this)
+asxbot arena reset --yes            # wipe accounts back to their opening balance
+```
+
+### Deferred fills
+
+Free quotes are about 20 minutes delayed, so the true price at the moment of a decision is
+not knowable when the decision is made. Every arena order is therefore recorded pending
+with its decision timestamp and filled later from the 1-minute bar covering that minute. If
+the stock did not trade in that minute, the fill walks **forward** to the next minute that
+did — never back to an earlier one. Stops and exits follow the same rule, and a stop gapped
+through fills at the bar's open rather than at the stop price.
+
+### The two agents
+
+`trader-reader` (Sonnet 5) reads each announcement and writes a quotable summary ending in
+a TRADE_WORTHY verdict. Code hands that summary to `trader-decider` (Opus 5), which works a
+fixed checklist and returns a DECISION block. Code then calls `arena_place_order`, which
+enforces every limit — risk per trade, open positions, leverage, the daily loss limit,
+ASX-200-only shorts — and the broker's returned order id is the only proof an order exists.
+
+A malformed reply from either agent is treated as "pass", so a broken answer costs a trade
+and never causes one.
+
+### Telegram
+
+The trader bot is separate from any other OpenClaw agent's bot. Its token lives in `.env`.
+To link it: message the bot on Telegram, then `asxbot telegram pair`.
