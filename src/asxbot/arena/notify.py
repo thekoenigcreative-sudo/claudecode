@@ -1,11 +1,16 @@
 """Instant Telegram alerts from the arena, sent as things happen.
 
-What is sent, one short message each:
+Sent the moment it happens, one short message each:
   * a trade DECIDED - by the agent or the yardstick bot - and the order id the broker gave it;
   * a trade the hard limits REFUSED;
   * every FILL, with the fill price and the stop the position now carries;
-  * every STOP that fires, and every position CLOSED, with the result;
-  * one line for each announcement the decider looked at and PASSED on, with why.
+  * every STOP that fires, and every position CLOSED, with the result.
+
+Sent as ONE DIGEST PER HOUR, because they are frequent and none of them needs an answer:
+  * each announcement the decider looked at and PASSED on, one line and its reason.
+
+Queued passes are held in a small file, so a digest survives the watcher restarting, and
+the last part-hour is flushed when the watcher stops for the day.
 
 The evening report is separate and unchanged (report.py).
 
@@ -16,12 +21,19 @@ swallowed, because an alert must never stop an order, a fill or a stop being rec
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta
 from html import escape
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from asxbot.config import Config
+from asxbot.io import write_text_atomic
 from asxbot.log import EventLog, get_logger
 
 log = get_logger("asxbot.arena.notify")
+SYD = ZoneInfo("Australia/Sydney")
+DIGEST_MINUTES = 60
 
 
 def one_line(text: str) -> str:
@@ -40,11 +52,13 @@ def account_kind(account: str) -> str:
 class Notifier:
     """Sends arena alerts to the trader bot's Telegram chat. Never raises."""
 
-    def __init__(self, cfg: Config, enabled: bool = True):
+    def __init__(self, cfg: Config, enabled: bool = True, digest_minutes: int = DIGEST_MINUTES):
         self.cfg = cfg
         self.enabled = bool(enabled)
+        self.digest_minutes = int(digest_minutes)
         self.events = EventLog(cfg.data_dir)
         self._bot = None
+        self.queue_path = Path(cfg.data_dir) / "arena" / "pass_digest.json"
 
     def send(self, text: str) -> bool:
         self.events.append("arena_notify", {"text": text, "enabled": self.enabled})
@@ -78,11 +92,55 @@ class Notifier:
             f"{escape(ticker)} {qty}\n<i>{escape(one_line(why))}</i>"
         )
 
-    def passed(self, ticker: str, headline: str, why: str) -> None:
-        self.send(
-            f"⚪ AGENT passed {escape(ticker)} - {escape(one_line(headline))}: "
-            f"<i>{escape(one_line(why))}</i>"
+    # -- passes: queued, and sent as one digest an hour -----------------------
+    def passed(self, ticker: str, headline: str, why: str, now: datetime | None = None) -> None:
+        """Queue a pass. Nothing is sent here - flush_passes() sends the hourly digest."""
+        now = (now or datetime.now(SYD)).astimezone(SYD)
+        q = self._queue()
+        q.append(
+            {
+                "at": now.isoformat(timespec="seconds"),
+                "ticker": ticker,
+                "headline": one_line(headline),
+                "why": one_line(why),
+            }
         )
+        self._write_queue(q)
+        log.info("pass queued for the digest: %s - %s", ticker, one_line(why))
+
+    def flush_passes(self, now: datetime | None = None, force: bool = False) -> bool:
+        """Send the digest once the oldest queued pass is an hour old. `force` sends now."""
+        now = (now or datetime.now(SYD)).astimezone(SYD)
+        q = self._queue()
+        if not q:
+            return False
+        oldest = datetime.fromisoformat(q[0]["at"])
+        if not force and now - oldest < timedelta(minutes=self.digest_minutes):
+            return False
+        lines = [
+            f"• <b>{escape(r['ticker'])}</b> {escape(r['headline'])} — "
+            f"<i>{escape(r['why'])}</i> ({r['at'][11:16]})"
+            for r in q
+        ]
+        head = (
+            f"⚪ <b>PASSED: {len(q)} announcement{'s' if len(q) != 1 else ''}</b> "
+            f"({oldest:%H:%M}–{now:%H:%M})"
+        )
+        self.send(head + "\n" + "\n".join(lines))
+        self._write_queue([])
+        return True
+
+    def _queue(self) -> list[dict]:
+        if not self.queue_path.exists():
+            return []
+        try:
+            return json.loads(self.queue_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:  # noqa: BLE001
+            log.warning("the pass digest queue was unreadable (%s); starting a new one", e)
+            return []
+
+    def _write_queue(self, rows: list[dict]) -> None:
+        write_text_atomic(json.dumps(rows, indent=2), self.queue_path)
 
     # -- the broker's events ------------------------------------------------
     def filled(self, o, closed: bool, stop_now: float | None) -> None:
@@ -118,7 +176,11 @@ class Notifier:
 
 def build_notifier(cfg: Config) -> Notifier:
     """Alerts are on unless `arena.alerts.telegram: false` in config.yaml."""
-    return Notifier(cfg, enabled=bool(cfg.get("arena.alerts.telegram", True)))
+    return Notifier(
+        cfg,
+        enabled=bool(cfg.get("arena.alerts.telegram", True)),
+        digest_minutes=int(cfg.get("arena.alerts.pass_digest_minutes", DIGEST_MINUTES)),
+    )
 
 
 def get(arena) -> Notifier | None:

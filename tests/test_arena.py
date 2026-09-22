@@ -340,7 +340,15 @@ class _FakeArena:
         return lambda t: None
 
 
-def _hold_position(acct, qty=100):
+def _offline_price(monkeypatch, price: float = 1.00):
+    """The sweep prices its exit from the minute bars. Without this the test reaches for
+    yfinance - and AAA.AX is a real ETF, so these tests quietly depended on its live price."""
+    from asxbot.arena.minutes import MinuteBars
+
+    monkeypatch.setattr(MinuteBars, "last_price", lambda self, t, day=None: price)
+
+
+def _hold_position(acct, qty=1000):
     from asxbot.arena.accounts import Position
 
     acct.positions["AAA"] = Position(
@@ -353,6 +361,7 @@ def test_preclose_closes_the_position_when_no_reason_is_given(setup, monkeypatch
     from asxbot.arena import watch as W
 
     cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
     _hold_position(acct)
     fake = _FakeArena(cfg, broker, acct)
 
@@ -367,6 +376,7 @@ def test_preclose_keeps_it_only_when_a_reason_is_written(setup, monkeypatch):
     from asxbot.arena import watch as W
 
     cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
     _hold_position(acct)
     fake = _FakeArena(cfg, broker, acct)
 
@@ -386,6 +396,7 @@ def test_preclose_holds_need_an_actual_reason_not_just_the_word_hold(setup, monk
     from asxbot.arena import watch as W
 
     cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
     _hold_position(acct)
     fake = _FakeArena(cfg, broker, acct)
 
@@ -401,6 +412,7 @@ def test_preclose_closes_when_the_agent_cannot_be_reached(setup, monkeypatch):
     from asxbot.arena.agents import AgentCallFailed
 
     cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
     _hold_position(acct)
     fake = _FakeArena(cfg, broker, acct)
 
@@ -417,6 +429,7 @@ def test_preclose_asks_once_a_day(setup, monkeypatch):
     from asxbot.arena import watch as W
 
     cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
     _hold_position(acct)
     fake = _FakeArena(cfg, broker, acct)
     calls = []
@@ -622,6 +635,96 @@ def test_a_telegram_failure_never_stops_a_fill(setup, monkeypatch):
 def test_alert_reasons_and_headlines_are_escaped_and_sent_in_full(cfg, monkeypatch):
     n, sent = _capture(cfg, monkeypatch)
     headline = "Quarterly <report> " + "h" * 120 + " HEND"
-    n.passed("AAA", headline, "too small\nto matter " + "x" * 400 + " END")
-    assert "&lt;report&gt;" in sent[0] and "h HEND:" in sent[0]
-    assert "\n" not in sent[0] and sent[0].endswith("x END</i>")
+    n.passed("AAA", headline, "too small\nto matter " + "x" * 400 + " END", _AT)
+    n.flush_passes(_AT + timedelta(hours=1), force=True)
+    assert "&lt;report&gt;" in sent[0] and "h HEND" in sent[0]
+    assert sent[0].count("\n") == 1 and sent[0].endswith("x END</i> (12:00)")
+
+
+_AT = datetime(2026, 1, 6, 12, 0, tzinfo=SYD)
+
+
+def test_passes_are_held_back_and_sent_as_one_digest_an_hour(cfg, monkeypatch):
+    n, sent = _capture(cfg, monkeypatch)
+    n.passed("AAA", "Quarterly report", "too small to move it", _AT)
+    n.passed("BBB", "Director's interest", "administrative", _AT + timedelta(minutes=20))
+    assert sent == []  # nothing instant
+
+    assert n.flush_passes(_AT + timedelta(minutes=59)) is False  # not an hour yet
+    assert n.flush_passes(_AT + timedelta(minutes=61)) is True
+    assert len(sent) == 1
+    assert "PASSED: 2 announcements" in sent[0]
+    assert "AAA" in sent[0] and "BBB" in sent[0] and "administrative" in sent[0]
+
+    # The queue empties, so the next hour starts clean.
+    assert n.flush_passes(_AT + timedelta(hours=3)) is False
+
+
+def test_the_pass_queue_survives_a_restart(cfg, monkeypatch):
+    from asxbot.arena.notify import Notifier
+
+    n, sent = _capture(cfg, monkeypatch)
+    n.passed("AAA", "Quarterly report", "too small", _AT)
+    fresh = Notifier(cfg)  # as if the watcher had been restarted
+    monkeypatch.setattr(fresh, "send", lambda text: sent.append(text) or True)
+    assert fresh.flush_passes(_AT + timedelta(hours=1), force=True) is True
+    assert "AAA" in sent[0]
+
+
+# -- the tradability screen (plain code, before any model call) -------------
+def _quote(last=1.00, volume=500_000.0):
+    from asxbot.live.quotes import Quote
+
+    return Quote("AAA", last, last, last, volume, _AT, "test")
+
+
+def _ann(headline="Material contract awarded", code="AAA"):
+    from asxbot.announcements.model import Announcement
+
+    return Announcement(code, datetime(2026, 1, 6, 9, 0), headline, True, "1", "http://x")
+
+
+def _daily(turnover_each_day: float, price: float = 1.00, n: int = 30):
+    idx = pd.date_range("2025-11-01", periods=n, freq="D")
+    return pd.DataFrame(
+        {"close": [price] * n, "volume": [turnover_each_day / price] * n}, index=idx
+    )
+
+
+def test_a_thin_stock_is_rejected_before_any_model_call():
+    from asxbot.arena.tradability import screen
+
+    v = screen(_ann(), _quote(), _daily(50_000), 250_000, _AT)
+    assert not v.ok and v.test == "turnover" and "below the $250,000 floor" in v.why
+
+
+def test_a_tick_worth_more_than_one_percent_is_rejected():
+    from asxbot.arena.tradability import screen
+
+    v = screen(_ann(), _quote(last=0.02), _daily(1_000_000, price=0.02), 250_000, _AT)
+    assert not v.ok and v.test == "tick"  # 0.1c tick on a 2c share is 5% of the price
+
+
+def test_a_halt_and_a_stock_that_has_not_traded_are_both_rejected():
+    from asxbot.arena.tradability import screen
+
+    halt = screen(_ann("Trading Halt"), _quote(), _daily(1_000_000), 250_000, _AT)
+    assert not halt.ok and halt.test == "halted"
+    quiet = screen(_ann(), _quote(volume=0.0), _daily(1_000_000), 250_000, _AT)
+    assert not quiet.ok and quiet.test == "halted"
+
+
+def test_no_quote_is_rejected_and_a_liquid_stock_passes():
+    from asxbot.arena.tradability import screen
+
+    assert screen(_ann(), None, _daily(1_000_000), 250_000, _AT).test == "no_quote"
+    ok = screen(_ann(), _quote(last=5.00), _daily(2_000_000, price=5.00), 250_000, _AT)
+    assert ok.ok and "tradeable" in ok.why
+
+
+def test_before_the_open_zero_volume_is_not_a_halt():
+    from asxbot.arena.tradability import screen
+
+    early = datetime(2026, 1, 6, 8, 30, tzinfo=SYD)
+    v = screen(_ann(), _quote(last=5.00, volume=0.0), _daily(2_000_000, price=5.00), 250_000, early)
+    assert v.ok

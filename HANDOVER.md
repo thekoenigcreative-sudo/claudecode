@@ -130,10 +130,21 @@ Do not run it on two PCs at once: they share `_progress.json` through Drive.
 
 ## Telegram
 
+**23 Sep, first warm-up morning:** 59 announcements in 40 minutes, 60 Sonnet reads and 29
+Opus calls, nearly all on microcaps that could never be traded. A plain-code tradability
+screen (`arena/tradability.py`) now runs BEFORE any model call and rejects: a halt or
+suspension, a stock that has not traded by 10:30, no live quote, a tick worth more than
+`trigger.max_tick_pct` (1%) of the price, and median 20-day turnover below
+`trigger.turnover_floor_aud`. Replayed over that morning it stops 52 of the 59 (88%) and
+24 of the 27 Opus calls. Rejections are logged (`events/arena_screened.jsonl`), never
+alerted. The yardstick bot is deliberately untouched, so the comparison stays honest.
+
 Paired and working, both ways. Besides the evening report, the arena now sends **instant
 alerts** (`arena/notify.py`): each trade decided (agent or bot) and each refused by the limits,
 each fill with its price and stop, every stop that fires and every close with its result, and
-one line per announcement the decider passed on. Off switch: `arena.alerts.telegram: false`.
+passes are NOT instant: they are queued in `data/arena/pass_digest.json` and sent as one
+digest an hour (`arena.alerts.pass_digest_minutes`), with the last part-hour flushed when
+the watcher stops. Off switch: `arena.alerts.telegram: false`.
 Delivery is best effort and never blocks an order, fill or stop. Outbound reports go straight through the Bot API (plain
 code, so they still arrive if a model call fails); inbound messages to
 `@rick_asx_trader_bot` route to `trader-decider`.

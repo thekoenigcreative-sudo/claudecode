@@ -90,7 +90,8 @@ arena:
   starting_aud: 10000          # per account; each playbook has an agent account and a bot account
   enabled: true
   alerts:
-    telegram: true             # instant alerts: decisions, fills, stops, closes, decider passes
+    telegram: true             # instant alerts: decisions, fills, stops, closes, refusals
+    pass_digest_minutes: 60    # passes are not instant: one digest this often instead
 
   # The aggression ladder (ARENA.md). A playbook sits at exactly one level.
   levels:
@@ -185,6 +186,10 @@ arena:
       trigger:
         price_sensitive_only: true
         turnover_floor_aud: 250000
+        # Added 2026-09-23 after the first warm-up morning: one ASX tick worth more than
+        # this much of the price makes a stock untradeable whatever the news says, so it
+        # is rejected in plain code before any model is called (arena/tradability.py).
+        max_tick_pct: 1.0
       # Starting guidance for the agent (it may deviate, and must write down why).
       guidance:
         default_exit: same_day

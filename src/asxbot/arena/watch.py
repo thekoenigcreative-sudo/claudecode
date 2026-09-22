@@ -45,6 +45,7 @@ from asxbot.arena.hours import announcement_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.runtime import Arena, make_bot
+from asxbot.arena.tradability import limits_for, screen
 from asxbot.io import safe_stem
 from asxbot.live.reaction import measure
 from asxbot.live.scanner import round_to_tick, session_fraction
@@ -394,13 +395,6 @@ def handle_announcement(
         },  # fmt: skip
     )
 
-    ctx = {
-        "dossier": dossier(arena, a.code),
-        "reaction": live_reaction(arena, a.code, now, quotes),
-        "text": text or pdf_text(cfg.data_dir, a),
-    }
-    out["has_pdf_text"] = bool(ctx["text"])
-
     # -- the yardstick bot: plain rule, no model ----------------------------
     if run_bot:
         bot_acct = arena.account(pb, "bot")
@@ -429,6 +423,32 @@ def handle_announcement(
 
     if not run_agent:
         return out
+
+    # -- can this be traded at all? plain code, BEFORE any model call --------
+    # The bot above is untouched by this: its rule was frozen with its own floor, and the
+    # arena exists to compare the agent against that frozen rule.
+    q_provider = quotes or arena.quote_provider()
+    floor_aud, max_tick_pct = limits_for(cfg, pb)
+    verdict = screen(
+        a, q_provider.quote(a.code), arena.daily_lookup()(a.code), floor_aud, now, max_tick_pct
+    )
+    out["screen"] = {"ok": verdict.ok, "why": verdict.why, "test": verdict.test}
+    ev.append(
+        "arena_screened",
+        {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline,
+         "ok": verdict.ok, "test": verdict.test, "why": verdict.why},  # fmt: skip
+    )
+    if not verdict.ok:
+        # Logged, never alerted: these are the quiet majority, stopped before they cost anything.
+        log.info("screened out %s before any model call: %s", a.code, verdict.why)
+        return out
+
+    ctx = {
+        "dossier": dossier(arena, a.code),
+        "reaction": live_reaction(arena, a.code, now, q_provider),
+        "text": text or pdf_text(cfg.data_dir, a),
+    }
+    out["has_pdf_text"] = bool(ctx["text"])
 
     # -- trader-reader (Sonnet 5) -------------------------------------------
     try:
@@ -491,7 +511,7 @@ def handle_announcement(
     if str(d.get("action", "pass")).lower() != "trade":
         log.info("decider passed on %s: %s", a.code, d.get("why", ""))
         if alert:
-            alert.passed(a.code, a.headline, str(d.get("why", "")) or "no reason given")
+            alert.passed(a.code, a.headline, str(d.get("why", "")) or "no reason given", now)
         return out
 
     # -- the order goes through the hard limits, in code --------------------
@@ -589,9 +609,14 @@ def watch(
             hours[0], hours[1], stop_at.strftime("%H:%M"),
         )  # fmt: skip
 
+    alert = notify.get(arena)
     while True:
         now = datetime.now(SYD)
+        if alert:
+            alert.flush_passes(now)  # one digest an hour; passes are never instant
         if stop_at is not None and now >= stop_at:
+            if alert:
+                alert.flush_passes(now, force=True)  # do not leave the last part-hour unsent
             log.info("reached the stop time %s; the watcher is done for today", until)
             return
         start = warmup_start(pb)
