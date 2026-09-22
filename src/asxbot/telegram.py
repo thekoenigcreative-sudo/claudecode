@@ -104,14 +104,30 @@ def load_bot(cfg: Config) -> Bot:
     return Bot(token=token, chat_id=chat)
 
 
-def pair(cfg: Config) -> str:
-    """Learn the chat id from whoever has messaged the bot, and remember it."""
+def pair(cfg: Config, chat_id: str | None = None) -> str:
+    """Remember the chat the report goes to.
+
+    NOTE: once the bot is bound as an OpenClaw channel, OpenClaw polls it with getUpdates
+    and consumes every update, so this can no longer discover the chat id by asking
+    Telegram - the updates are gone before we see them. Pass --chat-id instead. A Telegram
+    user's id is the same in a DM with any bot, so it can be read from OpenClaw's own
+    session records for another bot.
+
+    Sending is unaffected: only getUpdates is exclusive, not sendMessage.
+    """
+    if chat_id:
+        write_text_atomic(
+            json.dumps({"chat_id": str(chat_id), "who": "set by hand"}, indent=2), _chat_file(cfg)
+        )
+        log.info("telegram: chat id set to %s", chat_id)
+        return str(chat_id)
     bot = load_bot(cfg)
     ups = bot.updates()
     if not ups:
         raise TelegramError(
-            "nobody has messaged the bot yet. Open Telegram, find the trader bot, "
-            "send it /start, then run this again."
+            "no pending updates. Either nobody has messaged the bot, or - more likely - "
+            "OpenClaw is polling this bot as a channel and has already consumed them. "
+            "Pass the chat id directly: asxbot telegram pair --chat-id <id>"
         )
     chats = {}
     for u in ups:

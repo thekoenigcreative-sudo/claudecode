@@ -509,3 +509,68 @@ def test_an_exit_is_never_blocked_by_the_hours_guard(setup):
     o = _place(cfg, broker, acct, pb, ticker="AAA", side="sell", qty=500, limit=1.00,
                now=after_hours)  # fmt: skip
     assert o.status == "pending_fill"
+
+
+def test_a_report_the_console_cannot_encode_is_still_delivered(tmp_path, monkeypatch):
+    """Found live: the decider wrote a Unicode minus sign, printing crashed on this
+    machine's cp1252 console, and the crash happened BEFORE the Telegram send - so
+    tomorrow's report would simply never have gone out. Delivery comes first now."""
+    import asxbot.telegram as tg
+
+    sent = []
+    monkeypatch.setattr(tg.Bot, "send", lambda self, text, chat_id=None: sent.append(text) or [1])
+    bot = tg.Bot(token="x" * 20, chat_id="123")
+    body = "equity \u22125.2% today"  # U+2212, not a hyphen
+    bot.send(body)
+    assert sent and "\u2212" in sent[0]
+
+
+def test_long_reports_are_split_on_line_boundaries():
+    from asxbot.telegram import MAX_LEN, _split
+
+    body = "\n".join(f"line {i} " + "x" * 200 for i in range(60))
+    parts = _split(body, MAX_LEN)
+    assert len(parts) > 1
+    assert all(len(p) <= MAX_LEN for p in parts)
+    assert "".join(parts) == body  # nothing lost or duplicated
+
+
+def test_order_ids_are_unique_across_accounts(cfg, bars):
+    """Found by the decider in its own evening report: the agent and its bot were both
+    issued ARN-000001, because the counter was per account. The id is the only proof an
+    order exists, so it cannot be ambiguous."""
+    broker = ArenaBroker(
+        cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
+        resolve_after_minutes=0,
+    )  # fmt: skip
+    agent = broker.store.open("p__agent", "p", "agent", 1, 10_000.0)
+    bot = broker.store.open("p__bot", "p", "bot", 1, 10_000.0)
+    ids = []
+    for acct in (agent, bot, agent, bot):
+        o = broker.submit(
+            acct, ticker="AAA", side="buy", qty=10, limit=1.20,
+            decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+        )  # fmt: skip
+        ids.append(o.order_id)
+    assert len(set(ids)) == len(ids), f"order ids collided: {ids}"
+
+
+def test_the_id_counter_never_reuses_an_id_if_its_file_is_lost(cfg, bars):
+    broker = ArenaBroker(
+        cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
+        resolve_after_minutes=0,
+    )  # fmt: skip
+    acct = broker.store.open("q__agent", "q", "agent", 1, 10_000.0)
+    first = [
+        broker.submit(
+            acct, ticker="AAA", side="buy", qty=10, limit=1.20,
+            decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+        ).order_id  # fmt: skip
+        for _ in range(3)
+    ]
+    (broker.store.root / "next_order_id.json").unlink()  # lose the counter
+    again = broker.submit(
+        acct, ticker="AAA", side="buy", qty=10, limit=1.20,
+        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+    ).order_id  # fmt: skip
+    assert again not in first

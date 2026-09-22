@@ -82,8 +82,7 @@ class ArenaBroker:
         hold: str = "intraday",
     ) -> ArenaOrder:
         """Record an order. It is NOT filled here - fills happen in resolve_pending()."""
-        oid = f"ARN-{acct.next_id:06d}"
-        acct.next_id += 1
+        oid = self.store.next_order_id()
         o = ArenaOrder(
             order_id=oid,
             account=acct.name,
@@ -282,8 +281,7 @@ class ArenaBroker:
             slip = self.costs.slippage_pct(abs(pos.qty) * raw, adv)
             side = "sell" if pos.qty > 0 else "cover"
             px = raw * (1 - slip) if side == "sell" else raw * (1 + slip)
-            oid = f"ARN-{acct.next_id:06d}"
-            acct.next_id += 1
+            oid = self.store.next_order_id()
             o = ArenaOrder(
                 order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
                 limit=round(px, 4), decision_at=ts.isoformat(timespec="seconds"),

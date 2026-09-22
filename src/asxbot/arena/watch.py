@@ -238,8 +238,15 @@ The last line of your reply must be the TRADE_WORTHY line and nothing else.
 
 
 def decider_packet(
-    arena: Arena, pb: Playbook, acct: Account, a: Announcement, ctx: dict, summary: str
+    arena: Arena,
+    pb: Playbook,
+    acct: Account,
+    a: Announcement,
+    ctx: dict,
+    summary: str,
+    now: datetime | None = None,
 ) -> str:
+    now = now or datetime.now(SYD)
     lvl = pb.level
     prices = arena.broker.prices(acct)
     equity = acct.equity(prices)
@@ -267,6 +274,8 @@ BEGIN READER SUMMARY
 END READER SUMMARY
 
 THE ANNOUNCEMENT
+  you are deciding at: {now:%Y-%m-%d %H:%M} Sydney (this, not the wall clock, is the
+    moment your fill is priced from)
   code: {a.code}   released: {a.released_at:%Y-%m-%d %H:%M} Sydney
   headline: {a.headline}
   link: {a.pdf_url}
@@ -448,7 +457,7 @@ def handle_announcement(
     acct = arena.account(pb, "agent")
     try:
         decider = call_agent(
-            DECIDER, decider_packet(arena, pb, acct, a, ctx, reader.text),
+            DECIDER, decider_packet(arena, pb, acct, a, ctx, reader.text, now),
             expect_model=DECIDER_MODEL, data_dir=cfg.data_dir,
             purpose=f"decide {a.code} {a.ids_id}",
         )  # fmt: skip

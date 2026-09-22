@@ -555,7 +555,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _utf8_stdout() -> None:
+    """Windows consoles default to cp1252, which cannot encode what a model writes.
+
+    An agent-written report containing a Unicode minus sign was enough to crash printing -
+    and the crash happened before the report was delivered. Nothing that matters should
+    depend on the console's code page.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # not a real console (pipe, pytest capture)
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_stdout()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

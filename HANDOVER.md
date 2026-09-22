@@ -61,16 +61,21 @@ percentage distance from the price actually paid, and the adjustment is logged.
 
 ### OpenClaw
 
-Three agents now. **`main` (JARVIS, the editorial agent) was not touched** — still the
-default, still Sonnet 5, routing unchanged.
+Three agents now. **`main` (JARVIS, the editorial agent) still works exactly as before** —
+still the default, still Sonnet 5, still on its own bot.
 
-| Agent | Model | Workspace |
-|---|---|---|
-| `trader-reader` | `anthropic/claude-sonnet-5` | `~\.openclaw\workspace-trader-reader` |
-| `trader-decider` | `anthropic/claude-opus-5` | `~\.openclaw\workspace-trader-decider` |
+| Agent | Model | Workspace | Telegram |
+|---|---|---|---|
+| `main` (JARVIS) | `anthropic/claude-sonnet-5` | `~\.openclaw\workspace` | `@JARVIS_Z2G9_bot` (`default`) |
+| `trader-reader` | `anthropic/claude-sonnet-5` | `~\.openclaw\workspace-trader-reader` | none |
+| `trader-decider` | `anthropic/claude-opus-5` | `~\.openclaw\workspace-trader-decider` | `@rick_asx_trader_bot` (`trader`) |
 
-Neither has a channel binding, so no routing changed and **the gateway was never
-restarted**. Each has its own `AGENTS.md` operating manual.
+`channels.telegram` was migrated from a single `botToken` to a two-account form
+(`accounts.default` and `accounts.trader`), with explicit bindings so each bot routes to
+its own agent. The gateway was restarted on 22 Sep with Rick's approval; both channels
+probe as connected. Config backup: `openclaw.json.bak-20260922-pre-telegram-trader`.
+
+Each agent has its own `AGENTS.md` operating manual, mirrored into `docs/agents/`.
 
 Models are set on the agent, never per call (ARENA.md warns the per-spawn override is
 silently ignored). Every call records `executionTrace.winnerModel` — what OpenClaw reports
@@ -92,14 +97,20 @@ the warm-up at a clean $10,000.
 
 | Task | When | What |
 |---|---|---|
-| `ASXBot Arena Warmup` | 07:30 Mon–Fri | `asxbot arena watch --until 19:25` |
-| `ASXBot Arena Evening` | 19:30 Mon–Fri | resolve fills → mark to market → agent writes the report → Telegram |
+| `ASXBot Arena Warmup` | 07:30 Mon–Fri | `asxbot arena watch --until auto` (stops 19:25, or 20:25 on daylight saving) |
+| `ASXBot Arena Evening` | 19:30 **and** 20:30 Mon–Fri | the wrong slot for today exits immediately; the right one resolves fills → marks to market → agent writes the report → Telegram |
+
+Daylight saving is handled in code (`arena/hours.py`), so nothing needs changing on
+4 October or in April. `asxbot arena hours` prints the window for any date.
 
 This PC's clock is AUS Eastern, identical to Sydney. Nothing trades before
 `arena.playbooks.asx_announcements.warmup_start` (2026-09-23 07:30) — the watcher waits and
-says so.
+says so. At 15:50 the pre-close sweep asks the decider about each open position and closes
+it unless a reason to hold is written.
 
-**The PC must stay on** for the arena to run.
+**The PC must stay on AND Rick must stay logged in.** `G:\My Drive` is a Google Drive mount
+that exists only inside his session, so signing out removes the repo from the machine's
+view entirely. Locking the screen is fine. Sleep and hibernate are already disabled.
 
 ## Announcement archive
 
@@ -108,15 +119,20 @@ to `data/history_asx300.err`. Roughly 4–5 hours from 26 codes.
 
 Do not run it on two PCs at once: they share `_progress.json` through Drive.
 
+## Telegram
+
+Paired and working, both ways. Outbound reports go straight through the Bot API (plain
+code, so they still arrive if a model call fails); inbound messages to
+`@rick_asx_trader_bot` route to `trader-decider`.
+
+One gotcha worth knowing: **OpenClaw now polls that bot, and `getUpdates` is exclusive.**
+`asxbot telegram pair` can no longer discover the chat id by asking Telegram, because
+OpenClaw has already consumed the updates. Use `asxbot telegram pair --chat-id <id>`.
+Sending is unaffected — only `getUpdates` is exclusive, not `sendMessage`.
+
 ## Open items
 
-1. **Telegram is not paired.** Rick: message @rick_asx_trader_bot on Telegram (`/start`),
-   then run `asxbot telegram pair`. Until then the evening report prints and logs but
-   cannot send. The token is in `.env` (gitignored).
-2. **Two-way Telegram chat** with the trader agents needs the bot bound as an OpenClaw
-   channel, which needs a gateway restart — that interrupts JARVIS, so **ask Rick first**.
-   Outbound reports do not need it.
-3. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed
+1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed
    `reports/phase1.md`. Strategy A still rests on few codes.
 4. Then the small-universe archive (~12–15 h), and rerun.
 5. Strategies C–G (STRATEGIES.md). F and G can run on price data alone.

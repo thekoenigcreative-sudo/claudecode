@@ -217,6 +217,36 @@ class AccountStore:
     def names(self) -> list[str]:
         return sorted(p.stem for p in self.dir.glob("*.json"))
 
+    # -- order ids ----------------------------------------------------------
+    def next_order_id(self) -> str:
+        """The next order id, unique across EVERY account.
+
+        The id is the only proof an order exists, so it cannot be ambiguous. A per-account
+        counter gave the agent and its bot both an ARN-000001, which made the event log
+        impossible to read back with certainty.
+        """
+        p = self.root / "next_order_id.json"
+        n = 1
+        if p.exists():
+            try:
+                n = int(json.loads(p.read_text(encoding="utf-8"))["next"])
+            except (ValueError, KeyError, TypeError):
+                n = 1
+        # Never reuse an id, even if the counter file was lost with accounts still on disk.
+        highest = 0
+        for f in self.dir.glob("*.json"):
+            try:
+                raw = json.loads(f.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            for oid in raw.get("orders", {}):
+                digits = oid.rsplit("-", 1)[-1]
+                if digits.isdigit():
+                    highest = max(highest, int(digits))
+        n = max(n, highest + 1)
+        write_text_atomic(json.dumps({"next": n + 1}, indent=2), p)
+        return f"ARN-{n:06d}"
+
     # -- daily marks --------------------------------------------------------
     def marks_path(self, name: str) -> Path:
         return self.marks_dir / f"{name}.jsonl"

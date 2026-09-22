@@ -246,18 +246,27 @@ def cmd_report(args) -> int:
             log.error("agent report failed (%s); sending the code version", e)
 
     text += f"\n\n<i>written by: {written_by}</i>"
-    print(text)
+
+    # Deliver FIRST. Printing is a convenience; delivery is the point, and a console that
+    # cannot encode what the agent wrote must never stop the report going out.
+    sent_note, rc = "", 0
     if args.send:
         from asxbot.telegram import TelegramError, load_bot
 
         try:
-            bot = load_bot(cfg)
-            ids = bot.send(text)
-            print(f"\n[sent to Telegram: {len(ids)} message(s)]")
+            ids = load_bot(cfg).send(text)
+            sent_note = f"[sent to Telegram: {len(ids)} message(s)]"
         except TelegramError as e:
-            print(f"\n[Telegram NOT sent: {e}]")
-            return 3
-    return 0
+            sent_note, rc = f"[Telegram NOT sent: {e}]", 3
+            log.error("telegram delivery failed: %s", e)
+
+    try:
+        print(text)
+    except UnicodeEncodeError:  # belt and braces; main() already forces UTF-8
+        print(text.encode("utf-8", "replace").decode("utf-8"))
+    if sent_note:
+        print(sent_note)
+    return rc
 
 
 def cmd_watch(args) -> int:
@@ -420,7 +429,7 @@ def cmd_telegram(args) -> int:
             print(f"bot @{me.get('username')} ({me.get('first_name')}) token {bot.masked}")
             print(f"chat id: {bot.chat_id or 'NOT PAIRED - run: asxbot telegram pair'}")
         elif args.tg_cmd == "pair":
-            print(f"paired with chat {pair(cfg)}")
+            print(f"paired with chat {pair(cfg, getattr(args, 'chat_id', None))}")
         elif args.tg_cmd == "send":
             bot = load_bot(cfg)
             print(f"sent message ids {bot.send(args.text)}")
@@ -531,9 +540,13 @@ def add_parsers(sub) -> None:
     tg = sub.add_parser("telegram", help="the trader bot's Telegram link")
     t = tg.add_subparsers(dest="tg_cmd", required=True)
     t.add_parser("whoami", help="which bot, and is a chat paired").set_defaults(fn=cmd_telegram)
-    t.add_parser("pair", help="learn the chat id from a message you sent").set_defaults(
-        fn=cmd_telegram
+    tp = t.add_parser("pair", help="set the chat the evening report goes to")
+    tp.add_argument(
+        "--chat-id",
+        help="set it directly (needed once OpenClaw polls this bot as a channel, because "
+        "OpenClaw consumes the updates this would otherwise read)",
     )
+    tp.set_defaults(fn=cmd_telegram)
     ts = t.add_parser("send", help="send a message")
     ts.add_argument("text")
     ts.set_defaults(fn=cmd_telegram)

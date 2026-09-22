@@ -60,8 +60,24 @@ def gather(arena: Arena, day: date | None = None) -> dict:
                     }
                 )
 
-    orders_today = today_rows("arena_orders")
-    fills_today = today_rows("arena_fills")
+    # Only count activity that still belongs to a live account. The event log is
+    # append-only, so after `arena reset` it still holds orders from wiped accounts -
+    # and a scoreboard saying "no trades" beside a list of fills is worse than useless.
+    live: dict[str, set[str]] = {}
+    for pb in arena.playbooks():
+        for kind in ("agent", "bot"):
+            acct = arena.account(pb, kind)
+            live[acct.name] = set(acct.orders)
+
+    def belongs(r: dict) -> bool:
+        acct_name = r.get("account")
+        if acct_name not in live:
+            return False
+        oid = r.get("order_id")
+        return oid is None or oid in live[acct_name]
+
+    orders_today = [r for r in today_rows("arena_orders") if belongs(r)]
+    fills_today = [r for r in today_rows("arena_fills") if belongs(r)]
     alerts_today = today_rows("arena_alerts")
     signals_today = today_rows("signals")
 
