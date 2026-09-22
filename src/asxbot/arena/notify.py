@@ -24,10 +24,9 @@ from asxbot.log import EventLog, get_logger
 log = get_logger("asxbot.arena.notify")
 
 
-def one_line(text: str, limit: int | None = None) -> str:
-    """Text flattened onto one line. Reasons are sent in full; only a headline is trimmed."""
-    s = " ".join(str(text or "").split())
-    return s if limit is None or len(s) <= limit else s[: limit - 1].rstrip() + "…"
+def one_line(text: str) -> str:
+    """Text flattened onto one line, never trimmed: reasons and headlines go in full."""
+    return " ".join(str(text or "").split())
 
 
 def who(placed_by: str) -> str:
@@ -81,7 +80,7 @@ class Notifier:
 
     def passed(self, ticker: str, headline: str, why: str) -> None:
         self.send(
-            f"⚪ AGENT passed {escape(ticker)} - {escape(one_line(headline, 60))}: "
+            f"⚪ AGENT passed {escape(ticker)} - {escape(one_line(headline))}: "
             f"<i>{escape(one_line(why))}</i>"
         )
 

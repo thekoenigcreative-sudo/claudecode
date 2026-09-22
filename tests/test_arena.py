@@ -619,8 +619,9 @@ def test_a_telegram_failure_never_stops_a_fill(setup, monkeypatch):
     assert acct.orders[o.order_id].status == "filled"
 
 
-def test_alert_reasons_are_escaped_and_sent_in_full(cfg, monkeypatch):
+def test_alert_reasons_and_headlines_are_escaped_and_sent_in_full(cfg, monkeypatch):
     n, sent = _capture(cfg, monkeypatch)
-    n.passed("AAA", "Quarterly <report>", "too small\nto matter " + "x" * 400 + " END")
-    assert "&lt;report&gt;" in sent[0]
+    headline = "Quarterly <report> " + "h" * 120 + " HEND"
+    n.passed("AAA", headline, "too small\nto matter " + "x" * 400 + " END")
+    assert "&lt;report&gt;" in sent[0] and "h HEND:" in sent[0]
     assert "\n" not in sent[0] and sent[0].endswith("x END</i>")
