@@ -1,0 +1,18 @@
+# secrets
+.env
+
+# bulky data (copy across manually when moving PCs)
+data/
+
+# python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+
+# logs
+*.log

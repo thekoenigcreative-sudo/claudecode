@@ -1,0 +1,77 @@
+# ASX trading assistant settings. Secrets never go here; they live in .env (gitignored).
+# Values under `strategy`, `baseline`, `costs` and `universe` were FROZEN on 2026-09-22,
+# before any price data was fetched. Do not change them to improve results.
+
+broker: sim   # sim | paper | live.  live also needs LIVE_TRADING_CONFIRMED=yes in .env
+
+capital:
+  starting_aud: 10000
+  max_positions: 4
+  # position size = starting_aud / max_positions, equal weight
+
+data:
+  provider: yfinance          # yfinance | norgate
+  dir: data                   # gitignored; copy across manually when moving PCs
+  price_history_start: "2003-01-01"
+
+universe:
+  frozen_on: "2026-09-22"
+  turnover_floor_aud: 250000  # median daily dollar turnover over turnover_window_days
+  turnover_window_days: 20
+  asx300_source: vas_holdings # current membership only until Norgate (survivorship-biased)
+
+strategy:
+  frozen_on: "2026-09-22"
+  name: post_announcement_drift
+  gap_pct_vs_index: 5.0       # X: (stock open / prev close - 1) - (index open / prev close - 1), in %
+  volume_multiple: 3.0        # Y: event-day volume / prior 20-day average volume
+  volume_window_days: 20
+  entry: next_open            # MAIN RESULT: confirm at day-0 close, enter day-1 open
+  entry_upper_bound: same_day_open  # reported only as a labelled optimistic bound
+  hold_days: 10               # time exit: sell at open after hold_days sessions
+  stop_loss_pct: 8.0          # checked on close, exit at next open
+  long_only: true
+
+baseline:
+  frozen_on: "2026-09-22"
+  name: cross_sectional_momentum
+  lookback_months: 12
+  skip_months: 1
+  top_n: 4                    # same capital, same position count and costs as the strategy
+  rebalance: monthly
+  regime_index: "^AXJO"
+  regime_sma_days: 200
+
+costs:
+  frozen_on: "2026-09-22"
+  brokerage_pct: 0.088        # IBKR Australia fixed, GST included, each side
+  brokerage_min_aud: 6.60
+  slippage:
+    base_pct: 0.10
+    impact_coeff: 0.5         # x (order value / average daily dollar turnover), in %
+    cap_pct: 1.0
+  slippage_multipliers: [1, 2]   # every backtest is rerun at 2x
+
+backtest:
+  holdout_years: 3            # most recent 3 years untouched until parameters frozen
+  benchmark_ticker: "STW.AX"  # ASX 200 total-return proxy on yfinance (adjusted close)
+  index_ticker: "^AXJO"       # ASX 200 price index
+  small_sample_trades: 30     # flag any result resting on fewer trades than this
+  data_label_yfinance: "plumbing test - not a go/no-go"
+
+collector:
+  user_agent: "asx-bot/0.1 (personal research, low volume)"
+  request_pause_s: 3.0
+  max_retries: 4
+  backoff_base_s: 10
+  poll_interval_s: 60
+  hours: { start: "07:30", end: "19:30", tz: "Australia/Sydney" }
+
+limits:   # enforced in code by place_order; the agent cannot override these
+  max_position_aud: 2500
+  max_open_positions: 4
+  max_new_positions_per_day: 2
+  allowed_hours: { start: "10:00", end: "16:00", tz: "Australia/Sydney" }
+  long_only: true
+  limit_orders_only: true
+  allowed_universe: [asx300, small]
