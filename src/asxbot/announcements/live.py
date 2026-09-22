@@ -115,7 +115,15 @@ class LivePoller:
         except AccessRefused:
             raise
         except Exception as e:  # noqa: BLE001
-            log.warning("pdf fetch failed for %s %s: %s", a.code, a.ids_id, e)
+            # Say it plainly and record it. On 23 Sep this failed silently for every
+            # announcement of the day, and the agents judged headlines without anyone
+            # noticing that no document had ever arrived.
+            log.error("PDF FETCH FAILED for %s %s: %s - the agents will see no document",
+                      a.code, a.ids_id, e)  # fmt: skip
+            self.events.append(
+                "announcement_pdf_failures",
+                {"code": a.code, "ids_id": a.ids_id, "url": a.pdf_url, "error": str(e)},
+            )
             return None
 
     def run(self, interval_s: float, hours: tuple[str, str], once: bool = False) -> None:

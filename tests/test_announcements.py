@@ -192,3 +192,70 @@ def test_company_page_skips_empty_placeholder_row():
     assert [a.headline for a in items] == ["Real one"]
     with pytest.raises(ParseError):
         parse_company(html.replace(" - ", "something without a link"), "AFI")
+
+
+# -- the PDF that was never a PDF (23 Sep) ---------------------------------
+TERMS_PAGE = b"""<html><body><h2>Access to this site</h2>
+<form name="showAnnouncementPDFForm" method="post" action="/asx/v2/statistics/announcementTerms.do">
+<input value="Decline" type="submit"><input value="Agree and proceed" type="submit">
+<input name="pdfURL"
+ value="https://announcements.asx.com.au/asxpdf/20260923/pdf/abc123.pdf"
+ type="hidden">
+</form></body></html>"""
+REAL_PDF = b"%PDF-1.6\n%real document bytes\n"
+
+
+class _Reply:
+    def __init__(self, content):
+        self.content = content
+
+
+def _client(tmp_path, monkeypatch, replies):
+    """A PacedClient whose requests come from a scripted list, newest first."""
+    from asxbot.announcements.http import PacedClient
+
+    c = PacedClient(tmp_path / "cache", "test-agent", pause_s=0, backoff_base_s=0)
+    seen = []
+
+    def fake(url):
+        seen.append(url)
+        return _Reply(replies.pop(0))
+
+    monkeypatch.setattr(c, "_request", fake)
+    return c, seen
+
+
+def test_the_terms_page_is_followed_to_the_real_pdf(tmp_path, monkeypatch):
+    c, seen = _client(tmp_path, monkeypatch, [TERMS_PAGE, REAL_PDF])
+    dest = tmp_path / "AAA_1.pdf"
+    c.get_bytes("https://www.asx.com.au/announcement", dest)
+    assert dest.read_bytes() == REAL_PDF
+    assert seen[1] == "https://announcements.asx.com.au/asxpdf/20260923/pdf/abc123.pdf"
+
+
+def test_a_saved_terms_page_is_not_mistaken_for_a_cached_pdf(tmp_path, monkeypatch):
+    """The bug that made it permanent: the file existed, so it was never fetched again."""
+    dest = tmp_path / "AAA_1.pdf"
+    dest.write_bytes(TERMS_PAGE)
+    c, _ = _client(tmp_path, monkeypatch, [TERMS_PAGE, REAL_PDF])
+    c.get_bytes("https://www.asx.com.au/announcement", dest)
+    assert dest.read_bytes() == REAL_PDF
+
+
+def test_a_real_pdf_on_disk_is_not_downloaded_again(tmp_path, monkeypatch):
+    dest = tmp_path / "AAA_1.pdf"
+    dest.write_bytes(REAL_PDF)
+    c, seen = _client(tmp_path, monkeypatch, [])
+    c.get_bytes("https://www.asx.com.au/announcement", dest)
+    assert seen == []  # nothing was requested
+
+
+def test_it_retries_then_gives_up_rather_than_saving_rubbish(tmp_path, monkeypatch):
+    import pytest as _pytest
+
+    junk = b"<html>something else entirely</html>"
+    c, seen = _client(tmp_path, monkeypatch, [junk] * 4)
+    dest = tmp_path / "AAA_1.pdf"
+    with _pytest.raises(RuntimeError, match="not a PDF"):
+        c.get_bytes("https://www.asx.com.au/announcement", dest)
+    assert len(seen) == 4 and not dest.exists()

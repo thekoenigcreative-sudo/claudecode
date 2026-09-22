@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,29 @@ REFUSAL_MARKERS = ("access denied", "captcha", "are you a robot", "request block
 
 class AccessRefused(RuntimeError):
     pass
+
+
+def _is_pdf(body: bytes) -> bool:
+    return body[:5].startswith(b"%PDF")
+
+
+def _pdf_url_from_terms(body: bytes) -> str | None:
+    """The real document link out of ASX's terms-of-use interstitial.
+
+    The page is a form with the announcement's true URL in a hidden `pdfURL` field, which
+    is what the "Agree and proceed" button submits. Following it is the same act as a
+    person clicking that button: ASX's general conditions allow this for private and
+    personal use, which is what this account is. It is not a bot challenge - a real
+    refusal still raises AccessRefused in _request and stops the collector.
+    """
+    try:
+        text = body[:20000].decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r'name=["\']pdfURL["\']\s+value=["\']([^"\']+)["\']', text, re.I)
+    if not m:
+        m = re.search(r'value=["\']([^"\']+\.pdf)["\']\s+name=["\']pdfURL["\']', text, re.I)
+    return m.group(1) if m else None
 
 
 class PacedClient:
@@ -84,16 +108,47 @@ class PacedClient:
         return text
 
     def get_bytes(self, url: str, dest: Path) -> Path:
-        """Download a binary (PDF) to dest unless it exists."""
+        """Download a PDF to dest unless a REAL PDF is already there.
+
+        Two traps this walks around, both found on 23 Sep when every live announcement had
+        been judged from its headline alone:
+
+        1. asx.com.au does not serve the PDF at the announcement link. It serves a
+           terms-of-use page whose hidden `pdfURL` field holds the actual document, on
+           announcements.asx.com.au. What landed on disk was that HTML page, named .pdf,
+           so pypdf failed with "Stream has ended unexpectedly" and the reader got nothing.
+        2. The old code returned early whenever the file existed, so the first bad save
+           was permanent: every later poll skipped it. Existing files are now checked for
+           the %PDF magic, and anything else is treated as missing and fetched again.
+        """
         dest = Path(dest)
         if dest.exists():
-            return dest
+            if _is_pdf(dest.read_bytes()):
+                return dest
+            log.warning("%s is not a PDF (a saved terms page?); fetching it again", dest.name)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        r = self._request(url)
-        tmp = dest.with_suffix(dest.suffix + ".tmp")
-        tmp.write_bytes(r.content)
-        tmp.replace(dest)
-        return dest
+
+        last = ""
+        for attempt in range(1, self.max_retries + 1):
+            body = self._request(url).content
+            if not _is_pdf(body):
+                real = _pdf_url_from_terms(body)
+                if real:
+                    log.info("%s served the terms page; following its pdfURL", url)
+                    body = self._request(real).content
+                else:
+                    last = "no pdfURL in the reply, and it is not a PDF"
+            if _is_pdf(body):
+                tmp = dest.with_suffix(dest.suffix + ".tmp")
+                tmp.write_bytes(body)
+                tmp.replace(dest)
+                return dest
+            last = last or "the followed link was still not a PDF"
+            if attempt < self.max_retries:
+                wait = self.backoff_base_s * attempt
+                log.warning("%s: %s; retry %d in %.0fs", url, last, attempt, wait)
+                time.sleep(wait)
+        raise RuntimeError(f"{url}: {last} after {self.max_retries} attempts")
 
     def _fetch(self, url: str) -> str:
         r = self._request(url)

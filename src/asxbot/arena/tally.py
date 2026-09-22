@@ -24,8 +24,14 @@ log = get_logger("asxbot.arena.tally")
 SYD = ZoneInfo("Australia/Sydney")
 
 
+def _is_test(r: dict) -> bool:
+    """Rehearsals never count. A fake announcement is flagged when it is written, and its
+    id starts with FAKE, which also covers records written before the flag existed."""
+    return bool(r.get("is_test")) or str(r.get("ids_id", "")).upper().startswith("FAKE")
+
+
 def _read(data_dir: Path, kind: str, day: date) -> list[dict]:
-    """Every record of one kind stamped with the given Sydney day."""
+    """Every REAL record of one kind stamped with the given Sydney day."""
     p = Path(data_dir) / "events" / f"{kind}.jsonl"
     if not p.exists():
         return []
@@ -40,7 +46,7 @@ def _read(data_dir: Path, kind: str, day: date) -> list[dict]:
                 when = datetime.fromisoformat(r["ts"]).astimezone(SYD)
             except (json.JSONDecodeError, KeyError, ValueError):
                 continue
-            if when.date() == day:
+            if when.date() == day and not _is_test(r):
                 r["syd"] = when
                 out.append(r)
     return out

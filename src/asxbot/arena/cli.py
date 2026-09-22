@@ -332,7 +332,7 @@ def cmd_fake(args) -> int:
         print(f"supplying {len(body)} characters of FAKE announcement text to the reader")
     result = handle_announcement(
         arena, pb, a, now, quotes=quotes, run_bot=not args.no_bot,
-        run_agent=not args.no_agent, text=body, ignore_warmup=True,
+        run_agent=not args.no_agent, text=body, ignore_warmup=True, test=True,
     )  # fmt: skip
     print(json.dumps(result, indent=2, default=str))
 

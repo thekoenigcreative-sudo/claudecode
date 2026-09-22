@@ -56,6 +56,11 @@ from asxbot.log import EventLog, get_logger
 log = get_logger("asxbot.arena.watch")
 SYD = ZoneInfo("Australia/Sydney")
 
+
+def is_test_id(ids_id: str) -> bool:
+    """Fake announcements get a FAKE... id (arena/cli.py), and never count as real."""
+    return str(ids_id).upper().startswith("FAKE")
+
 READER_MODEL = "anthropic/claude-sonnet-5"
 DECIDER_MODEL = "anthropic/claude-opus-5"
 MAX_PDF_CHARS = 24000
@@ -74,6 +79,15 @@ def pdf_text(data_dir: Path, a: Announcement) -> str:
         / f"{safe_stem(a.code)}_{a.ids_id}.pdf"
     )
     if not p.exists():
+        log.warning("no PDF on disk for %s %s; the agents will judge the headline alone",
+                    a.code, a.ids_id)  # fmt: skip
+        return ""
+    if not p.read_bytes()[:5].startswith(b"%PDF"):
+        # Never hand this to pypdf: on 23 Sep every one of these was ASX's terms page
+        # saved with a .pdf name, and "Stream has ended unexpectedly" was the only sign.
+        log.error("%s is not a PDF (%d bytes); refusing to parse it, and deleting it so "
+                  "the next fetch tries again", p.name, p.stat().st_size)  # fmt: skip
+        p.unlink(missing_ok=True)
         return ""
     try:
         from pypdf import PdfReader
@@ -383,22 +397,35 @@ def handle_announcement(
     run_agent: bool = True,
     text: str = "",
     ignore_warmup: bool = False,
+    test: bool = False,
 ) -> dict:
-    """One announcement, all the way through. Returns what happened, for the log."""
+    """One announcement, all the way through. Returns what happened, for the log.
+
+    `test` marks everything this writes as a rehearsal - a fake announcement used to prove
+    the chain - so the day's counts, the hourly digest and the 16:10 summary ignore it and
+    a proof run cannot quietly inflate the record of a real trading day.
+    """
     now = now or datetime.now(SYD)
     cfg = arena.cfg
     ev = EventLog(cfg.data_dir)
     alert = notify.get(arena)
+    test = bool(test) or is_test_id(a.ids_id)
+
+    def record(kind: str, rec: dict) -> None:
+        # "is_test", not "test": the screen already writes a "test" field naming which of
+        # its checks rejected an announcement, and the two must not collide.
+        ev.append(kind, {**rec, "is_test": True} if test else rec)
+
     out: dict = {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline}
 
     start = warmup_start(pb)
     if start is not None and now < start and not ignore_warmup:
         why = f"the warm-up for {pb.key} starts at {start:%Y-%m-%d %H:%M} Sydney; not trading yet"
         log.info("%s (%s)", why, a.code)
-        ev.append("arena_alerts", {"playbook": pb.key, "ticker": a.code, "skipped": why})
+        record("arena_alerts", {"playbook": pb.key, "ticker": a.code, "skipped": why})
         return {**out, "skipped": why}
 
-    ev.append(
+    record(
         "arena_alerts",
         {
             "playbook": pb.key, "ticker": a.code, "ids_id": a.ids_id, "headline": a.headline,
@@ -444,7 +471,7 @@ def handle_announcement(
         a, q_provider.quote(a.code), arena.daily_lookup()(a.code), floor_aud, now, max_tick_pct
     )
     out["screen"] = {"ok": verdict.ok, "why": verdict.why, "test": verdict.test}
-    ev.append(
+    record(
         "arena_screened",
         {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline,
          "ok": verdict.ok, "test": verdict.test, "why": verdict.why,
@@ -471,7 +498,7 @@ def handle_announcement(
     except AgentCallFailed as e:
         log.error("trader-reader failed: %s", e)
         out["agent"] = {"stage": "reader", "error": str(e)}
-        ev.append("arena_decisions", {"ticker": a.code, "outcome": "reader_failed", "why": str(e)})
+        record("arena_decisions", {"ticker": a.code, "outcome": "reader_failed", "why": str(e)})
         return out
 
     # Two gates, both the reader's, and the decider is called only when both are YES:
@@ -483,7 +510,7 @@ def handle_announcement(
         "trade_worthy": worthy, "why": why,
         "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
     }  # fmt: skip
-    ev.append(
+    record(
         "arena_decisions",
         {
             "stage": "reader", "ticker": a.code, "ids_id": a.ids_id, "model": reader.model,
@@ -495,7 +522,7 @@ def handle_announcement(
     # Everything reaching here cleared the plain-code screen, so a CAN_SIZE_AND_EXIT of NO
     # is the reader overruling the numbers - worth watching, either as judgment the screen
     # lacks or as a gate that is simply too shy.
-    ev.append(
+    record(
         "arena_gate_compare",
         {
             "ticker": a.code, "ids_id": a.ids_id,
@@ -530,7 +557,7 @@ def handle_announcement(
     except AgentCallFailed as e:
         log.error("trader-decider failed: %s", e)
         out["agent"] = {"stage": "decider", "error": str(e)}
-        ev.append(
+        record(
             "arena_decisions", {"ticker": a.code, "outcome": "decider_failed", "why": str(e)}
         )
         return out
@@ -540,7 +567,7 @@ def handle_announcement(
         "model": decider.model, "model_matches": decider.model_matches,
         "decision": d, "reply": decider.text,
     }  # fmt: skip
-    ev.append(
+    record(
         "arena_decisions",
         {
             "stage": "decider", "ticker": a.code, "ids_id": a.ids_id, "model": decider.model,
