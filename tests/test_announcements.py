@@ -175,3 +175,20 @@ def test_parse_company_2002_text_era_links():
     assert doc_ids, "2002 fixture should contain documentNumber rows"
     assert all(a.pdf_url.startswith("https://www.asx.com.au/") for a in items)
     assert doc_ids[0].pages is None
+
+
+def test_company_page_skips_empty_placeholder_row():
+    html = (
+        "<html><body><table><thead><tr><th>Date</th><th>Price sens.</th><th>Headline</th></tr>"
+        "</thead><tbody>"
+        "<tr><td>17/06/2002<br><span class='dates-time'>12:28 pm</span></td><td>&nbsp;</td>"
+        "<td> - </td></tr>"
+        "<tr><td>18/06/2002<br><span class='dates-time'>9:00 am</span></td><td>&nbsp;</td>"
+        "<td><a href='/asx/v2/statistics/displayAnnouncement.do?display=pdf&amp;idsId=123'>"
+        "Real one<br></a></td></tr>"
+        "</tbody></table></body></html>"
+    )
+    items = parse_company(html, "AFI")
+    assert [a.headline for a in items] == ["Real one"]
+    with pytest.raises(ParseError):
+        parse_company(html.replace(" - ", "something without a link"), "AFI")

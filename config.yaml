@@ -69,6 +69,7 @@ collector:
 
 limits:   # enforced in code by place_order; the agent cannot override these
   max_position_aud: 2500
+  min_order_aud: 500              # ASX minimum marketable parcel; also stops tiny-order death spirals
   max_open_positions: 4
   max_new_positions_per_day: 2
   allowed_hours: { start: "10:00", end: "16:00", tz: "Australia/Sydney" }

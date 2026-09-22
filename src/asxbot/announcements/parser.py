@@ -42,9 +42,11 @@ def _parse_when(td: Tag) -> datetime:
     return datetime.strptime(f"{date_s} {time_s}", "%d/%m/%Y %I:%M %p")
 
 
-def _parse_headline_cell(td: Tag) -> tuple[str, str, str, int | None, str | None]:
+def _parse_headline_cell(td: Tag) -> tuple[str, str, str, int | None, str | None] | None:
     a = td.find("a", href=_ANY_LINK)
     if a is None:
+        if _cell_text(td) in ("", "-"):
+            return None  # empty placeholder row (seen on AFI 2002); skip it
         raise ParseError("headline cell without an idsId/documentNumber link")
     href = a["href"]
     m = _IDS.search(href)
@@ -92,7 +94,10 @@ def parse_today(html: str) -> list[Announcement]:
         code = _cell_text(tds[0]).upper()
         when = _parse_when(tds[1])
         sens = _is_sensitive(tds[2])
-        headline, ids_id, url, pages, size = _parse_headline_cell(tds[3])
+        cell = _parse_headline_cell(tds[3])
+        if cell is None:
+            continue
+        headline, ids_id, url, pages, size = cell
         out.append(Announcement(code, when, headline, sens, ids_id, url, pages, size))
     if not out and "No announcements" not in html:
         raise ParseError("today page parsed to zero rows")
@@ -114,7 +119,10 @@ def parse_company(html: str, code: str) -> list[Announcement]:
             continue
         when = _parse_when(tds[0])
         sens = _is_sensitive(tds[1])
-        headline, ids_id, url, pages, size = _parse_headline_cell(tds[2])
+        cell = _parse_headline_cell(tds[2])
+        if cell is None:
+            continue
+        headline, ids_id, url, pages, size = cell
         out.append(Announcement(code.upper(), when, headline, sens, ids_id, url, pages, size))
     return out
 
