@@ -45,6 +45,8 @@ class Screen:
     ok: bool
     why: str
     test: str = ""  # which test rejected it, for counting later
+    turnover: float | None = None  # the arithmetic behind the verdict, kept for the record
+    tick_pct: float | None = None
 
     def __bool__(self) -> bool:
         return self.ok
@@ -85,6 +87,7 @@ def screen(
             f"one tick ({asx_tick(quote.last):.3f}) is {tp:.2f}% of the {quote.last:.3f} price, "
             f"above the {max_tick_pct}% limit - the spread alone would eat the edge",
             "tick",
+            tick_pct=tp,
         )
 
     turnover = median_turnover_20d(daily)
@@ -97,8 +100,15 @@ def screen(
             False,
             f"median 20-day turnover ${turnover:,.0f} is below the ${floor_aud:,.0f} floor",
             "turnover",
+            turnover=turnover,
+            tick_pct=tp,
         )
-    return Screen(True, f"tradeable: ${turnover:,.0f} turnover, tick {tp:.2f}% of price")
+    return Screen(
+        True,
+        f"tradeable: ${turnover:,.0f} turnover, tick {tp:.2f}% of price",
+        turnover=turnover,
+        tick_pct=tp,
+    )
 
 
 def limits_for(cfg, pb) -> tuple[float, float]:

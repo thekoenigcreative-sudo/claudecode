@@ -46,6 +46,7 @@ from asxbot.arena.hours import announcement_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.runtime import Arena, make_bot
+from asxbot.arena.tally import session_summary_text
 from asxbot.arena.tradability import limits_for, screen
 from asxbot.io import safe_stem
 from asxbot.live.reaction import measure
@@ -446,7 +447,8 @@ def handle_announcement(
     ev.append(
         "arena_screened",
         {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline,
-         "ok": verdict.ok, "test": verdict.test, "why": verdict.why},  # fmt: skip
+         "ok": verdict.ok, "test": verdict.test, "why": verdict.why,
+         "turnover": verdict.turnover, "tick_pct": verdict.tick_pct},  # fmt: skip
     )
     if not verdict.ok:
         # Logged, never alerted: these are the quiet majority, stopped before they cost anything.
@@ -489,6 +491,29 @@ def handle_announcement(
             "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
         },  # fmt: skip
     )
+    # Does the reader's judgment ever disagree with the arithmetic that already passed it?
+    # Everything reaching here cleared the plain-code screen, so a CAN_SIZE_AND_EXIT of NO
+    # is the reader overruling the numbers - worth watching, either as judgment the screen
+    # lacks or as a gate that is simply too shy.
+    ev.append(
+        "arena_gate_compare",
+        {
+            "ticker": a.code, "ids_id": a.ids_id,
+            "screen_ok": verdict.ok, "screen_why": verdict.why,
+            "screen_turnover": verdict.turnover, "screen_tick_pct": verdict.tick_pct,
+            "reader_can_size": can_size, "reader_why": size_why,
+            "reader_trade_worthy": worthy, "agrees": can_size,
+        },  # fmt: skip
+    )
+    if not can_size:
+        log.warning(
+            "GATE DISAGREEMENT %s: the screen said %s, the reader says it cannot be sized "
+            "or exited (%s)",
+            a.code, verdict.why, size_why,
+        )  # fmt: skip
+    else:
+        log.info("gate agreement %s: %s; the reader agrees it is tradeable", a.code, verdict.why)
+
     if not (worthy and can_size):
         stopped = why if not worthy else size_why
         log.info("reader stopped %s before the decider: %s", a.code, stopped)
@@ -691,6 +716,15 @@ def watch(
         if sweep_at <= now.astimezone(SYD).time() < deadline:
             for r in sweep_before_close(arena, pb, now):
                 log.info("pre-close %s: %s", r["ticker"], r["action"])
+
+        # The close itself: one message with the day's totals. Once a day, after the
+        # pre-close sweep has had its say, so the balances in it are settled ones.
+        if alert and now.astimezone(SYD).time() >= deadline:
+            try:
+                if alert.session_summary(session_summary_text(arena, pb, now), now):
+                    log.info("end-of-session summary sent")
+            except Exception as e:  # noqa: BLE001 - a summary must never stop the watcher
+                log.exception("the end-of-session summary failed: %s", e)
 
         if once:
             return

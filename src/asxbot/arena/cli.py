@@ -394,6 +394,40 @@ def cmd_preclose(args) -> int:
     return 0
 
 
+def cmd_digest(args) -> int:
+    """Send the hourly digest, or the end-of-session summary, right now.
+
+    The watcher sends both by itself; this is for proving the delivery and for catching up
+    after a restart. `--print-only` shows the text without sending it.
+    """
+    from asxbot.arena.notify import build_notifier
+    from asxbot.arena.tally import counts_for, session_summary_text
+
+    cfg, log, arena = _arena()
+    pb = _pb(arena, args.playbook)
+    now = datetime.now(SYD)
+    if args.summary:
+        text = session_summary_text(arena, pb, now)
+        if args.print_only:
+            print(text)
+            return 0
+        n = build_notifier(cfg)
+        if args.again:
+            state = n._state()
+            state["summary_day"] = ""
+            n._write_state(state)
+        sent = n.session_summary(text, now)
+        print("session summary sent" if sent else "today's summary has already been sent")
+        return 0
+
+    print(counts_for(cfg.data_dir, now.date()).line())
+    if args.print_only:
+        return 0
+    sent = build_notifier(cfg).flush_passes(now, force=True)
+    print("digest sent" if sent else "nothing to send")
+    return 0
+
+
 def cmd_reset(args) -> int:
     """Wipe arena accounts back to their opening balance. Fake money only, never live."""
     cfg, log, arena = _arena()
@@ -531,6 +565,13 @@ def add_parsers(sub) -> None:
     pc = a.add_parser("preclose", help="settle Level 1 positions before the close")
     pc.add_argument("--playbook")
     pc.set_defaults(fn=cmd_preclose)
+
+    dg = a.add_parser("digest", help="send the hourly digest or the end-of-session summary now")
+    dg.add_argument("--playbook")
+    dg.add_argument("--summary", action="store_true", help="the 16:10 end-of-session message")
+    dg.add_argument("--print-only", action="store_true", help="show it, do not send it")
+    dg.add_argument("--again", action="store_true", help="resend today's summary")
+    dg.set_defaults(fn=cmd_digest)
 
     rs = a.add_parser("reset", help="wipe arena accounts back to their opening balance")
     rs.add_argument("--yes", action="store_true", help="required: this deletes trade records")

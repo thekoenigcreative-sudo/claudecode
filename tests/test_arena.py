@@ -322,7 +322,11 @@ def test_the_decider_is_called_only_when_both_reader_gates_are_yes(setup, monkey
     monkeypatch.setattr(W, "dossier", lambda arena, t: {"ticker": t})
     monkeypatch.setattr(W, "live_reaction", lambda *a, **k: {"available": False})
     monkeypatch.setattr(
-        W, "screen", lambda *a, **k: type("S", (), {"ok": True, "why": "", "test": ""})()
+        W,
+        "screen",
+        lambda *a, **k: type(
+            "S", (), {"ok": True, "why": "tradeable", "test": "", "turnover": 1e6, "tick_pct": 0.5}
+        )(),
     )
     fake = _FakeArena(cfg, broker, acct)
     fake.quote_provider = lambda: _StaticQuote()
@@ -692,7 +696,7 @@ def test_alert_reasons_and_headlines_are_escaped_and_sent_in_full(cfg, monkeypat
     n.passed("AAA", headline, "too small\nto matter " + "x" * 400 + " END", _AT)
     n.flush_passes(_AT + timedelta(hours=1), force=True)
     assert "&lt;report&gt;" in sent[0] and "h HEND" in sent[0]
-    assert sent[0].count("\n") == 1 and sent[0].endswith("x END</i> (12:00)")
+    assert sent[0].endswith("x END</i> (12:00)")  # the reason itself is still one line
 
 
 _AT = datetime(2026, 1, 6, 12, 0, tzinfo=SYD)
@@ -700,6 +704,7 @@ _AT = datetime(2026, 1, 6, 12, 0, tzinfo=SYD)
 
 def test_passes_are_held_back_and_sent_as_one_digest_an_hour(cfg, monkeypatch):
     n, sent = _capture(cfg, monkeypatch)
+    assert n.flush_passes(_AT) is False  # the first cycle only starts the hour's clock
     n.passed("AAA", "Quarterly report", "too small to move it", _AT)
     n.passed("BBB", "Director's interest", "administrative", _AT + timedelta(minutes=20))
     assert sent == []  # nothing instant
@@ -707,11 +712,28 @@ def test_passes_are_held_back_and_sent_as_one_digest_an_hour(cfg, monkeypatch):
     assert n.flush_passes(_AT + timedelta(minutes=59)) is False  # not an hour yet
     assert n.flush_passes(_AT + timedelta(minutes=61)) is True
     assert len(sent) == 1
-    assert "PASSED: 2 announcements" in sent[0]
+    assert "passed this hour (2)" in sent[0]
     assert "AAA" in sent[0] and "BBB" in sent[0] and "administrative" in sent[0]
+    assert "seen 0" in sent[0]  # the counts line heads every digest
 
-    # The queue empties, so the next hour starts clean.
-    assert n.flush_passes(_AT + timedelta(hours=3)) is False
+    # The queue empties and the clock restarts, so the next hour starts clean.
+    assert n.flush_passes(_AT + timedelta(minutes=70)) is False
+
+
+def test_a_quiet_hour_still_sends_a_digest(cfg, monkeypatch):
+    """Silence and a dead watcher must never look the same on a phone."""
+    n, sent = _capture(cfg, monkeypatch)
+    n.flush_passes(_AT)
+    assert n.flush_passes(_AT + timedelta(minutes=61)) is True
+    assert "nothing passed this hour" in sent[0] and "seen 0" in sent[0]
+
+
+def test_the_end_of_session_summary_is_sent_once_a_day(cfg, monkeypatch):
+    n, sent = _capture(cfg, monkeypatch)
+    assert n.session_summary("SESSION DONE", _AT) is True
+    assert n.session_summary("SESSION DONE", _AT + timedelta(minutes=5)) is False
+    assert n.session_summary("SESSION DONE", _AT + timedelta(days=1)) is True
+    assert len(sent) == 2
 
 
 def test_the_pass_queue_survives_a_restart(cfg, monkeypatch):

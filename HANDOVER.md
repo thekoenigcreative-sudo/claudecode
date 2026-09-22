@@ -159,9 +159,19 @@ alerted. The yardstick bot is deliberately untouched, so the comparison stays ho
 Paired and working, both ways. Besides the evening report, the arena now sends **instant
 alerts** (`arena/notify.py`): each trade decided (agent or bot) and each refused by the limits,
 each fill with its price and stop, every stop that fires and every close with its result, and
-passes are NOT instant: they are queued in `data/arena/pass_digest.json` and sent as one
-digest an hour (`arena.alerts.pass_digest_minutes`), with the last part-hour flushed when
-the watcher stops. Off switch: `arena.alerts.telegram: false`.
+passes are NOT instant. The digest goes out **every hour the watcher is up**, quiet hour or
+not (a silent hour and a dead watcher must not look alike), headed by a counts line: seen,
+screened by test, read, passed, traded. At **16:10** one end-of-session message gives the
+day's totals, everything that reached the decider with its reason, and both balances. State
+lives in `data/arena/pass_digest.json`; counts are read back from the event log
+(`arena/tally.py`) rather than kept twice. Send either by hand with `asxbot arena digest`
+(`--summary`, `--print-only`, `--again`). Off switch: `arena.alerts.telegram: false`.
+
+Every announcement that clears the plain-code screen and reaches the reader now also writes
+an `arena_gate_compare` record: what the arithmetic said (turnover, tick) against what the
+reader's `CAN_SIZE_AND_EXIT` said. Agreement logs at INFO, a disagreement at WARNING, and
+the count appears in the 16:10 message - so whether that gate ever overrules the numbers is
+a question the log answers rather than a hunch.
 Delivery is best effort and never blocks an order, fill or stop. Outbound reports go straight through the Bot API (plain
 code, so they still arrive if a model call fails); inbound messages to
 `@rick_asx_trader_bot` route to `trader-decider`.
