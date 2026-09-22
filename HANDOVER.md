@@ -11,7 +11,7 @@ machinery every tactic reuses — and **tactic 1 (ASX announcements)**, proven e
 Broker mode is `sim`. Nothing in this repo can place a real order. The arena refuses to
 run at all unless the broker mode is `sim`.
 
-**88 tests passing, ruff clean.**
+**105 tests passing, ruff clean.**
 
 ## This PC (RK-MINI)
 
@@ -90,8 +90,17 @@ counterparty. **Both agents caught the prompt injection planted in the fake anno
 named it, and ignored it. The decider passed, correctly: a contract worth 0.4% of revenue
 cannot explain a 9% move.
 
-The test trades were then cleared with `asxbot arena reset --yes`, so both accounts start
-the warm-up at a clean $10,000.
+A second run proved the agent's TRADE path on a real small cap (DUG Technology, $232m):
+a fake but genuinely material contract, released at 12:55 with the decision at 13:00, so
+the delayed quote still showed the pre-announcement price. The yardstick bot declined -
+no price reaction, so the plain rule could not act - while the agent read the document,
+sized to 2% risk on 57% confidence, and bought. The fill landed at the 13:04 minute bar,
+four minutes later, because DUG did not trade in between: the walk-forward rule on a
+genuinely illiquid stock. The stop was armed at 1.58 and correctly did not fire (the low
+after entry was 1.65). The pre-close sweep then closed it.
+
+Both runs were then cleared with `asxbot arena reset --yes`, so both accounts start the
+warm-up at a clean $10,000.
 
 ## What is scheduled
 
@@ -134,9 +143,9 @@ Sending is unaffected — only `getUpdates` is exclusive, not `sendMessage`.
 
 1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed
    `reports/phase1.md`. Strategy A still rests on few codes.
-4. Then the small-universe archive (~12–15 h), and rerun.
-5. Strategies C–G (STRATEGIES.md). F and G can run on price data alone.
-6. Norgate, then IBKR paper — only then is any result a go/no-go.
+2. Then the small-universe archive (~12–15 h), and rerun.
+3. Strategies C–G (STRATEGIES.md). F and G can run on price data alone.
+4. Norgate, then IBKR paper — only then is any result a go/no-go.
 
 ## Deliberate deviation from ARENA.md, flagged for Rick
 
