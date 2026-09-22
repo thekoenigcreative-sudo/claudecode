@@ -317,8 +317,22 @@ Then end your reply with a single JSON block and nothing after it:
   "hold": "intraday" | "overnight",
   "why": "<two or three sentences: the thesis, and the strongest argument against it>"}}
 
-If you are passing, {{"action": "pass", "why": "..."}} is enough. Passing is a real answer
-and most announcements deserve it. Do not trade to look busy.
+If you are passing, {{"action": "pass", "why": "..."}} is enough.
+
+THE BAR TO TRADE AT LEVEL {lvl.number} ({lvl.name}):
+  The bar is POSITIVE EXPECTED VALUE AFTER COSTS, not high conviction. You do not need to
+  be sure; you need the edge, after brokerage and slippage, to be on your side.
+  - Size by confidence. Above about 70% confidence, use most of the
+    {lvl.risk_per_trade_pct}% risk budget. Below that, scale down - but a 55% call with a
+    real edge is still a trade, taken small.
+  - Costs are the hurdle. Brokerage is charged both ways and slippage scales with how
+    illiquid the stock is. A 2% thesis on a stock that costs 1.5% to get in and out of is
+    not a trade; an 8% thesis on a liquid name is.
+  - Still never trade just to look busy. An announcement you cannot size, cannot explain,
+    or cannot exit is a pass however quiet the day has been.
+  If daily profitability does not hold up, the ladder drops this playbook to Level 2 and
+  the bar rises with it. Do not privately apply a higher bar than this level asks for:
+  that would make the ladder's test meaningless.
 """
 
 
