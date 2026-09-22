@@ -79,6 +79,7 @@ class ArenaBroker:
         reason: str = "",
         model: str = "",
         placed_by: str = "",
+        hold: str = "intraday",
     ) -> ArenaOrder:
         """Record an order. It is NOT filled here - fills happen in resolve_pending()."""
         oid = f"ARN-{acct.next_id:06d}"
@@ -96,6 +97,7 @@ class ArenaBroker:
             reason=reason,
             model=model,
             placed_by=placed_by,
+            hold=hold,
             message="recorded; waiting for the true minute price at the decision time",
         )
         acct.orders[oid] = o
@@ -190,7 +192,7 @@ class ArenaBroker:
                     ticker=o.ticker, qty=qty, avg_cost=price,
                     opened_at=minute.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
                     thesis=o.reason, opened_by=o.placed_by, model=o.model,
-                    last_borrow_day=minute.date().isoformat(),
+                    last_borrow_day=minute.date().isoformat(), hold=o.hold,
                 )  # fmt: skip
             else:
                 total = pos.qty + qty
@@ -205,7 +207,7 @@ class ArenaBroker:
                     ticker=o.ticker, qty=-qty, avg_cost=price,
                     opened_at=minute.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
                     thesis=o.reason, opened_by=o.placed_by, model=o.model,
-                    last_borrow_day=minute.date().isoformat(),
+                    last_borrow_day=minute.date().isoformat(), hold=o.hold,
                 )  # fmt: skip
             else:
                 total = pos.qty - qty  # more negative

@@ -342,6 +342,20 @@ def cmd_fake(args) -> int:
     return 0
 
 
+def cmd_preclose(args) -> int:
+    """Ask the decider about each open position and close it unless it writes a reason."""
+    from asxbot.arena.watch import sweep_before_close
+
+    cfg, log, arena = _arena()
+    pb = _pb(arena, args.playbook)
+    results = sweep_before_close(arena, pb)
+    if not results:
+        print("nothing to settle (no open agent positions, or this level is not intraday)")
+    for r in results:
+        print(f"{r['ticker']}: {r['action']} - {r['reason']}")
+    return 0
+
+
 def cmd_reset(args) -> int:
     """Wipe arena accounts back to their opening balance. Fake money only, never live."""
     cfg, log, arena = _arena()
@@ -464,6 +478,10 @@ def add_parsers(sub) -> None:
     fk.add_argument("--no-bot", action="store_true")
     fk.add_argument("--no-agent", action="store_true")
     fk.set_defaults(fn=cmd_fake)
+
+    pc = a.add_parser("preclose", help="settle Level 1 positions before the close")
+    pc.add_argument("--playbook")
+    pc.set_defaults(fn=cmd_preclose)
 
     rs = a.add_parser("reset", help="wipe arena accounts back to their opening balance")
     rs.add_argument("--yes", action="store_true", help="required: this deletes trade records")

@@ -143,6 +143,13 @@ arena:
     stop_gap_rule: worse_of  # a stop fills at the stop price, or at the bar open if the
                              # bar opened through it (a gap) - whichever is worse for us
 
+  # Level 1 is an intraday level: positions are closed before the 16:10 close unless the
+  # decider writes a reason to hold. The sweep asks it about each open position, so the
+  # reason is written at the close - not assumed from what it intended hours earlier.
+  preclose:
+    sweep_time: "15:50"      # Sydney; must leave time for the fill before 16:10
+    close_deadline: "16:10"  # the ASX closing auction
+
   costs:
     # Slippage reuses costs.slippage above (base 0.10% + 0.5 x value/ADV, capped 1.0%).
     # That base ALREADY stands in for the bid-ask spread, so no separate spread is added;

@@ -52,6 +52,7 @@ def arena_place_order(
     reason: str = "",
     model: str = "",
     placed_by: str = "agent",
+    hold: str = "intraday",
     universe: set[str] | None = None,
     short_universe: set[str] | None = None,
     now: datetime | None = None,
@@ -214,6 +215,7 @@ def arena_place_order(
         reason=reason,
         model=model,
         placed_by=placed_by,
+        hold=hold,
     )
     events.append("arena_orders", {**req, "outcome": "accepted", "order_id": o.order_id})
     return o

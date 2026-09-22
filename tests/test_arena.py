@@ -322,3 +322,113 @@ def test_a_stop_on_the_wrong_side_of_the_fill_is_re_derived(setup):
     assert pos.stop < filled.avg_price, "the stop must end up below a long's entry"
     # Same 8.33% distance, now measured from what was actually paid.
     assert pos.stop == pytest.approx(filled.avg_price * (1 - 0.10 / 1.20), rel=1e-3)
+
+
+# -- the pre-close sweep (Level 1 is intraday) -----------------------------
+class _FakeArena:
+    """Just enough of Arena for the sweep: one account, prices, no network."""
+
+    def __init__(self, cfg, broker, acct):
+        self.cfg, self.broker, self.store = cfg, broker, broker.store
+        self._acct = acct
+        self.universe, self.short_universe = {"AAA", "BBB"}, {"BBB"}
+
+    def account(self, pb, kind):
+        return self._acct
+
+    def daily_lookup(self):
+        return lambda t: None
+
+
+def _hold_position(acct, qty=100):
+    from asxbot.arena.accounts import Position
+
+    acct.positions["AAA"] = Position(
+        ticker="AAA", qty=qty, avg_cost=1.00, opened_at="2026-01-06T10:00",
+        stop=0.92, thesis="test", opened_by="agent",
+    )  # fmt: skip
+
+
+def test_preclose_closes_the_position_when_no_reason_is_given(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _hold_position(acct)
+    fake = _FakeArena(cfg, broker, acct)
+
+    reply = type("R", (), {"text": '{"action": "close", "reason": "move is done"}', "model": "m"})
+    monkeypatch.setattr(W, "call_agent", lambda *a, **k: reply())
+    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    assert out[0]["action"] == "close"
+    assert any(o.side == "sell" for o in acct.orders.values())
+
+
+def test_preclose_keeps_it_only_when_a_reason_is_written(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _hold_position(acct)
+    fake = _FakeArena(cfg, broker, acct)
+
+    reply = type(
+        "R", (), {"text": '{"action": "hold", "reason": "results due before the open"}',
+                  "model": "m"}  # fmt: skip
+    )
+    monkeypatch.setattr(W, "call_agent", lambda *a, **k: reply())
+    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    assert out[0]["action"] == "hold"
+    assert acct.positions["AAA"].hold == "overnight"
+    assert "results due" in acct.positions["AAA"].hold_reason
+    assert not any(o.side == "sell" for o in acct.orders.values())
+
+
+def test_preclose_holds_need_an_actual_reason_not_just_the_word_hold(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _hold_position(acct)
+    fake = _FakeArena(cfg, broker, acct)
+
+    reply = type("R", (), {"text": '{"action": "hold", "reason": "   "}', "model": "m"})
+    monkeypatch.setattr(W, "call_agent", lambda *a, **k: reply())
+    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    assert out[0]["action"] == "close", "a hold with no written reason must not hold"
+
+
+def test_preclose_closes_when_the_agent_cannot_be_reached(setup, monkeypatch):
+    """The safe failure is to follow the level, not to leave a position open overnight."""
+    from asxbot.arena import watch as W
+    from asxbot.arena.agents import AgentCallFailed
+
+    cfg, broker, pb, acct = setup
+    _hold_position(acct)
+    fake = _FakeArena(cfg, broker, acct)
+
+    def boom(*a, **k):
+        raise AgentCallFailed("the agent is down")
+
+    monkeypatch.setattr(W, "call_agent", boom)
+    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    assert out[0]["action"] == "close"
+    assert any(o.side == "sell" for o in acct.orders.values())
+
+
+def test_preclose_asks_once_a_day(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _hold_position(acct)
+    fake = _FakeArena(cfg, broker, acct)
+    calls = []
+    reply = type("R", (), {"text": '{"action": "hold", "reason": "catalyst tomorrow"}',
+                           "model": "m"})  # fmt: skip
+
+    def counted(*a, **k):
+        calls.append(1)
+        return reply()
+
+    monkeypatch.setattr(W, "call_agent", counted)
+    now = datetime(2026, 1, 6, 15, 50, tzinfo=SYD)
+    W.sweep_before_close(fake, pb, now=now)
+    W.sweep_before_close(fake, pb, now=now)  # the loop runs every minute; don't re-ask
+    assert len(calls) == 1

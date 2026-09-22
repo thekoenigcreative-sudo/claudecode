@@ -37,6 +37,9 @@ class Position:
     model: str = ""  # the model that made the call, for the audit trail
     borrow_accrued: float = 0.0  # short borrow charged so far
     last_borrow_day: str = ""
+    hold: str = "intraday"  # intraday | overnight
+    hold_reason: str = ""  # required, in writing, to keep a Level 1 position overnight
+    hold_asked_on: str = ""  # the day the pre-close sweep last asked about this position
 
     @property
     def is_short(self) -> bool:
@@ -70,6 +73,7 @@ class ArenaOrder:
     placed_by: str = ""  # agent | bot
     message: str = ""
     realised: float = 0.0  # set on a closing fill, so win rate is computable per trade
+    hold: str = "intraday"  # the holding period the decision intended
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import date, datetime
+from datetime import time as time_cls
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -495,6 +496,7 @@ def handle_announcement(
             limit=limit, stop=stop,
             target=float(d["target"]) if d.get("target") not in (None, "") else None,
             reason=reason, model=decider.model, placed_by="agent",
+            hold="overnight" if str(d.get("hold", "")).lower() == "overnight" else "intraday",
             universe=arena.universe, short_universe=arena.short_universe, now=now,
         )  # fmt: skip
         out["order"] = {
@@ -599,6 +601,13 @@ def watch(
             acct = arena.account(pb, kind)
             arena.broker.apply_stops(acct, now)
             arena.broker.resolve_pending(acct, now)
+
+        # Before the close, settle the day's Level 1 positions.
+        sweep_at, deadline = preclose_window(cfg)
+        if sweep_at <= now.astimezone(SYD).time() < deadline:
+            for r in sweep_before_close(arena, pb, now):
+                log.info("pre-close %s: %s", r["ticker"], r["action"])
+
         if once:
             return
         time.sleep(interval_s)
@@ -619,3 +628,142 @@ def _save_handled(data_dir: Path, day: date, handled: set[str]) -> None:
     from asxbot.io import write_text_atomic
 
     write_text_atomic(json.dumps(sorted(handled)), _handled_path(data_dir, day))
+
+
+# --------------------------------------------------------------------------
+# the pre-close sweep (Level 1 is intraday)
+# --------------------------------------------------------------------------
+PRECLOSE_PROMPT = """You are trader-decider. The ASX close is coming and you hold this
+position. Level {level} ({level_name}) is an INTRADAY level: the default is to close before
+the 16:10 auction, and a position is only kept overnight if you write a reason for it.
+
+POSITION
+  {ticker} {qty:+d} at {avg_cost:.4f}, opened {opened_at}
+  current price {price:.4f}   open P&L {open_pnl:+,.2f} ({open_pnl_pct:+.2f}%)
+  stop {stop}   your thesis when you opened it: {thesis}
+
+TODAY
+  the stock's move today: {move_pct:+.2f}%
+  your account is {day_pct:+.2f}% today
+
+Decide. Closing is the default and needs no justification. To hold overnight you must give
+a specific reason - a catalyst you are waiting for, a follow-up announcement expected, a
+move still clearly in progress. "It might keep going" is not a reason; neither is avoiding
+a loss you would rather not book.
+
+End your reply with a single JSON block and nothing after it:
+
+{{"action": "close" | "hold", "reason": "<one or two sentences>"}}
+
+If you hold, the reason is recorded against the position and appears in tonight's report.
+"""
+
+
+def preclose_window(cfg) -> tuple[time_cls, time_cls]:
+    pc = cfg.get("arena.preclose") or {}
+    return (
+        time_cls.fromisoformat(str(pc.get("sweep_time", "15:50"))),
+        time_cls.fromisoformat(str(pc.get("close_deadline", "16:10"))),
+    )
+
+
+def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) -> list[dict]:
+    """Close Level 1 positions before the close unless the decider writes a reason to hold.
+
+    The decider is asked about each position AT the close, so the reason to hold is written
+    then rather than inferred from what it intended hours earlier. If the agent cannot be
+    reached, or its answer cannot be read, the position is CLOSED - the level says intraday,
+    and the safe failure is to follow the level.
+    """
+    now = now or datetime.now(SYD)
+    if pb.level.holding != "intraday":
+        return []
+    cfg = arena.cfg
+    ev = EventLog(cfg.data_dir)
+    acct = arena.account(pb, "agent")
+    today = now.date().isoformat()
+    out: list[dict] = []
+
+    for ticker, pos in list(acct.positions.items()):
+        if pos.hold_asked_on == today:
+            continue  # already settled today, either way
+        price = arena.broker.minutes.last_price(ticker) or pos.avg_cost
+        open_pnl = (price - pos.avg_cost) * pos.qty
+        daily = arena.daily_lookup()(ticker)
+        move = 0.0
+        if daily is not None and len(daily):
+            prev = float(daily["close"].iloc[-1])
+            move = (price / prev - 1) * 100 if prev else 0.0
+        prompt = PRECLOSE_PROMPT.format(
+            level=pb.level.number, level_name=pb.level.name, ticker=ticker, qty=pos.qty,
+            avg_cost=pos.avg_cost, opened_at=pos.opened_at, price=price, open_pnl=open_pnl,
+            open_pnl_pct=(price / pos.avg_cost - 1) * 100 * (1 if pos.qty > 0 else -1),
+            stop=pos.stop, thesis=pos.thesis or "(none recorded)", move_pct=move,
+            day_pct=arena.broker.day_loss_pct(acct, now),
+        )  # fmt: skip
+
+        action, reason, model = "close", "the agent could not be reached; the level is intraday", ""
+        try:
+            reply = call_agent(
+                DECIDER, prompt, expect_model=DECIDER_MODEL, data_dir=cfg.data_dir,
+                purpose=f"pre-close {ticker}",
+            )  # fmt: skip
+            model = reply.model
+            d = parse_decision_action(reply.text)
+            if d.get("action") == "hold" and str(d.get("reason", "")).strip():
+                action, reason = "hold", str(d["reason"]).strip()
+            else:
+                action = "close"
+                reason = str(d.get("reason", "")).strip() or "no reason to hold was given"
+        except AgentCallFailed as e:
+            log.error("pre-close call failed for %s: %s", ticker, e)
+            reason = f"the agent could not be reached ({e}); the level is intraday"
+
+        pos.hold_asked_on = today
+        ev.append(
+            "arena_decisions",
+            {"stage": "preclose", "ticker": ticker, "action": action, "reason": reason,
+             "model": model, "level": pb.level.number},  # fmt: skip
+        )
+
+        if action == "hold":
+            pos.hold, pos.hold_reason = "overnight", reason
+            arena.store.save(acct)
+            log.info("pre-close: holding %s overnight - %s", ticker, reason)
+            out.append({"ticker": ticker, "action": "hold", "reason": reason})
+            continue
+
+        pos.hold, pos.hold_reason = "intraday", ""
+        side = "sell" if pos.qty > 0 else "cover"
+        limit = round(price * (0.97 if side == "sell" else 1.03), 3)
+        try:
+            o = arena_place_order(
+                cfg, arena.broker, acct, pb, ticker=ticker, side=side, qty=abs(pos.qty),
+                limit=limit, reason=f"pre-close (Level {pb.level.number} is intraday): {reason}",
+                model=model or "code (pre-close sweep)", placed_by="agent",
+                universe=arena.universe, short_universe=arena.short_universe, now=now,
+            )  # fmt: skip
+            log.info("pre-close: closing %s with %s - %s", ticker, o.order_id, reason)
+            out.append(
+                {"ticker": ticker, "action": "close", "order_id": o.order_id, "reason": reason}
+            )
+        except ArenaOrderRefused as e:
+            log.error("pre-close close of %s was refused: %s", ticker, e)
+            out.append({"ticker": ticker, "action": "close_refused", "reason": str(e)})
+    return out
+
+
+def parse_decision_action(text: str) -> dict:
+    """Like parse_decision, but for the close/hold block. Unreadable means close."""
+    import json as _json
+
+    start = text.rfind("{")
+    while start != -1:
+        try:
+            d = _json.loads(text[start:].strip().rstrip("`").strip())
+            if isinstance(d, dict) and "action" in d:
+                return d
+        except _json.JSONDecodeError:
+            pass
+        start = text.rfind("{", 0, start)
+    return {"action": "close", "reason": "no readable block; the level is intraday"}
