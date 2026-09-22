@@ -36,10 +36,14 @@ def _pdf_url_from_terms(body: bytes) -> str | None:
     """The real document link out of ASX's terms-of-use interstitial.
 
     The page is a form with the announcement's true URL in a hidden `pdfURL` field, which
-    is what the "Agree and proceed" button submits. Following it is the same act as a
-    person clicking that button: ASX's general conditions allow this for private and
-    personal use, which is what this account is. It is not a bot challenge - a real
-    refusal still raises AccessRefused in _request and stops the collector.
+    is what the "Agree and proceed" button submits. Following it does by code what a person
+    does by clicking. It is not a bot challenge: a real refusal (401/403/429 or a challenge
+    page) still raises AccessRefused and stops the collector.
+
+    What that page asks for is a use condition, not a technical one: announcements are free
+    "for investors' private and personal use", and commercial or professional use needs
+    ASX's express written authority. Whether this system stays on the private-and-personal
+    side is Rick's call, not the code's - see HANDOVER.md, "The terms gate".
     """
     try:
         text = body[:20000].decode("utf-8", "replace")

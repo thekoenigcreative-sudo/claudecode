@@ -138,6 +138,29 @@ it unless a reason to hold is written.
 that exists only inside his session, so signing out removes the repo from the machine's
 view entirely. Locking the screen is fine. Sleep and hibernate are already disabled.
 
+## The terms gate (23 Sep — needs Rick's decision, not the code's)
+
+asx.com.au does not serve an announcement PDF at its link. It serves an "Access to this
+site" page whose hidden `pdfURL` field holds the real document on announcements.asx.com.au,
+behind an "Agree and proceed" button. The collector now follows that field, which does by
+code what a person does by clicking.
+
+What the page asks for is a **use** condition, not a technical one. In its own words:
+announcements are free "for investors' private and personal use"; a "distinction is drawn
+however where use is for a 'commercial' as opposed to 'private or personal' purpose", and
+commercial use needs "the express written authority of ASX". Its examples of professional
+or commercial use include accessing the information "in connection with any trade or
+business", aggregating and redistributing it, and access by exchange participants or people
+employed by a bank, fund or asset manager in connection with that employment.
+
+Fake money in a personal account reads as private and personal use. What would change that:
+trading anyone else's money, using it in connection with a business, redistributing the
+announcements or anything derived from them, or selling the output. Note the page's own
+link to `asx.com.au/legal/general_conditions.htm` no longer resolves to a conditions page —
+it redirects to the ASX home page — so the interstitial text above is the operative wording
+available. If this ever stops being personal, the honest route is to email info@asx.com.au
+for written authority rather than to keep clicking through.
+
 ## Announcement archive
 
 Restarted here at 20:11 and running in the background (`--universe asx300`). Progress goes
