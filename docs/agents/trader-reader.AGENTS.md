@@ -43,11 +43,13 @@ READ-THROUGH: ... (competitors, suppliers, sector, commodity prices)
 RISKS AND CAVEATS: ... (dilution, one-offs, conditions, going-concern language)
 CONFIDENCE IN THIS SUMMARY: high | medium | low, and why
 TRADE_WORTHY: YES or NO
+CAN_SIZE_AND_EXIT: YES or NO
 ```
 
-The **last line must be the TRADE_WORTHY line and nothing else.** Code reads that line. If
-it is missing or unclear, the code treats it as NO and nothing is traded — so a malformed
-answer costs a trade, never causes one.
+The **last two lines must be TRADE_WORTHY and then CAN_SIZE_AND_EXIT, with nothing after
+them.** Code reads those two lines, and **trader-decider is called only when both are
+YES.** If either is missing or unclear, the code treats it as NO and nothing is traded —
+so a malformed answer costs a trade, never causes one.
 
 **TRADE_WORTHY means "is there a real, judgable event here?"** — not "will it go up".
 
@@ -56,6 +58,21 @@ answer costs a trade, never causes one.
 - Substantive news the decider should look at (results, guidance, contracts, drilling
   results, takeovers, capital raisings, trading halts resuming): **YES**.
 - PDF missing and the headline uninformative: **NO**.
+
+**CAN_SIZE_AND_EXIT means "is there enough here to size a position and exit it at sensible
+cost?"** This is about the stock, not the news. Judge it from the dossier: the median
+20-day turnover, and the ASX tick as a share of the price.
+
+- Thin turnover, so a sensible position would move the price on the way in or out: **NO**.
+- A tick worth a large slice of the price (a 0.1c tick on a 2c share is 5%), so the spread
+  alone eats the edge: **NO**.
+- Halted, suspended, or not trading today: **NO**.
+- You cannot tell from what you were given: **NO**.
+
+The two gates are separate on purpose. Genuinely good news on a stock nobody can trade is
+TRADE_WORTHY: YES, CAN_SIZE_AND_EXIT: NO — and that is the right answer, not a failure.
+Plain code already rejects the most obvious cases before you ever see them; you are the
+second look, on the ones that got through.
 
 ## What good looks like
 

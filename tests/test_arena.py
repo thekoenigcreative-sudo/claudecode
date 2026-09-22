@@ -280,6 +280,60 @@ def test_reader_verdict_defaults_to_no(text, expected):
     assert parse_verdict(text)[0] is expected
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("TRADE_WORTHY: YES\nCAN_SIZE_AND_EXIT: YES", True),
+        ("TRADE_WORTHY: YES\nCAN_SIZE_AND_EXIT: NO", False),
+        ("**CAN_SIZE_AND_EXIT:** YES", True),
+        ("TRADE_WORTHY: YES", False),  # the second gate missing is a no, not a yes
+        ("CAN_SIZE_AND_EXIT: too thin to say", False),
+    ],
+)
+def test_the_reader_second_gate_defaults_to_no(text, expected):
+    from asxbot.arena.agents import parse_can_size
+
+    assert parse_can_size(text)[0] is expected
+
+
+class _StaticQuote:
+    """Just enough of a quote provider for the gate test; the screen itself is stubbed."""
+
+    def quote(self, ticker):
+        return _quote()
+
+    def index_quote(self):
+        return _quote()
+
+
+def test_the_decider_is_called_only_when_both_reader_gates_are_yes(setup, monkeypatch):
+    """Real news on an untradeable stock must stop at the reader, not cost an Opus call."""
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    called = []
+
+    def fake_call(agent, message, **kw):
+        called.append(agent)
+        text = "WHAT IT SAYS: big contract\nTRADE_WORTHY: YES\nCAN_SIZE_AND_EXIT: NO"
+        return type("R", (), {"text": text, "model": "claude-sonnet-5", "model_matches": True})()
+
+    monkeypatch.setattr(W, "call_agent", fake_call)
+    monkeypatch.setattr(W, "dossier", lambda arena, t: {"ticker": t})
+    monkeypatch.setattr(W, "live_reaction", lambda *a, **k: {"available": False})
+    monkeypatch.setattr(
+        W, "screen", lambda *a, **k: type("S", (), {"ok": True, "why": "", "test": ""})()
+    )
+    fake = _FakeArena(cfg, broker, acct)
+    fake.quote_provider = lambda: _StaticQuote()
+    out = W.handle_announcement(fake, pb, _ann(), now=_AT, run_bot=False, ignore_warmup=True)
+
+    assert called == [W.READER]  # the decider was never called
+    assert out["reader"]["trade_worthy"] is True
+    assert out["reader"]["can_size_and_exit"] is False
+    assert "decider" not in out
+
+
 def test_an_unparseable_decision_is_a_pass():
     assert parse_decision("I think we should buy a lot of it")["action"] == "pass"
     d = parse_decision('reasoning...\n{"action": "trade", "side": "buy", "qty": 10}')

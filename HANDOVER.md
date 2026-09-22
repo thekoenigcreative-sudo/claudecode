@@ -64,11 +64,28 @@ percentage distance from the price actually paid, and the adjustment is logged.
 Three agents now. **`main` (JARVIS, the editorial agent) still works exactly as before** —
 still the default, still Sonnet 5, still on its own bot.
 
-| Agent | Model | Workspace | Telegram |
-|---|---|---|---|
-| `main` (JARVIS) | `anthropic/claude-sonnet-5` | `~\.openclaw\workspace` | `@JARVIS_Z2G9_bot` (`default`) |
-| `trader-reader` | `anthropic/claude-sonnet-5` | `~\.openclaw\workspace-trader-reader` | none |
-| `trader-decider` | `anthropic/claude-opus-5` | `~\.openclaw\workspace-trader-decider` | `@rick_asx_trader_bot` (`trader`) |
+| Agent | Model | Effort | Workspace | Telegram |
+|---|---|---|---|---|
+| `main` (JARVIS) | `anthropic/claude-sonnet-5` | (default) | `~\.openclaw\workspace` | `@JARVIS_Z2G9_bot` (`default`) |
+| `trader-reader` | `anthropic/claude-sonnet-5` | `low` | `~\.openclaw\workspace-trader-reader` | none |
+| `trader-decider` | `anthropic/claude-opus-5` | `high` | `~\.openclaw\workspace-trader-decider` | `@rick_asx_trader_bot` (`trader`) |
+
+Effort is set per agent, 23 Sep, and needed no gateway restart:
+
+```
+openclaw config set agents.list.1.thinkingDefault low     # trader-reader
+openclaw config set agents.list.2.thinkingDefault high    # trader-decider
+```
+
+Confirmed in effect on a live call each: `meta.requestShaping.thinking` came back `low`
+for the reader and `high` for the decider. Every arena call now records that value in
+`events/arena_agent_calls.jsonl`, so a level that stops applying is visible rather than
+assumed. Config backup: `openclaw.json.bak-20260923-pre-thinking`.
+
+**The reader now has two gates.** Its contract ends with `TRADE_WORTHY` and then
+`CAN_SIZE_AND_EXIT` ("enough here to size a position and exit it at sensible cost?"), and
+code calls the decider only when both are YES. Either line missing or unclear counts as
+NO. This is the second look after the plain-code screen, on what got through it.
 
 `channels.telegram` was migrated from a single `botToken` to a two-account form
 (`accounts.default` and `accounts.trader`), with explicit bindings so each bot routes to

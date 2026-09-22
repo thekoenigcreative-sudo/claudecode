@@ -9,6 +9,11 @@ and the model recorded here is the one OpenClaw reports it actually ran
 (`meta.executionTrace.winnerModel`) - not the one we asked for, and never the agent's own
 claim about itself.
 
+The effort level is set the same way, on the agent (`thinkingDefault`: reader low, decider
+high, set 2026-09-23). Every call records what OpenClaw says it shaped the request with
+(`meta.requestShaping.thinking`), so a level that quietly stops applying is visible in the
+event log rather than being assumed.
+
 Code hands the reader's summary to the decider. The agents never call each other.
 """
 
@@ -40,6 +45,7 @@ class AgentReply:
     text: str
     model: str  # what OpenClaw reports it actually ran
     requested_model: str
+    thinking: str  # the effort level OpenClaw reports it shaped the request with
     run_id: str
     duration_ms: int
     ok: bool
@@ -115,6 +121,7 @@ def call_agent(
         text=text.strip(),
         model=str(trace.get("winnerModel") or (meta.get("agentMeta") or {}).get("model") or ""),
         requested_model=expect_model,
+        thinking=str((meta.get("requestShaping") or {}).get("thinking") or ""),
         run_id=str(body.get("runId") or ""),
         duration_ms=int(meta.get("durationMs") or 0),
         ok=str(body.get("status", "")) == "ok",
@@ -131,15 +138,27 @@ def call_agent(
             {
                 "agent": agent, "purpose": purpose, "model_ran": reply.model,
                 "model_expected": expect_model, "model_matches": reply.model_matches,
+                "thinking": reply.thinking,
                 "run_id": reply.run_id, "duration_ms": reply.duration_ms, "ok": reply.ok,
                 "chars_in": len(message), "chars_out": len(reply.text),
             },  # fmt: skip
         )
     log.info(
-        "%s replied in %.1fs on %s (%d chars)",
-        agent, reply.duration_ms / 1000.0, reply.model or "unknown model", len(reply.text),
+        "%s replied in %.1fs on %s at %s effort (%d chars)",
+        agent, reply.duration_ms / 1000.0, reply.model or "unknown model",
+        reply.thinking or "unreported", len(reply.text),
     )  # fmt: skip
     return reply
+
+
+def _yes_no(text: str, key: str) -> str | None:
+    """The value of a KEY: YES/NO line, read from the end. None when there is no such line."""
+    for line in reversed(text.splitlines()):
+        s = line.strip().upper().replace("*", "").replace("#", "").strip()
+        if s.startswith(key):
+            value = s.split(":", 1)[-1].strip() if ":" in s else s.replace(key, "")
+            return value.strip()
+    return None
 
 
 def parse_verdict(text: str) -> tuple[bool, str]:
@@ -147,18 +166,27 @@ def parse_verdict(text: str) -> tuple[bool, str]:
 
     A missing or malformed verdict must never become a trade: the safe failure is to pass.
     """
-    verdict = None
-    for line in reversed(text.splitlines()):
-        s = line.strip().upper().replace("*", "").replace("#", "").strip()
-        if s.startswith("TRADE_WORTHY"):
-            value = s.split(":", 1)[-1].strip() if ":" in s else s.replace("TRADE_WORTHY", "")
-            verdict = value.strip()
-            break
+    verdict = _yes_no(text, "TRADE_WORTHY")
     if verdict is None:
         return False, "no TRADE_WORTHY line in the reader's summary; treated as no"
     if verdict.startswith("YES"):
         return True, "reader says trade-worthy"
     return False, f"reader says {verdict.lower() or 'no'}"
+
+
+def parse_can_size(text: str) -> tuple[bool, str]:
+    """The reader's second gate: can a position be sized here and exited at sensible cost?
+
+    Same safe failure as TRADE_WORTHY - missing or unclear means no. The two gates are
+    separate because they fail for different reasons: real news on a stock nobody can
+    trade is still not a trade, and the decider should not be paid to find that out.
+    """
+    verdict = _yes_no(text, "CAN_SIZE_AND_EXIT")
+    if verdict is None:
+        return False, "no CAN_SIZE_AND_EXIT line in the reader's summary; treated as no"
+    if verdict.startswith("YES"):
+        return True, "reader says it can be sized and exited"
+    return False, f"reader says it cannot be sized or exited: {verdict.lower() or 'no'}"
 
 
 def parse_decision(text: str) -> dict:

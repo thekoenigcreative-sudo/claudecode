@@ -38,6 +38,7 @@ from asxbot.arena.agents import (
     READER,
     AgentCallFailed,
     call_agent,
+    parse_can_size,
     parse_decision,
     parse_verdict,
 )
@@ -231,11 +232,20 @@ RISKS AND CAVEATS: anything that would make this less good than it looks, includ
   dilution, one-offs, conditions precedent, and going-concern language.
 CONFIDENCE IN THIS SUMMARY: high | medium | low, and why.
 TRADE_WORTHY: YES or NO
+CAN_SIZE_AND_EXIT: YES or NO
 
 TRADE_WORTHY means "is there a real, judgable event here that trader-decider should look
 at", not "will it go up". Routine administrative filings are NO. If the PDF was missing
 and the headline is uninformative, that is NO.
-The last line of your reply must be the TRADE_WORTHY line and nothing else.
+
+CAN_SIZE_AND_EXIT means "is there enough here to size a position and exit it at sensible
+cost". Judge it from the dossier's turnover and from the tick as a share of the price, not
+from how good the news is: a real event on a stock that cannot be entered and left without
+giving back the edge is NO. If you cannot tell, that is NO.
+
+trader-decider is only asked about this announcement when BOTH lines are YES.
+The last two lines of your reply must be the TRADE_WORTHY line and then the
+CAN_SIZE_AND_EXIT line, with nothing after them.
 """
 
 
@@ -462,21 +472,26 @@ def handle_announcement(
         ev.append("arena_decisions", {"ticker": a.code, "outcome": "reader_failed", "why": str(e)})
         return out
 
+    # Two gates, both the reader's, and the decider is called only when both are YES:
+    # is there a real event here, and can a position be sized and exited at sensible cost?
     worthy, why = parse_verdict(reader.text)
+    can_size, size_why = parse_can_size(reader.text)
     out["reader"] = {
         "model": reader.model, "model_matches": reader.model_matches,
-        "trade_worthy": worthy, "why": why, "summary": reader.text,
+        "trade_worthy": worthy, "why": why,
+        "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
     }  # fmt: skip
     ev.append(
         "arena_decisions",
         {
             "stage": "reader", "ticker": a.code, "ids_id": a.ids_id, "model": reader.model,
             "model_expected": READER_MODEL, "trade_worthy": worthy, "why": why,
-            "summary": reader.text,
+            "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
         },  # fmt: skip
     )
-    if not worthy:
-        log.info("reader passed on %s: %s", a.code, why)
+    if not (worthy and can_size):
+        stopped = why if not worthy else size_why
+        log.info("reader stopped %s before the decider: %s", a.code, stopped)
         return out
 
     # -- trader-decider (Opus) ----------------------------------------------
