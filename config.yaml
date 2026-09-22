@@ -89,6 +89,8 @@ arena:
   frozen_on: "2026-09-22"
   starting_aud: 10000          # per account; each playbook has an agent account and a bot account
   enabled: true
+  alerts:
+    telegram: true             # instant alerts: decisions, fills, stops, closes, decider passes
 
   # The aggression ladder (ARENA.md). A playbook sits at exactly one level.
   levels:

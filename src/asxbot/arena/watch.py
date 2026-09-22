@@ -31,6 +31,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from asxbot.announcements.model import Announcement
+from asxbot.arena import notify
 from asxbot.arena.accounts import Account
 from asxbot.arena.agents import (
     DECIDER,
@@ -375,6 +376,7 @@ def handle_announcement(
     now = now or datetime.now(SYD)
     cfg = arena.cfg
     ev = EventLog(cfg.data_dir)
+    alert = notify.get(arena)
     out: dict = {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline}
 
     start = warmup_start(pb)
@@ -418,8 +420,12 @@ def handle_announcement(
                     "order_id": o.order_id, "ticker": o.ticker, "qty": o.qty, "limit": o.limit,
                 }  # fmt: skip
                 log.info("yardstick bot placed %s for %s", o.order_id, o.ticker)
+                if alert:
+                    alert.decided(o)
             except ArenaOrderRefused as e:
                 out["bot"]["why"] = f"refused by the limits: {e}"
+                if alert:
+                    alert.refused("bot", decision.ticker, decision.side, decision.qty, str(e))
 
     if not run_agent:
         return out
@@ -484,6 +490,8 @@ def handle_announcement(
 
     if str(d.get("action", "pass")).lower() != "trade":
         log.info("decider passed on %s: %s", a.code, d.get("why", ""))
+        if alert:
+            alert.passed(a.code, a.headline, str(d.get("why", "")) or "no reason given")
         return out
 
     # -- the order goes through the hard limits, in code --------------------
@@ -493,6 +501,9 @@ def handle_announcement(
         stop = round_to_tick(float(d["stop"]), up=str(d.get("side")) != "buy")
     except (KeyError, TypeError, ValueError) as e:
         out["order"] = {"refused": f"the decision block was not usable: {e}"}
+        if alert:
+            why = out["order"]["refused"]
+            alert.refused("agent", a.code, d.get("side", "?"), d.get("qty", "?"), why)
         return out
 
     reason = (
@@ -514,9 +525,13 @@ def handle_announcement(
             "limit": o.limit, "stop": o.stop,
         }  # fmt: skip
         log.info("agent order %s recorded for %s", o.order_id, o.ticker)
+        if alert:
+            alert.decided(o, d.get("confidence_pct"))
     except ArenaOrderRefused as e:
         out["order"] = {"refused": str(e)}
         log.warning("agent order refused: %s", e)
+        if alert:
+            alert.refused("agent", str(d.get("ticker", a.code)), str(d.get("side")), qty, str(e))
     return out
 
 

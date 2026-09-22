@@ -130,7 +130,11 @@ Do not run it on two PCs at once: they share `_progress.json` through Drive.
 
 ## Telegram
 
-Paired and working, both ways. Outbound reports go straight through the Bot API (plain
+Paired and working, both ways. Besides the evening report, the arena now sends **instant
+alerts** (`arena/notify.py`): each trade decided (agent or bot) and each refused by the limits,
+each fill with its price and stop, every stop that fires and every close with its result, and
+one line per announcement the decider passed on. Off switch: `arena.alerts.telegram: false`.
+Delivery is best effort and never blocks an order, fill or stop. Outbound reports go straight through the Bot API (plain
 code, so they still arrive if a model call fails); inbound messages to
 `@rick_asx_trader_bot` route to `trader-decider`.
 

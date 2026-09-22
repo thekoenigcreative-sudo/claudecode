@@ -63,6 +63,11 @@ class ArenaBroker:
         self.resolve_after_minutes = int(resolve_after_minutes)
         self.max_wait_minutes = int(max_wait_minutes)
         self.events = EventLog(data_dir)
+        self.notifier = None  # set by build_arena; alerts are best effort (notify.py)
+
+    def _notify(self, method: str, *args) -> None:
+        if self.notifier is not None:
+            getattr(self.notifier, method)(*args)
 
     # -- placing ------------------------------------------------------------
     def submit(
@@ -162,6 +167,7 @@ class ArenaBroker:
                 )
                 self.events.append("arena_orders", {**o.to_dict(), "event": "expired"})
                 log.info("arena %s %s expired: %s", acct.name, o.order_id, o.message)
+                self._notify("expired", o)
                 return FillOutcome(o.order_id, "expired", o.message)
             return FillOutcome(o.order_id, "pending_fill", "limit not met yet; still resting")
 
@@ -255,6 +261,8 @@ class ArenaBroker:
             "arena %s %s FILLED %s %s %d @ %.4f (fee %.2f) - %s",
             acct.name, o.order_id, o.side, o.ticker, qty, price, fee, basis,
         )  # fmt: skip
+        after = acct.positions.get(o.ticker)
+        self._notify("filled", o, after is None, after.stop if after is not None else None)
         return FillOutcome(o.order_id, "filled", basis)
 
     # -- stops --------------------------------------------------------------

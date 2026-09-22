@@ -99,6 +99,9 @@ def build_arena(cfg: Config, quotes=None) -> Arena:
         resolve_after_minutes=int(fill.get("resolve_after_minutes", 22)),
         max_wait_minutes=int(fill.get("max_wait_minutes", 390)),
     )
+    from asxbot.arena.notify import build_notifier
+
+    broker.notifier = build_notifier(cfg)
     a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
     universe = set(a.codes) | set(b.codes)
     shorts = asx200_codes(cfg.data_dir, cfg.get("collector.user_agent"))

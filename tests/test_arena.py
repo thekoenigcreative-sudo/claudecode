@@ -574,3 +574,53 @@ def test_the_id_counter_never_reuses_an_id_if_its_file_is_lost(cfg, bars):
         decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
     ).order_id  # fmt: skip
     assert again not in first
+
+
+# -- instant Telegram alerts ------------------------------------------------
+def _capture(cfg, monkeypatch):
+    from asxbot.arena.notify import Notifier
+
+    sent = []
+    n = Notifier(cfg)
+    monkeypatch.setattr(n, "send", lambda text: sent.append(text) or True)
+    return n, sent
+
+
+def test_fills_and_stops_are_alerted_as_they_happen(setup, monkeypatch):
+    cfg, broker, pb, acct = setup
+    broker.notifier, sent = _capture(cfg, monkeypatch)
+    broker.submit(
+        acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
+        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98, placed_by="agent",
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    assert len(sent) == 1 and "FILLED" in sent[0] and "BUY AAA" in sent[0]
+    assert "stop 0.980" in sent[0]
+    broker.apply_stops(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
+    assert len(sent) == 2 and "STOP FIRED" in sent[1] and "result -" in sent[1]
+
+
+def test_a_telegram_failure_never_stops_a_fill(setup, monkeypatch):
+    import asxbot.telegram as tg
+    from asxbot.arena.notify import Notifier
+
+    cfg, broker, pb, acct = setup
+    broker.notifier = Notifier(cfg)
+
+    def down(cfg):
+        raise tg.TelegramError("offline")
+
+    monkeypatch.setattr(tg, "load_bot", down)
+    o = broker.submit(
+        acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
+        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    assert acct.orders[o.order_id].status == "filled"
+
+
+def test_alert_text_is_escaped_and_kept_to_one_line(cfg, monkeypatch):
+    n, sent = _capture(cfg, monkeypatch)
+    n.passed("AAA", "Quarterly <report>", "too small\nto matter " + "x" * 400)
+    assert "&lt;report&gt;" in sent[0]
+    assert "\n" not in sent[0] and len(sent[0]) < 400
