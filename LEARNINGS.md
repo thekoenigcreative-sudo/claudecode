@@ -387,6 +387,31 @@ separate field, so the gap is visible on every order.
 
 ---
 
+## 16. A fill the market could not have given
+
+A1M's 3,000-share take-profit (ARN-000003) filled in the 15:57 bar. One share traded in
+that bar. The fill rule priced a bar and never asked how much it could hold, so a thin
+minute could fill any size, always at the price the agent wanted. It only ever flattered
+the agent. Since 24 Sep no bar fills more than a fifth of what it traded, and the rest
+waits for later bars. The same order now takes four bars, 15:58 to the 16:10 auction, and
+costs 42 cents. The lesson is not the 42 cents. A simulator that answers "at what price?"
+without asking "how many?" is only half a simulator.
+
+Three more from the same night, all found by reading a state file or a log line:
+- **The session summary went out four times** (16:10, 16:56, 17:56, 18:57). The hourly
+  digest rewrote the shared state file with only its own two keys, and that erased the
+  "sent today" marker. Anything that shares a state file must update it, not replace it.
+- **"No retrievable PDF" was never a failed fetch.** Forty-four PDFs were deleted by a
+  morning fix and never fetched again, because a PDF was only fetched the first time an
+  announcement was seen. A comment in the code said "the next fetch tries again". No next
+  fetch existed. Check that the retry a comment promises actually exists.
+- **"Two prices for the same minute" was not a revised bar.** It was two delayed quotes
+  1m40s apart, both stamped with the stale cycle clock (#24). The feed did not revise any
+  bar that had volume. What it does rewrite is its newest row, a placeholder for the
+  minute still forming, and that row is never used now.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not

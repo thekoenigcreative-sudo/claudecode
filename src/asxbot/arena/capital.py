@@ -32,13 +32,13 @@ import json
 import os
 import re
 import shutil
-import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as time_cls
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from asxbot import proc as hidden
 from asxbot.arena.accounts import AccountStore
 from asxbot.arena.hours import evening_slot
 from asxbot.arena.levels import active_playbooks
@@ -95,7 +95,7 @@ def process_listing() -> list[tuple[int, int, str]]:
         "Get-CimInstance Win32_Process | ForEach-Object "
         '{ "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)" }'
     )
-    r = subprocess.run(
+    r = hidden.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )  # fmt: skip
@@ -111,7 +111,7 @@ def process_listing() -> list[tuple[int, int, str]]:
 
 def task_status(name: str) -> list[str]:
     """The Status column for each trigger of a scheduled task. Raises if it cannot tell."""
-    r = subprocess.run(
+    r = hidden.run(
         ["schtasks", "/query", "/tn", name, "/fo", "csv", "/nh"],
         capture_output=True, text=True, errors="replace", timeout=60,
     )  # fmt: skip

@@ -67,6 +67,10 @@ class AnnouncementDriftBot(Bot):
         self.vol_window = int(cfg.get("strategy.volume_window_days", 20))
         self.turnover_window = int(cfg.get("universe.turnover_window_days", 20))
         self.index_ticker = str(cfg.get("backtest.index_ticker", "^AXJO"))
+        # Where the index's open comes from (TRACKER #27): `first_minute_bar`, the open of the
+        # index's 10:00 minute bar, or `daily`, Yahoo's daily open - which equals the previous
+        # close on most days, making the gap "vs the index" a raw gap.
+        self.index_open_source = str(self.params.get("index_open", "daily"))
 
     # -- entries -------------------------------------------------------------
     def on_announcement(
@@ -126,6 +130,17 @@ class AnnouncementDriftBot(Bot):
         if missing:
             raise NotReady(f"the ASX 200's daily series is missing {', '.join(missing)}")
 
+        if self.index_open_source == "first_minute_bar":
+            real = self.broker.minutes.index_open(self.index_ticker, session)
+            if real is None:
+                # No silent fallback to the daily open: that is a different rule, and one
+                # day of it would be mixed into the record unseen.
+                raise NotReady(
+                    f"the ASX 200 has no 10:00 minute bar for {session} (its real open, "
+                    "TRACKER #27)"
+                )
+            idx = idx.copy()
+            idx.loc[idx.index[-1], "open"] = real
         panels = build_panels(
             frames, idx["open"], idx["close"], self.turnover_floor, self.turnover_window
         )

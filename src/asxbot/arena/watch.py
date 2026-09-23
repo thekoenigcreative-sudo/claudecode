@@ -76,24 +76,25 @@ def is_test_id(ids_id: str) -> bool:
 # --------------------------------------------------------------------------
 def pdf_text(data_dir: Path, a: Announcement) -> str:
     """The announcement's text, if the collector has its PDF. Untrusted input."""
-    p = (
-        Path(data_dir)
-        / "announcements"
-        / "pdf"
-        / a.released_at.strftime("%Y-%m-%d")
-        / f"{safe_stem(a.code)}_{a.ids_id}.pdf"
-    )
+    return pdf_text_why(data_dir, a)[0]
+
+
+def pdf_text_why(data_dir: Path, a: Announcement) -> tuple[str, str]:
+    """(text, why there is none). `why` is empty when there is text."""
+    from asxbot.announcements.live import pdf_path
+
+    p = pdf_path(data_dir, a)
     if not p.exists():
         log.warning("no PDF on disk for %s %s; the agents will judge the headline alone",
                     a.code, a.ids_id)  # fmt: skip
-        return ""
+        return "", "no PDF on disk"
     if not p.read_bytes()[:5].startswith(b"%PDF"):
         # Never hand this to pypdf: on 23 Sep every one of these was ASX's terms page
         # saved with a .pdf name, and "Stream has ended unexpectedly" was the only sign.
         log.error("%s is not a PDF (%d bytes); refusing to parse it, and deleting it so "
                   "the next fetch tries again", p.name, p.stat().st_size)  # fmt: skip
         p.unlink(missing_ok=True)
-        return ""
+        return "", "the file on disk was not a PDF"
     try:
         from pypdf import PdfReader
 
@@ -104,10 +105,44 @@ def pdf_text(data_dir: Path, a: Announcement) -> str:
             if sum(len(x) for x in parts) > MAX_PDF_CHARS:
                 parts.append(f"\n[truncated after page {i} of {len(reader.pages)}]")
                 break
-        return "".join(parts)
+        text = "".join(parts)
+        return text, ("" if text.strip() else "the PDF has no text layer")
     except Exception as e:  # noqa: BLE001
         log.warning("could not read the PDF for %s %s: %s", a.code, a.ids_id, e)
-        return ""
+        return "", f"the PDF could not be read ({type(e).__name__})"
+
+
+def _membership(arena: Arena, ticker: str) -> str:
+    """One line for the packet: is it in the ASX 200 list, and which list, as of when."""
+    from asxbot.data.universe import asx200_provenance
+
+    codes = set(arena.short_universe or ())
+    prov = asx200_provenance(arena.cfg.data_dir, codes)
+    where = "IN" if ticker.upper() in codes else "NOT in"
+    return (
+        f"{ticker.upper()} is {where} the S&P/ASX 200 according to {prov['list']}, as of "
+        f"{prov['as_of'] or 'an unknown date'} ({prov['members']} members)"
+    )
+
+
+def _ensure_pdf(arena: Arena, a: Announcement) -> None:
+    """Fetch the PDF now if it is not on disk and the watcher gave us a way to (TRACKER #8).
+    Low volume: only announcements that passed the screen get here. A refusal raises the
+    collector's alert (the poller stops) and this one is judged on its headline."""
+    from asxbot.announcements.http import AccessRefused
+    from asxbot.announcements.live import pdf_path
+
+    fetch = getattr(arena, "fetch_pdf", None)
+    if fetch is None or is_test_id(a.ids_id):
+        return
+    p = pdf_path(arena.cfg.data_dir, a)
+    if p.exists() and p.read_bytes()[:5].startswith(b"%PDF"):
+        return
+    log.info("no PDF on disk for %s %s; fetching it before the reader", a.code, a.ids_id)
+    try:
+        fetch(a, stage="reader")
+    except AccessRefused as e:
+        log.error("PDF fetch for %s refused (%s); the collector stops", a.code, e)
 
 
 def dossier(arena: Arena, ticker: str) -> dict:
@@ -126,6 +161,7 @@ def dossier(arena: Arena, ticker: str) -> dict:
             mc = r.get("market_cap")
             out["market_cap_aud"] = None if mc != mc else float(mc)
             out["in_asx200"] = ticker.upper() in arena.short_universe
+            out["in_asx200_basis"] = "the dated list under INDEX MEMBERSHIP; authoritative"
     except Exception as e:  # noqa: BLE001
         out["directory_error"] = str(e)
 
@@ -310,6 +346,7 @@ def decider_packet(
             "side": o.side,
             "qty": o.qty,
             "limit": o.limit,
+            "filled_so_far": o.filled_qty,
             "stop": o.stop,
             "target": o.target,
             "minutes_waiting": _minutes_waiting(o.decided_at, now),
@@ -317,6 +354,7 @@ def decider_packet(
         for o in acct.orders.values()
         if o.status == "pending_fill"
     ]
+    membership = _membership(arena, a.code)
     holding = (
         f"{pb.holding}"
         + (f", closed by code after {pb.hold_sessions} sessions" if pb.hold_sessions else "")
@@ -347,6 +385,14 @@ THE ANNOUNCEMENT
 
 COMPANY DOSSIER
 {json.dumps(ctx["dossier"], indent=2, default=str)}
+
+INDEX MEMBERSHIP - authoritative and dated
+  {membership}
+  This list is the arena's record of S&P/ASX 200 membership; the short rule reads it.
+  Membership changes at every quarterly rebalance, and your memory of it is older than
+  this list. Do not overrule it from memory, and do not reason as if it were wrong. If you
+  believe it is wrong, say so only in "flag_for_claude" in your JSON block - a question for
+  Claude to check, never a fact in your reasoning.
 
 LIVE PRICE REACTION (delayed feed)
 {json.dumps(ctx["reaction"], indent=2, default=str)}
@@ -404,7 +450,9 @@ Then end your reply with a single JSON block and nothing after it:
   "confidence_pct": <0-100>,
   "expected_move_pct": <your expected move>,
   "hold": "intraday" | "overnight",
-  "why": "<two or three sentences: the thesis, and the strongest argument against it>"}}
+  "why": "<two or three sentences: the thesis, and the strongest argument against it>",
+  "flag_for_claude": "<optional: a dated fact in this packet you believe is wrong, as a
+                      question to check - or leave it out>"}}
 
 If you are passing, {{"action": "pass", "why": "..."}} is enough.
 
@@ -548,12 +596,25 @@ def handle_announcement(
         log.info("screened out %s before any model call: %s", a.code, verdict.why)
         return out
 
+    why_no_text = ""
+    if not text:
+        _ensure_pdf(arena, a)
+        text, why_no_text = pdf_text_why(cfg.data_dir, a)
+        if not text and not test:
+            # The failure that matters is the one the reader sees. pdf_fetch_failed reads
+            # this, so a missing document is shouted however it came to be missing.
+            record("announcement_pdf_failures",
+                   {"code": a.code, "ids_id": a.ids_id, "url": a.pdf_url,
+                    "reason": f"no document for the reader: {why_no_text}",
+                    "stage": "relook" if relook else "reader"})  # fmt: skip
     ctx = {
         "dossier": dossier(arena, a.code),
         "reaction": live_reaction(arena, a.code, now, q_provider),
-        "text": text or pdf_text(cfg.data_dir, a),
+        "text": text,
     }
     out["has_pdf_text"] = bool(ctx["text"])
+    if why_no_text:
+        out["no_pdf_text_why"] = why_no_text
 
     # -- trader-reader (Sonnet 5) -------------------------------------------
     try:
@@ -642,6 +703,11 @@ def handle_announcement(
         },  # fmt: skip
     )
 
+    if str(d.get("flag_for_claude") or "").strip():
+        # A fact the decider thinks is wrong. It is a question for Claude, never acted on.
+        log.warning("decider flag for Claude on %s: %s", a.code, d["flag_for_claude"])
+        record("arena_flags", {"ticker": a.code, "ids_id": a.ids_id, "stage": "decider",
+                               "flag": str(d["flag_for_claude"])})  # fmt: skip
     if str(d.get("action", "pass")).lower() != "trade":
         log.info("decider passed on %s: %s", a.code, d.get("why", ""))
         if alert:
@@ -719,6 +785,7 @@ def watch(
     )
     alerts = Alerts(cfg.data_dir)
     poller = LivePoller(cfg.data_dir, client, alerts, arena.universe, fetch_pdfs=True)
+    arena.fetch_pdf = poller.fetch_pdf  # a missed PDF is fetched again when it matters
     win = announcement_window(cfg)
     hours = (win[0].strftime("%H:%M"), win[1].strftime("%H:%M"))
     handled = _load_handled(cfg.data_dir, datetime.now(SYD).date())
@@ -1127,12 +1194,20 @@ def yardstick_entries(
         write_text_atomic(json.dumps({**record, "status": status}, indent=2), path)
 
     if local.time() >= SESSION_OPEN:
-        # Missing a day is a fault in the yardstick's record: logged as an error, so the
-        # self-checks say so rather than the comparison quietly losing a session.
-        record["missed"] = prior.get("waiting_for") or (
-            f"first reached at {local:%H:%M}, after the {SESSION_OPEN:%H:%M} open"
-        )
-        log.error(
+        # A missed day is recorded, with its reason, in data/arena/yardstick/<day>.json and
+        # logged as a WARNING. Until 2026-09-24 it was an ERROR, so a watcher (re)started after
+        # 10:00 - which cannot enter at an open that has passed, by design - tripped the
+        # errors_logged self-check and a CRITICAL Telegram alert (23 Sep, 15:56 and 16:56).
+        if prior.get("waiting_for"):
+            record["missed"] = (
+                f"still waiting at the {SESSION_OPEN:%H:%M} open for: {prior['waiting_for']}"
+            )
+        else:
+            record["missed"] = (
+                f"first reached at {local:%H:%M}, after the {SESSION_OPEN:%H:%M} open: the "
+                "watcher was not running before the open (started or restarted late)"
+            )
+        log.warning(
             "the yardstick missed the %s open (session %s confirmed on nothing): %s. The rule "
             "enters at the open only, so nothing is traded late.",
             day, session, record["missed"],
@@ -1214,6 +1289,8 @@ def horizon_exit(arena: Arena, pb: Playbook, now: datetime | None = None) -> lis
         held = _sessions_between(opened, now)
         if held < pb.hold_sessions:
             continue
+        if acct.closing_qty_working(ticker):
+            continue  # already being closed (fills can take several bars since 2026-09-24)
         price = arena.broker.minutes.last_price(ticker) or pos.avg_cost
         side = "sell" if pos.qty > 0 else "cover"
         limit = round(price * (0.97 if side == "sell" else 1.03), 3)

@@ -24,7 +24,7 @@ A finished day (one that already holds the 16:10 closing auction print) is never
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -179,6 +179,50 @@ class MinuteBars:
             for ts, bar in window.iterrows():
                 yield ts.to_pydatetime(), bar, _price_of(bar, self.price_field)
 
+    def final_bars(
+        self,
+        code: str,
+        since: datetime,
+        now: datetime,
+        settle_minutes: int = 0,
+        feed_delay_minutes: int = 22,
+    ):
+        """Yield (timestamp, bar) for every traded minute from `since` that is final by `now`.
+
+        The broker works each bar once and keeps what it saw, so it must only see bars that
+        will not change (TRACKER #26, checked 2026-09-24). The rule:
+          * the bar traded (volume above zero);
+          * it has ended: it started at least a minute before `now`;
+          * it is not the newest row of an intraday fetch, nor within `settle_minutes` of
+            it. Yahoo appends the minute still forming as a placeholder row (volume 0,
+            open = high = low = close = the last trade) and rewrites it until the next row
+            appears; no row was seen to change after that. A day is no longer intraday once
+            its 16:10 closing-auction bar is in, or `feed_delay_minutes` after the close.
+        What was checked: A1M, BHP, FMG and DUG cached files matched a fresh fetch bar for
+        bar, and 180 polls of six London and Frankfurt stocks while those markets were open
+        saw only the newest row change. ASX bars were not polled during a session.
+        """
+        start = since.astimezone(SYD).replace(second=0, microsecond=0)
+        now = now.astimezone(SYD)
+        cutoff = now - timedelta(minutes=1)
+        day = start.date()
+        while day <= cutoff.date():
+            if day.weekday() < 5:
+                df = self.fetch(code, day)
+                if df is not None and len(df):
+                    usable = df.index <= cutoff
+                    closed = datetime.combine(day, time(16, 10), tzinfo=SYD)
+                    intraday = df.index.max() < closed and now < closed + timedelta(
+                        minutes=int(feed_delay_minutes)
+                    )
+                    if intraday:
+                        newest = df.index.max()
+                        usable &= df.index < newest - timedelta(minutes=int(settle_minutes))
+                    window = df[usable & (df.index >= start) & (df["volume"] > 0)]
+                    for ts, bar in window.iterrows():
+                        yield ts.to_pydatetime(), bar
+            day += timedelta(days=1)
+
     def first_trigger(
         self,
         code: str,
@@ -222,6 +266,23 @@ class MinuteBars:
             price = min(level, op) if direction == "down" else max(level, op)
             return ts.to_pydatetime(), float(price)
         return None
+
+    def index_open(self, code: str, day: date) -> float | None:
+        """An index's real opening level on `day`: the open of its 10:00 minute bar.
+
+        Yahoo's daily ^AXJO open equals the previous close on most days (TRACKER #27), so a
+        gap measured against it is a raw gap. The 10:00 minute bar's open is the index as
+        first computed after the opening auction. Index bars carry no volume, so none is
+        required. None if the feed holds no bar stamped exactly 10:00 that day.
+        """
+        df = self.fetch(code, day)
+        if df is None or not len(df):
+            return None
+        at = datetime.combine(day, time(10, 0), tzinfo=SYD)
+        if at not in df.index:
+            return None
+        px = float(df.loc[at, "open"])
+        return px if px > 0 else None
 
     def price_at(self, code: str, when: datetime, days_back: int = 7) -> float | None:
         """The close of the last traded minute at or before `when`. None if none is known."""

@@ -44,8 +44,18 @@ def _submit(broker, acct, *, at: datetime, **kw):
     return broker.submit(acct, data_as_of=at, **kw)
 
 
+def _with_forming_row(rows):
+    """The rows, then Yahoo's placeholder for the minute still forming (volume 0)."""
+    h, m, *_ = rows[-1]
+    h, m = (h + (m + 1) // 60, (m + 1) % 60)
+    close = rows[-1][5]
+    return [*rows, (h, m, close, close, close, close, 0)]
+
+
 def minute_frame(rows):
-    """rows: list of (HH, MM, open, high, low, close, volume)"""
+    """rows: list of (HH, MM, open, high, low, close, volume). A zero-volume row for the
+    minute still forming is added after them, as the real feed has (#26)."""
+    rows = _with_forming_row(rows)
     idx = [datetime(DAY.year, DAY.month, DAY.day, h, m, tzinfo=SYD) for h, m, *_ in rows]
     return pd.DataFrame(
         {
@@ -163,7 +173,7 @@ def test_an_order_is_pending_until_it_is_resolved(setup):
     assert o.status == "pending_fill"
     assert o.avg_price is None  # nothing may claim a fill before one exists
 
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 5, tzinfo=SYD))
     done = acct.orders[o.order_id]
     assert done.status == "filled"
     # Decided at 10:01:30: the 10:01 bar is out, 10:02 and 10:03 did not trade.
@@ -189,7 +199,7 @@ def test_the_stop_is_enforced_by_code(setup):
         broker, acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
         at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98,
     )  # fmt: skip
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 2, tzinfo=SYD))
     assert acct.orders[o.order_id].status == "filled"
     out = broker.apply_exits(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
     assert any(r.status == "filled" for r in out)
@@ -468,7 +478,7 @@ def test_a_stop_on_the_wrong_side_of_the_fill_is_re_derived(setup):
         broker, acct, ticker="AAA", side="buy", qty=100, limit=1.20,
         at=datetime(2026, 1, 6, 10, 0, 30, tzinfo=SYD), stop=1.10,
     )  # fmt: skip
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 5, tzinfo=SYD))
     filled = acct.orders[o.order_id]
     assert filled.status == "filled"
     pos = acct.positions["AAA"]
@@ -496,7 +506,7 @@ def test_a_stop_cannot_fire_in_the_bar_the_position_opened(setup):
         broker, acct, ticker="CCC", side="buy", qty=1000, limit=1.20, stop_pct=8.0,
         at=datetime(2026, 1, 6, 9, 59, 30, tzinfo=SYD),  # before the open: fills at 10:00
     )  # fmt: skip
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 1, tzinfo=SYD))
     assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:00")
     pos = acct.positions["CCC"]
     assert 0.90 < pos.stop  # the entry bar's own low is below the stop
@@ -800,7 +810,7 @@ def test_fills_and_stops_are_alerted_as_they_happen(setup, monkeypatch):
         broker, acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
         at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98, placed_by="agent",
     )  # fmt: skip
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 5, tzinfo=SYD))
     assert len(sent) == 1 and "FILLED" in sent[0] and "BUY AAA" in sent[0]
     assert "stop 0.980" in sent[0]
     broker.apply_exits(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
@@ -1109,8 +1119,8 @@ def test_the_decider_packet_shows_its_orders_waiting_to_fill(setup, monkeypatch)
     line = next(ln for ln in packet.splitlines() if "orders waiting to fill:" in ln)
     shown = _json.loads(line.split("orders waiting to fill:")[1].split("   (")[0])
     assert shown == [
-        {"ticker": "AAA", "side": "buy", "qty": 3000, "limit": 0.83, "stop": 0.755,
-         "target": 0.95, "minutes_waiting": 25}
+        {"ticker": "AAA", "side": "buy", "qty": 3000, "limit": 0.83, "filled_so_far": 0,
+         "stop": 0.755, "target": 0.95, "minutes_waiting": 25}
     ]  # fmt: skip
 
 
@@ -1145,8 +1155,19 @@ def _ann_frame(*rows) -> pd.DataFrame:
     )  # fmt: skip
 
 
+def _index_minutes(broker, day, open_=1000.0):
+    """The index's 10:00 minute bar on `day` - its real open (TRACKER #27). No volume."""
+    idx = pd.DatetimeIndex([datetime(day.year, day.month, day.day, 10, 0, tzinfo=SYD)],
+                           name="Datetime")  # fmt: skip
+    df = pd.DataFrame({"open": [open_], "high": [open_], "low": [open_], "close": [open_],
+                       "volume": [0.0]}, index=idx)  # fmt: skip
+    write_parquet_atomic(df, broker.minutes._path("^AXJO", day))
+
+
 def _yardstick(cfg, broker, pb, frames):
     from asxbot.arena.bots.announcement_drift import AnnouncementDriftBot
+
+    _index_minutes(broker, T0)
 
     def fetch(tickers, start):
         return {t: frames[t] for t in tickers if t in frames}
@@ -1220,7 +1241,7 @@ def test_the_yardstick_enters_at_the_next_open_once_and_never_late(setup, monkey
     assert [p["ticker"] for p in placed] == ["AAA"]
     assert W.yardstick_entries(fake, pb, at(datetime(2026, 1, 6, 8, 0, tzinfo=SYD))) == []
 
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 1, tzinfo=SYD))
     o = acct.orders[placed[0]["order_id"]]
     assert o.status == "filled" and o.fill_minute.startswith("2026-01-06T10:00")  # the open
     pos = acct.positions["AAA"]
@@ -1270,7 +1291,11 @@ DAY2 = date(2026, 1, 7)  # the session after DAY
 
 
 def _bars_on(broker, ticker, day, rows):
-    """rows: list of (HH, MM, open, high, low, close, volume) on `day`."""
+    """rows: list of (HH, MM, open, high, low, close, volume) on `day`.
+
+    Like the real feed, the file ends with the minute still forming: a zero-volume row
+    after the last one given, so every row given is final (minutes.final_bars, #26)."""
+    rows = _with_forming_row(rows)
     idx = [datetime(day.year, day.month, day.day, h, m, tzinfo=SYD) for h, m, *_ in rows]
     cols = ("open", "high", "low", "close", "volume")
     df = pd.DataFrame(
@@ -1287,7 +1312,9 @@ def _open(broker, acct, side, stop, target, qty=1000):
         broker, acct, ticker="CCC", side=side, qty=qty, limit=limit, stop=stop, target=target,
         at=datetime(2026, 1, 6, 9, 59, 30, tzinfo=SYD), placed_by=acct.kind,
     )  # fmt: skip
-    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 0, tzinfo=SYD))
+    # 10:01: the 10:00 bar has ended, and nothing after it is final yet. A bar is used only
+    # once it has ended (2026-09-24); before, `now` did not bound the bars at all.
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 1, tzinfo=SYD))
     assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:00")
     return acct.positions["CCC"]
 

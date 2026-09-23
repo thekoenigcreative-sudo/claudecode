@@ -29,6 +29,14 @@ TODAY_URL = "https://www.asx.com.au/asx/v2/statistics/todayAnns.do"
 SYD = ZoneInfo("Australia/Sydney")
 
 
+def pdf_path(data_dir: Path, a: Announcement) -> Path:
+    """Where an announcement's PDF is kept: one place, for the poller and the reader."""
+    return (
+        Path(data_dir) / "announcements" / "pdf" / a.released_at.strftime("%Y-%m-%d")
+        / f"{safe_stem(a.code)}_{a.ids_id}.pdf"
+    )  # fmt: skip
+
+
 def is_trading_day(d: date) -> bool:
     import exchange_calendars as xc
 
@@ -105,24 +113,35 @@ class LivePoller:
         return new
 
     def _fetch_pdf(self, a: Announcement) -> Path | None:
-        dest = (
-            self.pdf_dir
-            / a.released_at.strftime("%Y-%m-%d")
-            / f"{safe_stem(a.code)}_{a.ids_id}.pdf"
-        )
+        return self.fetch_pdf(a, stage="poll")
+
+    def fetch_pdf(self, a: Announcement, stage: str = "poll") -> Path | None:
+        """Fetch the announcement's PDF unless a real one is already on disk. None, with an
+        `announcement_pdf_failures` event saying why, if it cannot be had.
+
+        Called when an announcement is first seen, and again (since 2026-09-24) when one
+        reaches the reader with no document on disk: until then a PDF missed the first time
+        was never fetched again. On 23 Sep 44 announcements released 07:37-09:08 had terms
+        pages saved as PDFs; the 09:12 fix deleted them and nothing fetched them again, so
+        CMM, NUF and TUA (its FY26 Appendix 4E) were re-looked at 10:20-10:33 on headlines.
+        """
+        dest = pdf_path(self.data_dir, a)
         try:
             return self.client.get_bytes(a.pdf_url, dest)
-        except AccessRefused:
+        except AccessRefused as e:
+            self.alerts.raise_alert(ACCESS_REFUSED, f"{e}. Poller stopped; price/volume fallback.")
             raise
         except Exception as e:  # noqa: BLE001
             # Say it plainly and record it. On 23 Sep this failed silently for every
             # announcement of the day, and the agents judged headlines without anyone
             # noticing that no document had ever arrived.
-            log.error("PDF FETCH FAILED for %s %s: %s - the agents will see no document",
-                      a.code, a.ids_id, e)  # fmt: skip
+            reason = getattr(e, "reason", None) or type(e).__name__
+            log.error("PDF FETCH FAILED for %s %s (%s): %s - the agents will see no document",
+                      a.code, a.ids_id, reason, e)  # fmt: skip
             self.events.append(
                 "announcement_pdf_failures",
-                {"code": a.code, "ids_id": a.ids_id, "url": a.pdf_url, "error": str(e)},
+                {"code": a.code, "ids_id": a.ids_id, "url": a.pdf_url, "error": str(e),
+                 "reason": reason, "stage": stage},  # fmt: skip
             )
             return None
 

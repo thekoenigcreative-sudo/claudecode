@@ -27,6 +27,9 @@ class Arena:
     store: AccountStore
     universe: set[str]
     short_universe: set[str]
+    # Set by the watcher to its poller's PDF fetch, so an announcement that reaches the
+    # reader with no document on disk gets one then (TRACKER #8). None outside the watcher.
+    fetch_pdf: object = None
 
     # -- playbooks and accounts ---------------------------------------------
     def playbook(self, key: str) -> Playbook:
@@ -135,6 +138,8 @@ def arena_broker(cfg: Config) -> ArenaBroker:
         short_borrow_pct_annual=float(cfg.get("arena.costs.short_borrow_pct_annual", 3.0)),
         resolve_after_minutes=int(fill.get("resolve_after_minutes", 22)),
         max_wait_minutes=int(fill.get("max_wait_minutes", 390)),
+        max_volume_share=float(fill.get("max_volume_share", 0.20)),
+        settle_minutes=int(fill.get("settle_minutes", 0)),
     )
     return broker
 

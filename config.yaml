@@ -275,6 +275,22 @@ arena:
     resolve_after_minutes: 22  # don't try to resolve a fill until the free feed has caught up
     stop_gap_rule: worse_of  # a stop fills at the stop price, or at the bar open if the
                              # bar opened through it (a gap) - whichever is worse for us
+    # Added 2026-09-23 evening, in force from the 24 Sep 07:30 start (TRACKER #25). A DELIBERATE CHANGE to the fill model, not a finding
+    # and not tuned: no minute bar fills more than this share of the shares it traded; the
+    # rest carries to later bars at their prices. Until now a bar filled any size - A1M's
+    # 3,000-share take-profit (ARN-000003) filled in a bar where 1 share traded. 20% is the
+    # figure Rick set; it was not chosen by looking at any result. Per account, per ticker,
+    # per bar; a stop exit gets the volume first, then a target exit, then everything else.
+    # A day order still part-filled when its session ends is done ("partial"); a stop or
+    # target exit keeps working into the next session (broker.work has the full rule).
+    max_volume_share: 0.20
+    # Added 2026-09-23 evening, with #25 (TRACKER #26). A bar is used only once it is final: it traded, it has
+    # ended, and it is not the newest row of an intraday fetch - Yahoo appends the minute
+    # still forming as a zero-volume placeholder and rewrites it; nothing was seen to change
+    # after the next row appeared (minutes.final_bars). This many extra minutes behind the
+    # newest row are also held back; 0, because no evidence asks for more. ASX bars were not
+    # polled during a session; if they are seen to change, raise it here, dated.
+    settle_minutes: 0
 
   # Level 1 is an intraday level: positions are closed before the 16:10 close unless the
   # decider writes a reason to hold. The sweep asks it about each open position, so the
@@ -351,6 +367,15 @@ arena:
       # The rule-based yardstick: strategy A, already built and backtested.
       yardstick:
         name: announcement_drift_A
+        # Added 2026-09-23 evening, in force from the 24 Sep yardstick run (TRACKER #27). A DELIBERATE DATA CHANGE, not a tuned parameter:
+        # the rule is "gap vs the index at the open", and Yahoo's daily ^AXJO open equals the
+        # previous close on most days, so the live yardstick was measuring a raw gap. It now
+        # takes the index's open from its 10:00 minute bar (checked 14-23 Sep 2026 against
+        # the cap-weighted opening gap of ~195 members: mean error 0.12 points, against 0.40
+        # for Yahoo's daily open and 0.17-0.23 for ASX 200 ETF opens). No 10:00 bar = the
+        # day is missed and recorded, never a fallback. `daily` restores the old behaviour.
+        # The FROZEN BACKTEST is unchanged and still uses the daily open (see TRACKER #27).
+        index_open: first_minute_bar
         gap_pct_vs_index: 5.0
         volume_multiple: 3.0
         hold_days: 10

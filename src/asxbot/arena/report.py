@@ -18,6 +18,7 @@ from asxbot.alerts import Alerts
 from asxbot.announcements.history import status as archive_status
 from asxbot.arena.runtime import Arena
 from asxbot.arena.scoreboard import Score, agent_vs_bot, format_table, score
+from asxbot.data.universe import asx200_provenance
 from asxbot.log import EventLog
 
 SYD = ZoneInfo("Australia/Sydney")
@@ -77,6 +78,15 @@ def gather(arena: Arena, day: date | None = None) -> dict:
         oid = r.get("order_id")
         return oid is None or oid in live[acct_name]
 
+    working = [
+        {"order_id": o.order_id, "account": o.account, "side": o.side, "ticker": o.ticker,
+         "order_type": o.order_type, "filled": o.filled_qty, "ordered": abs(o.qty),
+         "avg_price": o.avg_price, "message": o.message}  # fmt: skip
+        for pb in arena.playbooks()
+        for kind in ("agent", "bot")
+        for o in arena.account(pb, kind).orders.values()
+        if o.working and o.filled_qty
+    ]
     orders_today = [r for r in today_rows("arena_orders") if belongs(r)]
     fills_today = [r for r in today_rows("arena_fills") if belongs(r)]
     alerts_today = today_rows("arena_alerts")
@@ -107,6 +117,9 @@ def gather(arena: Arena, day: date | None = None) -> dict:
                 "side": r.get("side"),
                 "ticker": r.get("ticker"),
                 "qty": r.get("filled_qty"),
+                "ordered": abs(int(r.get("qty") or 0)),
+                "status": r.get("event"),  # filled | partial (the rest expired or cancelled)
+                "bars": len(r.get("fills") or []) or 1,
                 "price": r.get("avg_price"),
                 "fee": r.get("commission"),
                 "realised": r.get("realised"),
@@ -117,11 +130,23 @@ def gather(arena: Arena, day: date | None = None) -> dict:
             for r in fills_today
         ],
         "pending_fills": sum(s.pending_fills for s in scores),
+        # Orders still working that have part-filled: no bar fills more than a set share of
+        # its traded volume (arena.fill.max_volume_share), so a large order in a thin stock
+        # fills over several bars, and a stop or target exit keeps working overnight.
+        "part_filled_working": working,
         "active_alerts": [
             {"key": k, "message": m.splitlines()[-1]} for k, m in Alerts(cfg.data_dir).active()
         ],
         "archive": archive_status(cfg.data_dir),
         "agent_vs_bot": agent_vs_bot(scores),
+        # The list the short rule reads, and its date. Authoritative: the report does not
+        # overrule it from memory (TRACKER #9; NUF, 23 Sep).
+        "asx200_list": asx200_provenance(
+            cfg.data_dir, set(getattr(arena, "short_universe", None) or ()) or None
+        ),
+        "flags_for_claude": [
+            {"ticker": r.get("ticker"), "flag": r.get("flag")} for r in today_rows("arena_flags")
+        ],
     }
 
 
@@ -152,14 +177,20 @@ def render_plain(facts: dict) -> str:
     for r in facts["refusal_reasons"]:
         lines.append(f"    refused: {r}")
     for f in facts["fill_details"]:
+        part = f" of {f['ordered']} (the rest did not fill)" if f.get("status") == "partial" else ""
         lines.append(
-            f"- FILL {f['order_id']} {f['side']} {f['qty']} {f['ticker']} @ {f['price']} "
+            f"- FILL {f['order_id']} {f['side']} {f['qty']}{part} {f['ticker']} @ {f['price']} "
             f"(fee {f['fee']}) [{f['account']}]"
         )
         if f.get("basis"):
             lines.append(f"    price basis: {f['basis']}")
     if not facts["fill_details"]:
         lines.append("- no fills today")
+    for w in facts.get("part_filled_working", []):
+        lines.append(
+            f"- STILL WORKING {w['order_id']} {w['side']} {w['ticker']}: {w['filled']} of "
+            f"{w['ordered']} filled so far [{w['account']}]"
+        )
 
     lines.append("")
     lines.append("<b>Open positions</b>")
@@ -197,6 +228,11 @@ def agent_brief(facts: dict) -> str:
         "- Cover: what you traded and why, what the limits refused, how you are doing against "
         "your yardstick bot, green days vs red days, and what you will watch next.\n"
         "- If you placed no trades, say why not - that is a real answer.\n"
+        "- Index membership comes from FACTS asx200_list, which is authoritative and dated "
+        f"(as of {(facts.get('asx200_list') or {}).get('as_of') or 'unknown'}). Never say "
+        "from memory that a company is or is not an index member, or that a membership flag "
+        "'looks wrong'. If you believe a dated fact is wrong, add one last line starting "
+        "'Flag for Claude:', worded as a question to check - never as a fact in the report.\n"
         "- Keep it under 2500 characters. Plain text with simple HTML tags "
         "(<b>, <i>, <pre>) only.\n\n"
         f"FACTS (JSON):\n{json.dumps(payload, indent=2, default=str)}\n"

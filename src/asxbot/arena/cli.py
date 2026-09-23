@@ -194,8 +194,10 @@ def cmd_resolve(args) -> int:
     for pb in arena.playbooks():
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
+            # One pass since 2026-09-24: entries, stops and targets are worked together, so
+            # apply_exits reports them all and resolve_pending finds nothing left.
             for r in arena.broker.apply_exits(acct, now):
-                print(f"{acct.name} EXIT {r.order_id}: {r.status} - {r.detail}")
+                print(f"{acct.name} {r.order_id}: {r.status} - {r.detail}")
                 any_change = True
             for r in arena.broker.resolve_pending(acct, now):
                 print(f"{acct.name} {r.order_id}: {r.status} - {r.detail}")

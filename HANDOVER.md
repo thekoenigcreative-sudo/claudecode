@@ -54,7 +54,13 @@ knowable when the decision is made. So:
 - a minute with no trade walks **forward** to the next minute that did trade, never back;
 - the same walk applies to stops and exits;
 - a stop that is gapped through fills at the bar's open, not at the stop price;
-- a limit the market never reached rests, then expires at the close.
+- a limit the market never reached rests, then expires at the close;
+- (2026-09-24, #25) no bar fills more than 20% of the shares it traded
+  (`arena.fill.max_volume_share`); the rest carries to later bars at their prices. A day
+  order part-filled at the close ends `partial`; a stop or target exit keeps working into the
+  next session. Stop first, then target, then the rest, from each bar's volume;
+- (2026-09-24, #26) a bar is used only once final: it has ended, and it is not the newest
+  row of an intraday fetch (Yahoo's placeholder for the minute still forming).
 
 One consequence, found and fixed tonight: a stop is *chosen* as a distance but *carried* as
 a level, so a fill landing far from the delayed quote could leave a long's stop above its

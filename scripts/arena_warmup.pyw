@@ -22,7 +22,6 @@ buffer, and a killed process loses it - only its logging reached this file as it
 """
 
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +30,6 @@ VENV = Path(r"C:\venvs\asx-bot\Scripts")
 REPO = Path(__file__).resolve().parents[1]
 LOG = REPO / "data" / "arena_warmup.log"
 FAILURES = Path(r"C:\venvs\asx-bot\task-failures.log")
-CREATE_NO_WINDOW = 0x08000000
 
 
 def stamp() -> str:
@@ -58,10 +56,13 @@ def main() -> int:
     with open(LOG, "a", encoding="utf-8", buffering=1) as log:
         log.write(f"\n=== warm-up starting {stamp()} (hidden) ===\n")
         try:
-            proc = subprocess.Popen(
+            # Imported here, after the check that the repo is mounted: asxbot lives on G:.
+            from asxbot import proc as hidden
+
+            proc = hidden.popen(
                 [str(VENV / "asxbot.exe"), "arena", "watch", "--until", "auto"],
-                cwd=REPO, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW,
+                cwd=REPO, env=env, stdin=hidden.DEVNULL, stdout=hidden.PIPE,
+                stderr=hidden.STDOUT,
             )  # fmt: skip
         except OSError as e:
             log.write(f"could not start the watcher: {e}\n")

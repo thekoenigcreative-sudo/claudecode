@@ -22,10 +22,22 @@ from asxbot.log import get_logger
 log = get_logger("asxbot.announcements.http")
 
 REFUSAL_MARKERS = ("access denied", "captcha", "are you a robot", "request blocked", "cf-chl")
+# Where a terms page's pdfURL may point. Anything else is not followed.
+PDF_HOSTS = ("announcements.asx.com.au",)
+# No announcement PDF is anywhere near this; a reply this large is not one.
+MAX_PDF_BYTES = 60 * 1024 * 1024
 
 
 class AccessRefused(RuntimeError):
     pass
+
+
+class PdfFetchFailed(RuntimeError):
+    """A PDF could not be fetched. `reason` is one short, fixed phrase (for the self-check)."""
+
+    def __init__(self, reason: str, detail: str):
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
 
 
 def _is_pdf(body: bytes) -> bool:
@@ -53,6 +65,20 @@ def _pdf_url_from_terms(body: bytes) -> str | None:
     if not m:
         m = re.search(r'value=["\']([^"\']+\.pdf)["\']\s+name=["\']pdfURL["\']', text, re.I)
     return m.group(1) if m else None
+
+
+def _refusal_check(body: bytes, url: str) -> None:
+    """A bot challenge or refusal page where a PDF should be: stop, as the collector must."""
+    low = body[:5000].decode("utf-8", "replace").lower()
+    if any(m in low for m in REFUSAL_MARKERS):
+        raise AccessRefused(f"bot challenge / refusal page at {url}")
+
+
+def _allowed_pdf_host(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    u = urlparse(url)
+    return u.scheme == "https" and (u.hostname or "").lower() in PDF_HOSTS
 
 
 class PacedClient:
@@ -132,27 +158,60 @@ class PacedClient:
             log.warning("%s is not a PDF (a saved terms page?); fetching it again", dest.name)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        last = ""
+        reason = detail = ""
         for attempt in range(1, self.max_retries + 1):
-            body = self._request(url).content
-            if not _is_pdf(body):
-                real = _pdf_url_from_terms(body)
-                if real:
-                    log.info("%s served the terms page; following its pdfURL", url)
-                    body = self._request(real).content
-                else:
-                    last = "no pdfURL in the reply, and it is not a PDF"
-            if _is_pdf(body):
+            reason = detail = ""  # each attempt says its own reason, never the last one's
+            try:
+                body = self._download(url)
+                if not _is_pdf(body):
+                    _refusal_check(body, url)
+                    real = _pdf_url_from_terms(body)
+                    if not real:
+                        reason, detail = "not a PDF, and no pdfURL to follow", url
+                    elif not _allowed_pdf_host(real):
+                        reason, detail = "pdfURL points off ASX", real
+                    else:
+                        log.info("%s served the terms page; following its pdfURL", url)
+                        body = self._download(real)
+                        if not _is_pdf(body):
+                            _refusal_check(body, real)
+                            reason, detail = "followed link was not a PDF", real
+            except AccessRefused:
+                raise
+            except PdfFetchFailed as e:
+                reason, detail = e.reason, str(e)
+            except requests.Timeout as e:
+                reason, detail = "timeout", str(e)
+            except requests.RequestException as e:
+                reason, detail = "network error", str(e)
+            except RuntimeError as e:  # HTTP 5xx after retries
+                reason, detail = "server error", str(e)
+            if not reason:
                 tmp = dest.with_suffix(dest.suffix + ".tmp")
                 tmp.write_bytes(body)
                 tmp.replace(dest)
                 return dest
-            last = last or "the followed link was still not a PDF"
             if attempt < self.max_retries:
                 wait = self.backoff_base_s * attempt
-                log.warning("%s: %s; retry %d in %.0fs", url, last, attempt, wait)
+                log.warning("%s: %s; retry %d in %.0fs", url, reason, attempt, wait)
                 time.sleep(wait)
-        raise RuntimeError(f"{url}: {last} after {self.max_retries} attempts")
+        raise PdfFetchFailed(reason, f"{detail} (after {self.max_retries} attempts)")
+
+    def _download(self, url: str) -> bytes:
+        """The body, read in chunks and refused past MAX_PDF_BYTES."""
+        r = self._request(url, stream=True)
+        size = int(r.headers.get("Content-Length") or 0)
+        if size > MAX_PDF_BYTES:
+            r.close()
+            raise PdfFetchFailed("too large", f"{url} is {size:,} bytes")
+        chunks, total = [], 0
+        for chunk in r.iter_content(64 * 1024):
+            total += len(chunk)
+            if total > MAX_PDF_BYTES:
+                r.close()
+                raise PdfFetchFailed("too large", f"{url} passed {MAX_PDF_BYTES:,} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     def _fetch(self, url: str) -> str:
         r = self._request(url)
@@ -162,14 +221,15 @@ class PacedClient:
             raise AccessRefused(f"bot challenge / refusal page at {url}")
         return text
 
-    def _request(self, url: str) -> requests.Response:
+    def _request(self, url: str, stream: bool = False) -> requests.Response:
         attempt = 0
         while True:
             self._pace()
             attempt += 1
             self.requests_made += 1
             try:
-                r = self.session.get(url, timeout=self.timeout_s)
+                extra = {"stream": True} if stream else {}
+                r = self.session.get(url, timeout=self.timeout_s, **extra)
             except requests.RequestException as e:
                 if attempt > self.max_retries:
                     raise

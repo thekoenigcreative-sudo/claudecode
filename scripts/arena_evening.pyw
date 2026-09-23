@@ -34,7 +34,6 @@ second report.
 """
 
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -44,7 +43,6 @@ ASXBOT = [str(VENV / "asxbot.exe")]
 REPO = Path(__file__).resolve().parents[1]
 LOG = REPO / "data" / "arena_evening.log"
 FAILURES = Path(r"C:\venvs\asx-bot\task-failures.log")
-CREATE_NO_WINDOW = 0x08000000
 STEPS = (
     ("arena", "resolve"),
     ("arena", "mark"),
@@ -73,10 +71,13 @@ def write(log, line: str) -> None:
         pass
 
 
-def start(args, env: dict) -> subprocess.Popen:
-    return subprocess.Popen(
-        [*ASXBOT, *args], cwd=REPO, env=env, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW,
+def start(args, env: dict):
+    # Imported here, after the check that the repo is mounted: asxbot lives on G:.
+    from asxbot import proc as hidden
+
+    return hidden.popen(
+        [*ASXBOT, *args], cwd=REPO, env=env, stdin=hidden.DEVNULL,
+        stdout=hidden.PIPE, stderr=hidden.STDOUT,
     )  # fmt: skip
 
 

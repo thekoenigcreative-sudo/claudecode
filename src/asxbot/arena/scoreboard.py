@@ -46,6 +46,8 @@ class Score:
     orders_filled: int
     orders_expired: int
     pending_fills: int
+    # Part-filled and done: the rest expired with its session or was cancelled (#25).
+    orders_partial: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -90,7 +92,7 @@ def score(store: AccountStore, acct: Account, prices: dict[str, float]) -> Score
     closed = [
         o
         for o in acct.orders.values()
-        if o.status == "filled" and o.side in ("sell", "cover")
+        if o.status in ("filled", "partial") and o.filled_qty and o.side in ("sell", "cover")
     ]
     wins = sum(1 for o in closed if o.realised > 0)
 
@@ -119,6 +121,7 @@ def score(store: AccountStore, acct: Account, prices: dict[str, float]) -> Score
         borrow_paid=round(acct.borrow_paid, 2),
         orders_placed=len(acct.orders),
         orders_filled=sum(1 for o in acct.orders.values() if o.status == "filled"),
+        orders_partial=sum(1 for o in acct.orders.values() if o.status == "partial"),
         orders_expired=sum(1 for o in acct.orders.values() if o.status == "expired"),
         pending_fills=sum(1 for o in acct.orders.values() if o.status == "pending_fill"),
     )

@@ -208,6 +208,14 @@ REAL_PDF = b"%PDF-1.6\n%real document bytes\n"
 class _Reply:
     def __init__(self, content):
         self.content = content
+        self.headers = {"Content-Length": str(len(content))}
+
+    def iter_content(self, n):
+        for i in range(0, len(self.content), n):
+            yield self.content[i : i + n]
+
+    def close(self):
+        pass
 
 
 def _client(tmp_path, monkeypatch, replies):
@@ -217,7 +225,7 @@ def _client(tmp_path, monkeypatch, replies):
     c = PacedClient(tmp_path / "cache", "test-agent", pause_s=0, backoff_base_s=0)
     seen = []
 
-    def fake(url):
+    def fake(url, stream=False):
         seen.append(url)
         return _Reply(replies.pop(0))
 
@@ -259,3 +267,40 @@ def test_it_retries_then_gives_up_rather_than_saving_rubbish(tmp_path, monkeypat
     with _pytest.raises(RuntimeError, match="not a PDF"):
         c.get_bytes("https://www.asx.com.au/announcement", dest)
     assert len(seen) == 4 and not dest.exists()
+
+
+def test_each_failure_carries_a_short_reason(tmp_path, monkeypatch):
+    """For the pdf_fetch_failed self-check: why, not only that (2026-09-24)."""
+    from asxbot.announcements.http import PdfFetchFailed
+
+    c, _ = _client(tmp_path, monkeypatch, [b"<html>nothing here</html>"] * 4)
+    with pytest.raises(PdfFetchFailed) as e:
+        c.get_bytes("https://www.asx.com.au/announcement", tmp_path / "AAA_1.pdf")
+    assert e.value.reason == "not a PDF, and no pdfURL to follow"
+
+
+def test_a_pdfurl_off_asx_is_not_followed(tmp_path, monkeypatch):
+    from asxbot.announcements.http import PdfFetchFailed
+
+    evil = TERMS_PAGE.replace(b"https://announcements.asx.com.au", b"https://evil.example")
+    c, seen = _client(tmp_path, monkeypatch, [evil] * 4)
+    with pytest.raises(PdfFetchFailed, match="pdfURL points off ASX"):
+        c.get_bytes("https://www.asx.com.au/announcement", tmp_path / "AAA_1.pdf")
+    assert all("evil" not in u for u in seen)
+
+
+def test_a_challenge_page_instead_of_a_pdf_stops_the_collector(tmp_path, monkeypatch):
+    from asxbot.announcements.http import AccessRefused
+
+    c, _ = _client(tmp_path, monkeypatch, [b"<html>Are you a robot? captcha</html>"])
+    with pytest.raises(AccessRefused):
+        c.get_bytes("https://www.asx.com.au/announcement", tmp_path / "AAA_1.pdf")
+
+
+def test_an_oversized_reply_is_refused(tmp_path, monkeypatch):
+    from asxbot.announcements import http as H
+
+    monkeypatch.setattr(H, "MAX_PDF_BYTES", 10)
+    c, _ = _client(tmp_path, monkeypatch, [REAL_PDF] * 4)
+    with pytest.raises(H.PdfFetchFailed, match="too large"):
+        c.get_bytes("https://www.asx.com.au/announcement", tmp_path / "AAA_1.pdf")

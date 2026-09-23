@@ -152,16 +152,25 @@ class Notifier:
         else:
             body = "\n\n<i>nothing passed this hour</i>"
         self.send(head + body)
-        self._write_state({"passes": [], "last_digest_at": now.isoformat(timespec="seconds")})
+        # Everything else in the state stays. Until 2026-09-24 this wrote a fresh state with
+        # only these two keys, dropping `summary_day`, so every hourly digest after 16:10
+        # re-armed the end-of-session summary: on 23 Sep it went out at 16:10, 16:56, 17:56
+        # and 18:57.
+        state.update(passes=[], last_digest_at=now.isoformat(timespec="seconds"))
+        self._write_state(state)
         return True
 
     def session_summary(self, text: str, now: datetime | None = None) -> bool:
-        """The 16:10 end-of-session message. Sent once a day; the caller builds the text."""
+        """The 16:10 end-of-session message. Sent once a trading day, however many times the
+        watcher restarts or the digest runs; the caller builds the text. A send that fails
+        (Telegram down) is not counted, so the next cycle tries again."""
         now = (now or datetime.now(SYD)).astimezone(SYD)
         state = self._state()
         if state.get("summary_day") == now.date().isoformat():
             return False
-        self.send(text)
+        if not self.send(text) and self.enabled:
+            return False
+        state = self._state()  # re-read: nothing else may be lost by this write
         state["summary_day"] = now.date().isoformat()
         self._write_state(state)
         return True

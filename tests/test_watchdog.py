@@ -236,7 +236,7 @@ def test_agent_calls_are_announced(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(cmd, 0, stdout='{"status": "ok"}', stderr="")
 
     monkeypatch.setattr(agents, "_openclaw_bin", lambda: "openclaw")
-    monkeypatch.setattr(agents.subprocess, "run", fake_run)
+    monkeypatch.setattr(agents.hidden, "run", fake_run)  # asxbot.proc: windowless
     try:
         agents.call_agent("trader-decider", "hello", timeout_s=600)
     finally:

@@ -22,11 +22,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from asxbot import proc as hidden
 from asxbot.arena.heartbeat import quiet
 from asxbot.log import EventLog, get_logger
 
@@ -99,10 +99,10 @@ def call_agent(
         # A model call can legitimately run to its timeout with nothing logged; say so, so
         # the watchdog does not report a quiet log as a dead watcher.
         with quiet(timeout_s + 120, f"waiting on {agent}"):
-            proc = subprocess.run(
+            proc = hidden.run(
                 cmd, capture_output=True, text=True, timeout=timeout_s + 60, encoding="utf-8"
             )
-    except subprocess.TimeoutExpired as e:
+    except hidden.TimeoutExpired as e:
         raise AgentCallFailed(f"{agent} timed out after {timeout_s}s") from e
     finally:
         Path(path).unlink(missing_ok=True)

@@ -131,6 +131,14 @@ stamped with the time it was recorded (`decided_at`) and the time its data was r
 next minute that did — never back to an earlier one. Stops and exits follow the same rule, and a stop gapped
 through fills at the bar's open rather than at the stop price.
 
+Since 2026-09-24 fills also respect volume (`arena.fill.max_volume_share`, 20%): no bar fills
+more than that share of the shares it traded, and the rest carries to later bars at their
+prices. An order someone placed is a day order - whatever is unfilled at the end of its
+session expires (`partial`), and the position keeps what filled. A stop or target exit keeps
+working into the next session until the position is out. The stop always gets a bar's volume
+first. A bar is used only once it is final (it has ended and is not the newest row of an
+intraday fetch). The full rule is in `ArenaBroker.work` (`arena/broker.py`).
+
 ### The two agents
 
 `trader-reader` (Sonnet 5) reads each announcement and writes a quotable summary ending in

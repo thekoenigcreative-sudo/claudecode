@@ -40,6 +40,8 @@ if args[:2] == ["arena", "mark"]:
 if args[:2] == ["arena", "report"]:
     print("the report, first line")
     if os.environ.get("STANDIN_HANG"):
+        with open(os.environ["STANDIN_HANG"], "w", encoding="utf-8") as fh:
+            fh.write(str(os.getpid()))
         time.sleep(120)
     print("[sent to Telegram: 1 message(s)]")
     sys.exit(0)
@@ -151,8 +153,15 @@ def test_asxbot_missing_is_logged_and_exits_1(repo):
 
 
 def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
-    """Run the launcher as its own process, kill it mid-report, and read what it left."""
-    env = {**os.environ, "STANDIN_HANG": "1"}
+    """Run the launcher as its own process, kill it mid-report, and read what it left.
+
+    The launcher is killed first and its hanging child second. Until 2026-09-24 the test
+    killed the tree with taskkill /T, which kills in no fixed order: about one run in five
+    the child died first, the launcher saw its pipe close and wrote "--- exit 1 ---" before
+    it was killed in turn - a step that returned, not a killed run.
+    """
+    pid_file = repo.parent / "standin.pid"
+    env = {**os.environ, "STANDIN_HANG": str(pid_file)}
     proc = subprocess.Popen(
         [sys.executable, str(repo / "scripts" / "arena_evening.pyw")], env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -161,7 +170,10 @@ def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
     try:
         deadline = clock.monotonic() + 60
         while clock.monotonic() < deadline:
-            if log.exists() and "the report, first line" in log.read_text(encoding="utf-8"):
+            if (
+                pid_file.exists() and pid_file.read_text(encoding="utf-8").strip()
+                and log.exists() and "the report, first line" in log.read_text(encoding="utf-8")
+            ):  # fmt: skip
                 break
             assert proc.poll() is None, "the launcher ended before its report step"
             clock.sleep(0.2)
@@ -169,8 +181,13 @@ def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
             pytest.fail("the report's first line never reached the log while it ran")
         assert proc.poll() is None  # still running: the line was written as it arrived
     finally:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        proc.kill()  # the launcher, before anything it could see end
         proc.wait(30)
+        if pid_file.exists():
+            subprocess.run(
+                ["taskkill", "/F", "/PID", pid_file.read_text(encoding="utf-8").strip()],
+                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+            )  # fmt: skip
     lines = log_lines(repo)
     assert lines[-2:] == ["--- asxbot arena report --agent --send ---", "the report, first line"]
     why = C.evening_finished("\n".join(lines), date.today(), time(0, 0))

@@ -143,6 +143,15 @@ def arena_place_order(
             raise refuse(f"holding {pos.qty} of {ticker}, cannot sell {qty}")
         if side == "cover" and -pos.qty < qty:
             raise refuse(f"short {abs(pos.qty)} of {ticker}, cannot cover {qty}")
+        # Shares already working to close - a stop or target exit still filling, or an
+        # earlier exit order - are spoken for. Fills are volume-limited since 2026-09-24, so
+        # an exit can take several bars, and a second one on top would oversell.
+        working = acct.closing_qty_working(ticker)
+        if working and abs(pos.qty) - working < qty:
+            raise refuse(
+                f"{working} of the {abs(pos.qty)} {ticker} held are already working to close; "
+                f"at most {max(0, abs(pos.qty) - working)} more can be"
+            )
     else:
         # --- opening trades: the full set of limits -------------------------
         start, end = order_window(cfg, local.date())  # follows Sydney daylight saving
@@ -231,7 +240,8 @@ def arena_place_order(
             )
 
         leverage = lvl.leverage(playbook.market)
-        waiting_value = sum(o.qty * o.limit for o in in_flight)
+        # What is still to fill; a part-filled order's filled shares are already positions.
+        waiting_value = sum(o.remaining * o.limit for o in in_flight)
         exposure = acct.gross_exposure(prices) + waiting_value + value
         if exposure > equity * leverage + 1e-6:
             raise refuse(

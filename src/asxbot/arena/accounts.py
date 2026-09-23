@@ -46,6 +46,9 @@ class Position:
     # was already past the target at that moment is recorded, for the audit trail only.
     target_from: str = ""
     target_past_when_armed: bool = False
+    # The last minute bar the stop and target have been checked against. Bars are worked
+    # once each, in time order (broker.work); empty means from the entry bar, as before.
+    worked_through: str = ""
 
     @property
     def is_short(self) -> bool:
@@ -59,6 +62,8 @@ class Position:
             del d["target_from"]
         if not d["target_past_when_armed"]:
             del d["target_past_when_armed"]
+        if not d["worked_through"]:
+            del d["worked_through"]
         return d
 
 
@@ -95,7 +100,15 @@ class ArenaOrder:
     # which can be before the code notices and records it. What must be strictly before that
     # bar is the moment the level began resting, recorded here. Empty for every other order.
     rests_from: str = ""
-    status: str = "pending_fill"  # pending_fill | filled | rejected | expired
+    # pending_fill: working, and possibly part-filled already (filled_qty > 0).
+    # filled: every share filled. partial: some filled, the rest expired at the end of its
+    # session or was cancelled. expired: none filled by the end of its session. cancelled:
+    # none filled, cancelled (a stop took over, or the position it was closing is gone).
+    status: str = "pending_fill"
+    # limit: an order someone placed; a DAY order, working only in its own session.
+    # stop / target: an exit the broker raised when a position's stop or take-profit was
+    # reached; it keeps working across sessions until the position is out (broker.work).
+    order_type: str = "limit"
     filled_qty: int = 0
     avg_price: float | None = None
     commission: float = 0.0
@@ -113,6 +126,23 @@ class ArenaOrder:
     message: str = ""
     realised: float = 0.0  # set on a closing fill, so win rate is computable per trade
     hold: str = "intraday"  # the holding period the decision intended
+    # Each bar's share of the fill: {"minute", "qty", "price", "bar_price", "bar_volume"}.
+    # No bar fills more than arena.fill.max_volume_share of its traded volume (#25), so a
+    # large order in a thin stock fills across several bars. fill_minute is the first.
+    fills: list = field(default_factory=list)
+    # The last minute bar this order has been worked against; each bar is used once.
+    worked_through: str = ""
+    # A stop or target exit only: the price the bar that reached the level traded at (the
+    # level, or the bar's open if it gapped through). Its slippage is sized from this.
+    trigger_price: float | None = None
+
+    @property
+    def remaining(self) -> int:
+        return max(0, abs(int(self.qty)) - int(self.filled_qty))
+
+    @property
+    def working(self) -> bool:
+        return self.status == "pending_fill"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -122,6 +152,11 @@ class ArenaOrder:
             del d["stop_pct"]
         if not d["rests_from"]:
             del d["rests_from"]
+        for k, blank in (
+            ("order_type", "limit"), ("fills", []), ("worked_through", ""), ("trigger_price", None)
+        ):  # fmt: skip
+            if d[k] == blank:
+                del d[k]
         return d
 
 
@@ -189,6 +224,14 @@ class Account:
 
     def tickers(self) -> list[str]:
         return sorted(self.positions)
+
+    def closing_qty_working(self, ticker: str) -> int:
+        """Shares of `ticker` already working to be sold or covered (unfilled remainders of
+        live closing orders, stop and target exits included)."""
+        return sum(
+            o.remaining for o in self.orders.values()
+            if o.working and o.ticker == ticker and o.side in ("sell", "cover")
+        )  # fmt: skip
 
 
 class AccountStore:

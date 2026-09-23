@@ -210,6 +210,27 @@ def asx200_status(data_dir: Path, user_agent: str) -> ShortUniverse:
     )
 
 
+def asx200_provenance(data_dir: Path, codes: set[str] | None = None) -> dict:
+    """Where the ASX 200 list the arena uses came from and how old it is, for the agents'
+    packets: the list is authoritative and dated, and they are told so (TRACKER #9). Reads
+    the files only, never the network. `codes` is the set actually in use, if known."""
+    udir = Path(data_dir) / "universe"
+    manual, members = udir / ASX200_MANUAL, udir / ASX200_MEMBERS
+    if manual.exists():
+        df = pd.read_csv(manual)
+        as_of = date.fromtimestamp(manual.stat().st_mtime).isoformat()
+        source = f"manual override {ASX200_MANUAL}"
+    elif members.exists():
+        df = pd.read_csv(members)
+        as_of = str(df["as_of"].iloc[0])[:10] if "as_of" in df.columns and len(df) else None
+        source = str(df["source"].iloc[0]) if "source" in df.columns and len(df) else ""
+        source = f"S&P/ASX 200 constituent list ({source or ASX200_MEMBERS})"
+    else:
+        return {"list": "none on disk", "as_of": None, "members": len(codes or ())}
+    n = len(codes) if codes is not None else len(df)
+    return {"list": source, "as_of": as_of, "members": n}
+
+
 def asx200_codes(data_dir: Path, user_agent: str) -> set[str]:
     """The set the arena allows shorts in (ARENA.md: shorts only in the ASX 200)."""
     return asx200_status(data_dir, user_agent).codes

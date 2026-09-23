@@ -8,7 +8,8 @@ nobody read at the time. These checks read them.
 All arithmetic and file checks. No judgement, no model, nothing that needs interpreting:
 
   pdf_not_pdf        a file under data/announcements/pdf whose first bytes are not %PDF
-  pdf_fetch_failed   an announcement_pdf_failures event in the last hour
+  pdf_fetch_failed   an announcement_pdf_failures event in the last hour, with its
+                     reason: a fetch that failed, or a reader called with no document
   screen_dominated   one screen test rejecting more than 80% of the day's announcements
   agent_mismatch     an agent call whose model or thinking level was not what config asks
   stuck_pending      a pending_fill order older than the resolve window plus an hour
@@ -120,14 +121,22 @@ def check_pdf_fetches(cfg, now: datetime) -> Check:
     fails = recent_events(cfg.data_dir, "announcement_pdf_failures", now - timedelta(hours=1))
     if not fails:
         return Check("pdf_fetch_failed", True, "no PDF fetch failed in the last hour")
-    codes = ", ".join(sorted({str(f.get("code", "?")) for f in fails})[:8])
+    from collections import Counter
+
+    def why(f: dict) -> str:
+        # Older events carry only the exception text; newer ones a short reason (#8).
+        return str(f.get("reason") or f.get("error") or "no reason recorded")[:80]
+
+    items = sorted({f"{f.get('code')} {f.get('ids_id')} ({why(f)})" for f in fails})
+    reasons = Counter(why(f) for f in fails)
+    by_reason = "; ".join(f"{r} x{n}" for r, n in reasons.most_common(4))
     return Check(
         "pdf_fetch_failed",
         False,
-        f"{len(fails)} PDF fetch(es) failed in the last hour ({codes}); those agents are "
-        f"judging headlines with no document",
+        f"{len(fails)} PDF fetch(es) failed in the last hour - {by_reason} - "
+        f"({', '.join(items[:4])}); those agents are judging headlines with no document",
         count=len(fails),
-        items=[f"{f.get('code')} {f.get('ids_id')}" for f in fails],
+        items=items,
     )
 
 
@@ -240,6 +249,13 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
             decided = datetime.fromisoformat(o.decided_at)
             if decided.tzinfo is None:
                 decided = decided.replace(tzinfo=SYD)
+            # An order that is being worked bar by bar (a large order in a thin stock fills
+            # across many, since 2026-09-24) is stuck only if the bars stopped coming.
+            # A stop or target exit still short at the close carries into the next session;
+            # from the bar after 16:10 it next could fill at the next open, not "now".
+            if o.worked_through:
+                after = datetime.fromisoformat(o.worked_through) + timedelta(minutes=1)
+                decided = max(decided, after)
             age = now - _could_first_fill(decided)
             if age > limit:
                 stuck.append(
@@ -270,9 +286,12 @@ def check_fills_after_orders(arena, pb) -> Check:
     for kind in ("agent", "bot"):
         acct = arena.account(pb, kind)
         for o in acct.orders.values():
-            if o.status != "filled" or not o.data_as_of or not o.fill_minute:
-                continue
-            fill = datetime.fromisoformat(o.fill_minute)
+            if not o.filled_qty or not o.data_as_of or not o.fill_minute:
+                continue  # part-filled orders count too: every slice must be after the order
+            fill = min(
+                [datetime.fromisoformat(f["minute"]) for f in o.fills]
+                + [datetime.fromisoformat(o.fill_minute)]
+            )
             floor = datetime.fromisoformat(o.rests_from or o.decided_at)
             if fill <= floor:
                 what = "began resting" if o.rests_from else "was recorded"

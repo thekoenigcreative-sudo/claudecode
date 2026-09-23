@@ -28,7 +28,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from asxbot.arena.accounts import Account, AccountStore, ArenaOrder, Mark, Position
-from asxbot.arena.minutes import MinuteBars, NoTradeYet, first_minute_after
+from asxbot.arena.minutes import MinuteBars, NoTradeYet, _price_of, first_minute_after
 from asxbot.backtest.costs import CostModel
 from asxbot.log import EventLog, get_logger
 
@@ -58,6 +58,8 @@ class ArenaBroker:
         resolve_after_minutes: int = 22,
         max_wait_minutes: int = 390,
         clock=None,  # callable() -> aware datetime; the wall clock unless a test sets one
+        max_volume_share: float = 0.20,
+        settle_minutes: int = 0,
     ):
         self.store = AccountStore(data_dir)
         self.costs = costs
@@ -67,6 +69,14 @@ class ArenaBroker:
         self.resolve_after_minutes = int(resolve_after_minutes)
         self.max_wait_minutes = int(max_wait_minutes)
         self.clock = clock or (lambda: datetime.now(SYD))
+        # No minute bar fills more than this share of the shares it traded (#25).
+        if not 0.0 < float(max_volume_share) <= 1.0:
+            raise ValueError(
+                f"arena.fill.max_volume_share must be in (0, 1], got {max_volume_share}"
+            )
+        self.max_volume_share = float(max_volume_share)
+        # Minutes kept back behind the newest row of an intraday fetch (minutes.final_bars).
+        self.settle_minutes = int(settle_minutes)
         self.events = EventLog(data_dir)
         self.notifier = None  # set by build_arena; alerts are best effort (notify.py)
 
@@ -131,51 +141,435 @@ class ArenaBroker:
         )  # fmt: skip
         return o
 
-    # -- filling ------------------------------------------------------------
+    # -- filling: the order book, worked bar by bar ----------------------------
     def resolve_pending(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
-        """Fill every pending order the free feed has now caught up with."""
-        now = now or datetime.now(SYD)
+        """Work the account's orders, stops and targets through the bars the feed now holds.
+
+        The same pass as apply_exits since 2026-09-24 (work): entries, exits, stops and
+        targets in one ticker share each bar's volume, so they have to be worked together,
+        in time order. The watcher calls both; the second finds nothing new to do.
+        """
+        return self.work(acct, now)
+
+    def apply_exits(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
+        """Trigger any stop or take-profit target the minute bars have reached, and fill it.
+
+        The same pass as resolve_pending (see work). Always on, never skipped.
+
+        Both are checked from the minute AFTER the position opened. The entry bar is
+        excluded because the entry filled at that bar's close (the default
+        `arena.fill.minute_price`), so its high and low happened before the position existed.
+        Until 2026-09-23 the stop scan included it: a bar that dipped 8% and recovered to
+        close at the fill price registered as both the entry and the stop, for two lots of
+        brokerage and an instant loss on a move the position never saw.
+
+        Stop: a long exits when a bar's low reaches it, a short when a bar's high does. From
+        then on it is a market order. In the bar that reached it, it fills at the stop, or
+        at the bar's open when the bar gapped straight through it - whichever is worse; in
+        any later bar it needs (see work), at that bar's price. Then slippage.
+
+        Target, agent accounts only (the yardstick's frozen rule has no target, so a bot
+        position's target is never honoured): a resting take-profit, the mirror image of
+        the stop. A long's target is reached when a bar's high reaches it, a short's when a
+        bar's low does. It fills at the target, or at the bar's open when the price gapped
+        through it - whichever is better, as a resting limit fills - then slippage, the same
+        as every other arena fill. It stays a limit: a later bar fills the rest only if that
+        bar reaches the target too. Until 2026-09-24 the target was stored and never acted
+        on, though the decider set it believing it was a take-profit. 42364dc filled targets
+        with no slippage, which flattered the agent's account against its yardstick; target
+        fills pay it from 2026-09-23.
+
+        The stop always has priority. One bar reaching both: the stop is taken (a minute
+        bar does not say which came first, so the arena assumes the worse). A stop reached
+        while a target exit is still filling cancels the rest of the target and takes over
+        the whole remaining position, and it is filled first from every bar's volume.
+
+        A position opened before targets were honoured has its target honoured from the
+        first time this runs on it, and from then on it is checked exactly like any other
+        (_arm_target). If the price is already past the target at that moment, nothing
+        special happens: the target rests from there. The first bar after it that reaches
+        the target fills it - at that bar's open if the open is at or beyond the target,
+        otherwise at the target - and if the price has fallen back, the position holds until
+        a later bar reaches the target. 42364dc instead sold such a position at the first
+        open whatever that open was, which is a market order, not a take-profit.
+        """
+        return self.work(acct, now)
+
+    def work(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
+        """Work every live order, stop and target of the account through the minute bars
+        that are final by `now`, one bar at a time per ticker. Each bar is worked once.
+
+        Volume (TRACKER #25, 2026-09-24). No bar fills more than `max_volume_share` of the
+        shares it traded (arena.fill.max_volume_share, default 20%), rounded down; the rest
+        of the order carries to later bars, at their prices. Until 2026-09-24 a bar filled
+        any size: A1M's 3,000-share take-profit (ARN-000003) filled in the 15:57 bar, where
+        1 share traded. The share is per account and per bar, shared by all of the
+        account's orders in that ticker in this order: a stop exit, then a target exit,
+        then everything else in the order it was recorded. The agent's account and its
+        yardstick's are separate books and do not take volume from each other.
+
+        What happens to an order still part-filled at the close depends on what it is:
+          * An order someone placed (the agent, the yardstick, the pre-close sweep, the
+            horizon exit, a person) is a DAY limit order, as an ASX order through IBKR is by
+            default. It works only in its own session - the one it was recorded in, or the
+            next one if it was recorded after the 16:10 closing auction or on a day the ASX
+            did not trade. Once that session is over and the delayed feed has caught up with
+            its close, the rest expires: `partial` if some of it filled, `expired` if none.
+            The position keeps whatever did fill.
+          * A stop or target exit is raised by the broker to get a position out, and keeps
+            working, across sessions, until the position is out. Leaving a triggered stop
+            half-done overnight would leave the position half-protected; a real stop-loss
+            order would still be working in the morning.
+        When a stop or target exit is raised, every other working order in that ticker is
+        cancelled (its fills stand): the exit takes the whole position.
+        """
+        now = (now or datetime.now(SYD)).astimezone(SYD)
         out: list[FillOutcome] = []
-        for o in list(acct.orders.values()):
-            if o.status != "pending_fill":
+        for pos in list(acct.positions.values()):
+            if acct.kind == "agent" and pos.target is not None and pos.qty and not pos.target_from:
+                # Armed at `now`, so `now` must be fresh: the watcher reads the clock
+                # again just before calling this, never reusing its cycle's start time.
+                self._arm_target(acct, pos, now)
+        tickers = {o.ticker for o in acct.orders.values() if o.working}
+        tickers |= {t for t, p in acct.positions.items() if p.qty and self._guarded(acct, p)}
+        for ticker in sorted(tickers):
+            start = self._work_start(acct, ticker)
+            if start is None:
                 continue
-            decided = _aware(o.decided_at)
-            if (now - decided) < timedelta(minutes=self.resolve_after_minutes):
-                continue  # the delayed feed has not caught up with that minute yet
-            out.append(self._resolve_one(acct, o, now))
+            for ts, bar in self.minutes.final_bars(
+                ticker, start, now, self.settle_minutes, self.resolve_after_minutes
+            ):
+                out.extend(self._work_bar(acct, ticker, ts, bar))
+        out.extend(self._end_sessions(acct, now))
         self.store.save(acct)
         return out
 
-    def _resolve_one(self, acct: Account, o: ArenaOrder, now: datetime) -> FillOutcome:
-        decided = _aware(o.decided_at)
-        try:
-            first = self.minutes.fill_at(o.ticker, decided, self.max_wait_minutes)
-        except NoTradeYet as e:
-            return FillOutcome(o.order_id, "pending_fill", str(e))
-        chosen, slip = self.find_fill(o, decided)
+    @staticmethod
+    def _guarded(acct: Account, pos: Position) -> bool:
+        return pos.stop is not None or (acct.kind == "agent" and pos.target is not None)
 
-        if chosen is None:
-            # Did the session it was decided in already finish, and has the delayed feed
-            # caught up with its close? Then it can never fill.
-            if _session_over(decided, now, self.resolve_after_minutes):
+    def _work_start(self, acct: Account, ticker: str) -> datetime | None:
+        """The earliest bar anything in this ticker still needs."""
+        starts = []
+        for o in acct.orders.values():
+            if o.working and o.ticker == ticker:
+                starts.append(_order_from(o))
+        pos = acct.positions.get(ticker)
+        if pos is not None and pos.qty and self._guarded(acct, pos):
+            starts.append(_minute_after(pos.worked_through or pos.opened_at))
+        return min(starts) if starts else None
+
+    def _work_bar(self, acct: Account, ticker: str, ts: datetime, bar) -> list[FillOutcome]:
+        out: list[FillOutcome] = []
+        minute = ts.isoformat(timespec="minutes")
+        # 1. The position's stop, then its target. The stop is always looked at first.
+        pos = acct.positions.get(ticker)
+        if pos is not None and pos.qty and ts > _aware(pos.worked_through or pos.opened_at):
+            pos.worked_through = minute
+            long = pos.qty > 0
+            live = [o for o in acct.orders.values() if o.working and o.ticker == ticker]
+            if (
+                pos.stop is not None
+                and not any(o.order_type == "stop" for o in live)
+                and _reaches(bar, float(pos.stop), "down" if long else "up")
+            ):
+                out.extend(self._raise_exit(acct, pos, "stop", ts, bar, live))
+            elif (
+                acct.kind == "agent"
+                and pos.target is not None
+                and not any(o.order_type in ("stop", "target") for o in live)
+                and ts > _aware(_later(pos.opened_at, pos.target_from))
+                and _reaches(bar, float(pos.target), "up" if long else "down")
+            ):
+                out.extend(self._raise_exit(acct, pos, "target", ts, bar, live))
+
+        # 2. The bar's volume, shared: stop exit, target exit, then the rest by age.
+        room = int(float(bar["volume"]) * self.max_volume_share)
+        live = [o for o in acct.orders.values() if o.working and o.ticker == ticker]
+        for o in sorted(live, key=_priority):
+            if ts < _order_from(o):
+                continue
+            if o.order_type == "limit" and ts.date() != _session_day(_aware(o.decided_at)):
+                continue  # outside its session; _end_sessions expires it
+            o.worked_through = minute
+            raw = self._bar_price(o, ts, bar)
+            if raw is None:
+                continue
+            px = raw * (1 + self._slip(o)) if o.side in ("buy", "cover") else raw * (
+                1 - self._slip(o)
+            )
+            if o.order_type == "limit" and not _meets(o, px):
+                continue
+            qty = min(o.remaining, room)
+            if o.side in CLOSING_SIDES:
+                held = acct.positions.get(ticker)
+                have = 0 if held is None else (held.qty if o.side == "sell" else -held.qty)
+                if have <= 0:
+                    out.append(self._cancel(acct, o, f"no {ticker} position left to close"))
+                    continue
+                qty = min(qty, have)
+            if qty <= 0:
+                continue
+            out.append(self._fill_slice(acct, o, qty, px, raw, ts, bar))
+            room -= qty
+        return out
+
+    def _bar_price(self, o: ArenaOrder, ts: datetime, bar) -> float | None:
+        """The raw price this order trades at in this bar, before slippage; None if it
+        cannot trade in it."""
+        if o.order_type == "stop":
+            if ts == _aware(o.data_as_of):  # the bar that reached the stop: the gap rule
+                return _gap_price(bar, float(o.limit), worse=True, sell=o.side == "sell")
+            return _price_of(bar, self.minutes.price_field)  # a market order from then on
+        if o.order_type == "target":
+            if not _reaches(bar, float(o.limit), "up" if o.side == "sell" else "down"):
+                return None
+            return _gap_price(bar, float(o.limit), worse=False, sell=o.side == "sell")
+        return _price_of(bar, self.minutes.price_field)
+
+    def _slip(self, o: ArenaOrder) -> float:
+        """The slippage fraction for this order, from its full size, as every fill used."""
+        if o.order_type == "limit":
+            return self.costs.slippage_pct(abs(o.qty) * o.limit, self.adv_lookup(o.ticker))
+        return self.costs.slippage_pct(abs(o.qty) * float(o.trigger_price), self.adv_lookup(
+            o.ticker
+        ))
+
+    def _raise_exit(
+        self, acct: Account, pos: Position, kind: str, ts: datetime, bar, live: list
+    ) -> list[FillOutcome]:
+        """A stop or target has been reached in bar `ts`: record the exit that works the
+        whole position out, and cancel every other working order in the ticker."""
+        long = pos.qty > 0
+        side = "sell" if long else "cover"
+        level = float(pos.stop if kind == "stop" else pos.target)
+        trigger = _gap_price(bar, level, worse=kind == "stop", sell=long)
+        cancelled = [
+            self._cancel(acct, other, f"the {kind} at {level:.3f} was reached at {ts:%H:%M}")
+            for other in live
+        ]
+        if kind == "stop":
+            reason = f"STOP hit at {level:.3f}"
+            model = "code (stop, not the agent)"
+            rests = pos.opened_at
+        else:
+            reason = f"TARGET reached at {level:.3f}"
+            if pos.target_past_when_armed:
+                reason += (
+                    f" (it was already past when targets began to be honoured, "
+                    f"{pos.target_from}, and rested from there)"
+                )
+            model = "code (target, not the agent)"
+            rests = _later(pos.opened_at, pos.target_from)
+        o = ArenaOrder(
+            order_id=self.store.next_order_id(), account=acct.name, ticker=pos.ticker,
+            side=side, qty=abs(pos.qty), limit=round(level, 4),
+            **self._resting_times(ts, rests), order_type=kind, trigger_price=trigger,
+            reason=reason, model=model, placed_by="code", hold=pos.hold,
+            message=f"{kind} reached in the {ts:%Y-%m-%d %H:%M} bar; working",
+        )  # fmt: skip
+        acct.orders[o.order_id] = o
+        self.events.append("arena_orders", {**o.to_dict(), "event": f"{kind}_reached"})
+        log.info(
+            "arena %s %s %s %s reached %.4f in the %s bar: %s %d working",
+            acct.name, o.order_id, pos.ticker, kind, level, ts.strftime("%H:%M"), side, o.qty,
+        )  # fmt: skip
+        return cancelled
+
+    def _cancel(self, acct: Account, o: ArenaOrder, why: str) -> FillOutcome:
+        o.status = "partial" if o.filled_qty else "cancelled"
+        o.message = (
+            f"filled {o.filled_qty:,} of {abs(o.qty):,}; the rest cancelled: {why}"
+            if o.filled_qty else f"cancelled unfilled: {why}"
+        )  # fmt: skip
+        self._finish(acct, o)
+        return FillOutcome(o.order_id, o.status, o.message)
+
+    def _end_sessions(self, acct: Account, now: datetime) -> list[FillOutcome]:
+        """A day order whose session is over, with the delayed feed caught up with its
+        close, is done: the rest of it expires."""
+        out = []
+        for o in list(acct.orders.values()):
+            if not o.working or o.order_type != "limit":
+                continue
+            decided = _aware(o.decided_at)
+            day = _session_day(decided)
+            close = datetime.combine(day, SESSION_CLOSE, tzinfo=SYD)
+            if now < close + timedelta(minutes=self.resolve_after_minutes):
+                continue
+            if o.filled_qty:
+                o.status = "partial"
+                o.message = (
+                    f"filled {o.filled_qty:,} of {abs(o.qty):,} by the {day:%d %b} close, no bar "
+                    f"filling more than {self.max_volume_share:.0%} of its volume; the other "
+                    f"{o.remaining:,} expired with the day"
+                )
+                log.info("arena %s %s part-filled and done: %s", acct.name, o.order_id, o.message)
+                self._finish(acct, o)
+            else:
                 o.status = "expired"
                 o.message = (
-                    f"limit {o.limit:.3f} was never met between {decided:%H:%M} and the close; "
-                    f"first traded minute was {first.minute:%H:%M} at {first.price:.3f}"
+                    f"limit {o.limit:.3f} was never met between {decided:%H:%M} and the close"
                 )
+                try:
+                    first = self.minutes.fill_at(o.ticker, decided, self.max_wait_minutes)
+                    o.message += (
+                        f"; first traded minute was {first.minute:%H:%M} at {first.price:.3f}"
+                    )
+                except NoTradeYet:
+                    o.message += "; the stock did not trade after it was recorded"
                 self.events.append("arena_orders", {**o.to_dict(), "event": "expired"})
                 log.info("arena %s %s expired: %s", acct.name, o.order_id, o.message)
                 self._notify("expired", o)
-                return FillOutcome(o.order_id, "expired", o.message)
-            return FillOutcome(o.order_id, "pending_fill", "limit not met yet; still resting")
+            out.append(FillOutcome(o.order_id, o.status, o.message))
+        return out
 
-        ts, px, raw = chosen
-        return self._apply_fill(acct, o, px, ts, self.fill_basis(o, decided, ts, raw, slip))
+    def _fill_slice(
+        self, acct: Account, o: ArenaOrder, qty: int, price: float, raw: float, ts: datetime,
+        bar,
+    ) -> FillOutcome:
+        """Fill `qty` of the order in bar `ts` at `price` (after slippage) and book it."""
+        day = ts.date().isoformat()
+        before = sum(f["qty"] * f["price"] for f in o.fills if f["minute"][:10] == day)
+        # IBKR charges one commission per order per day, however many executions it takes,
+        # so the minimum is paid once a day, not once a bar.
+        fee = self.costs.brokerage(before + qty * price) - (
+            self.costs.brokerage(before) if before else 0.0
+        )
+        first_slice = not o.fills
+        o.fills.append({
+            "minute": ts.isoformat(timespec="minutes"), "qty": int(qty),
+            "price": price, "bar_price": raw,
+            "bar_volume": float(bar["volume"]),
+        })  # fmt: skip
+        o.filled_qty += int(qty)
+        avg = sum(f["qty"] * f["price"] for f in o.fills) / o.filled_qty
+        pos = acct.positions.get(o.ticker)
+        realised = 0.0
+        if o.side in OPENING_SIDES:
+            if o.stop_pct is not None:
+                d = float(o.stop_pct) / 100.0
+                o.stop = round(avg * (1 - d) if o.side == "buy" else avg * (1 + d), 4)
+            o = _stop_rescaled_to_fill(o, avg)
+            sign = 1 if o.side == "buy" else -1
+            if o.side == "buy":
+                acct.cash -= qty * price + fee
+            else:
+                acct.cash += qty * price - fee
+            if pos is None:
+                acct.positions[o.ticker] = Position(
+                    ticker=o.ticker, qty=sign * qty, avg_cost=price,
+                    opened_at=ts.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
+                    thesis=o.reason, opened_by=o.placed_by, model=o.model,
+                    last_borrow_day=ts.date().isoformat(), hold=o.hold,
+                    target_from=_target_from(o, ts),
+                )  # fmt: skip
+            else:
+                total = abs(pos.qty) + qty
+                pos.avg_cost = (pos.avg_cost * abs(pos.qty) + price * qty) / total
+                pos.qty = sign * total
+                if o.stop is not None:
+                    pos.stop = o.stop
+                if first_slice:
+                    _move_target(pos, o, ts)
+        else:
+            if o.side == "sell":
+                acct.cash += qty * price - fee
+                realised = (price - pos.avg_cost) * qty
+                pos.qty -= qty
+            else:
+                acct.cash -= qty * price + fee
+                realised = (pos.avg_cost - price) * qty
+                pos.qty += qty
+            acct.realised_pnl += realised
+            if pos.qty == 0:
+                del acct.positions[o.ticker]
+        acct.fees_paid += fee
+        o.realised = round(o.realised + realised, 2)
+        o.avg_price = round(avg, 4)
+        o.commission = round(o.commission + fee, 2)
+        if first_slice:
+            o.fill_minute = ts.isoformat(timespec="minutes")
+            o.fill_basis = self._first_basis(o, ts, raw)
+        self.events.append(
+            "arena_fill_slices",
+            {"account": acct.name, "order_id": o.order_id, "ticker": o.ticker, "side": o.side,
+             "order_type": o.order_type, **o.fills[-1], "fee": round(fee, 4),
+             "filled_qty": o.filled_qty, "qty": abs(o.qty)},
+        )  # fmt: skip
+        if o.remaining == 0:
+            o.status = "filled"
+            o.message = "filled"
+            self._finish(acct, o)
+            return FillOutcome(o.order_id, "filled", o.fill_basis)
+        o.message = (
+            f"part-filled: {o.filled_qty:,} of {abs(o.qty):,} so far, no bar filling more than "
+            f"{self.max_volume_share:.0%} of its volume; the rest is working"
+        )
+        log.info(
+            "arena %s %s part-filled %s %s %d @ %.4f in the %s bar (volume %s): %d of %d",
+            acct.name, o.order_id, o.side, o.ticker, qty, price, ts.strftime("%H:%M"),
+            f"{float(bar['volume']):,.0f}", o.filled_qty, abs(o.qty),
+        )  # fmt: skip
+        return FillOutcome(o.order_id, "pending_fill", o.message)
+
+    def _first_basis(self, o: ArenaOrder, ts: datetime, raw: float) -> str:
+        if o.order_type == "stop":
+            reached = _aware(o.data_as_of)
+            how = (
+                "after the gap rule" if ts == reached
+                else f"in the {ts:%H:%M} bar, a market order once the stop was reached"
+            )  # fmt: skip
+            return (
+                f"stop {o.limit:.3f} reached in the {reached:%Y-%m-%d %H:%M} minute bar; "
+                f"filled at {raw:.4f} {how}, then slippage"
+            )
+        if o.order_type == "target":
+            reached = _aware(o.data_as_of)
+            where = (
+                f"reached in the {ts:%Y-%m-%d %H:%M} minute bar"
+                if ts == reached
+                else f"reached in the {reached:%Y-%m-%d %H:%M} minute bar, first filled in the "
+                f"{ts:%H:%M} bar"
+            )
+            return (
+                f"target {o.limit:.3f} {where}; {raw:.4f} (the target, or the bar's open if it "
+                f"gapped through), {'less' if o.side == 'sell' else 'plus'} "
+                f"{self._slip(o) * 100:.3f}% slippage"
+            )
+        return self.fill_basis(o, _aware(o.decided_at), ts, raw, self._slip(o))
+
+    def _finish(self, acct: Account, o: ArenaOrder) -> None:
+        """An order is done (filled, partial or cancelled): say so once, in full."""
+        if len(o.fills) > 1:
+            first, last = (datetime.fromisoformat(o.fills[i]["minute"]) for i in (0, -1))
+            fmt = "%H:%M" if first.date() == last.date() else "%d %b %H:%M"
+            o.fill_basis += (
+                f"; filled over {len(o.fills)} bars, {first:{fmt}} to {last:{fmt}}, no bar "
+                f"filling more than {self.max_volume_share:.0%} of its traded volume; "
+                f"average {o.avg_price:.4f} after slippage"
+            )
+        if not o.filled_qty:
+            self.events.append("arena_orders", {**o.to_dict(), "event": o.status})
+            log.info("arena %s %s %s: %s", acct.name, o.order_id, o.status, o.message)
+            return
+        self.events.append("arena_fills", {**o.to_dict(), "event": o.status})
+        log.info(
+            "arena %s %s %s %s %s %d of %d @ %.4f (fee %.2f) - %s",
+            acct.name, o.order_id, o.status.upper(), o.side, o.ticker, o.filled_qty,
+            abs(o.qty), o.avg_price, o.commission, o.fill_basis,
+        )  # fmt: skip
+        after = acct.positions.get(o.ticker)
+        self._notify("filled", o, after is None, after.stop if after is not None else None)
 
     def find_fill(
         self, o: ArenaOrder, decided: datetime
     ) -> tuple[tuple[datetime, float, float] | None, float]:
         """((bar minute, fill price, raw bar price) or None, slippage fraction).
+
+        The single-bar rule before 2026-09-24, kept only for scripts/correct_fill_arn000002.py,
+        which re-priced one order under it (volume did not bind there: 3,000 shares against
+        36,051 traded in the bar). Every live fill goes through work().
 
         Walks traded minutes from the first one that starts strictly after the decision. The
         first whose price, after slippage, meets the order's limit is the fill; the walk
@@ -203,217 +597,6 @@ class ArenaBroker:
             f"{raw:.4f}, {'plus' if o.side in ('buy', 'cover') else 'less'} "
             f"{slip * 100:.3f}% slippage"
         )
-
-    def _apply_fill(
-        self, acct: Account, o: ArenaOrder, price: float, minute: datetime, basis: str
-    ) -> FillOutcome:
-        qty = abs(int(o.qty))
-        value = qty * price
-        fee = self.costs.brokerage(value)
-        pos = acct.positions.get(o.ticker)
-        realised = 0.0
-        if o.stop_pct is not None and o.side in OPENING_SIDES:
-            d = float(o.stop_pct) / 100.0
-            o.stop = round(price * (1 - d) if o.side == "buy" else price * (1 + d), 4)
-        o = _stop_rescaled_to_fill(o, price)
-
-        if o.side == "buy":
-            acct.cash -= value + fee
-            if pos is None:
-                acct.positions[o.ticker] = Position(
-                    ticker=o.ticker, qty=qty, avg_cost=price,
-                    opened_at=minute.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
-                    thesis=o.reason, opened_by=o.placed_by, model=o.model,
-                    last_borrow_day=minute.date().isoformat(), hold=o.hold,
-                    target_from=_target_from(o, minute),
-                )  # fmt: skip
-            else:
-                total = pos.qty + qty
-                pos.avg_cost = (pos.avg_cost * pos.qty + price * qty) / total
-                pos.qty = total
-                if o.stop is not None:
-                    pos.stop = o.stop
-                _move_target(pos, o, minute)
-        elif o.side == "short":
-            acct.cash += value - fee
-            if pos is None:
-                acct.positions[o.ticker] = Position(
-                    ticker=o.ticker, qty=-qty, avg_cost=price,
-                    opened_at=minute.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
-                    thesis=o.reason, opened_by=o.placed_by, model=o.model,
-                    last_borrow_day=minute.date().isoformat(), hold=o.hold,
-                    target_from=_target_from(o, minute),
-                )  # fmt: skip
-            else:
-                total = pos.qty - qty  # more negative
-                pos.avg_cost = (pos.avg_cost * abs(pos.qty) + price * qty) / abs(total)
-                pos.qty = total
-                if o.stop is not None:
-                    pos.stop = o.stop
-                _move_target(pos, o, minute)
-        elif o.side == "sell":
-            if pos is None or pos.qty < qty:
-                o.status = "rejected"
-                o.message = "no long position of that size to sell"
-                return FillOutcome(o.order_id, "rejected", o.message)
-            acct.cash += value - fee
-            realised = (price - pos.avg_cost) * qty
-            acct.realised_pnl += realised
-            pos.qty -= qty
-            if pos.qty == 0:
-                del acct.positions[o.ticker]
-        elif o.side == "cover":
-            if pos is None or pos.qty > -qty:
-                o.status = "rejected"
-                o.message = "no short position of that size to cover"
-                return FillOutcome(o.order_id, "rejected", o.message)
-            acct.cash -= value + fee
-            realised = (pos.avg_cost - price) * qty
-            acct.realised_pnl += realised
-            pos.qty += qty
-            if pos.qty == 0:
-                del acct.positions[o.ticker]
-        else:
-            o.status = "rejected"
-            o.message = f"bad side {o.side!r}"
-            return FillOutcome(o.order_id, "rejected", o.message)
-
-        acct.fees_paid += fee
-        o.realised = round(realised, 2)
-        o.status = "filled"
-        o.filled_qty = qty
-        o.avg_price = round(price, 4)
-        o.commission = round(fee, 2)
-        o.fill_minute = minute.isoformat(timespec="minutes")
-        o.fill_basis = basis
-        o.message = "filled"
-        self.events.append("arena_fills", {**o.to_dict(), "event": "filled"})
-        log.info(
-            "arena %s %s FILLED %s %s %d @ %.4f (fee %.2f) - %s",
-            acct.name, o.order_id, o.side, o.ticker, qty, price, fee, basis,
-        )  # fmt: skip
-        after = acct.positions.get(o.ticker)
-        self._notify("filled", o, after is None, after.stop if after is not None else None)
-        return FillOutcome(o.order_id, "filled", basis)
-
-    # -- stops and targets ----------------------------------------------------
-    def apply_exits(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
-        """Trigger any stop or take-profit target the minute bars have already reached.
-
-        Always on, never skipped. Both are checked from the minute AFTER the position opened.
-        The entry bar is excluded because the entry filled at that bar's close (the default
-        `arena.fill.minute_price`), so its high and low happened before the position existed.
-        Until 2026-09-23 the stop scan included it: a bar that dipped 8% and recovered to
-        close at the fill price registered as both the entry and the stop, for two lots of
-        brokerage and an instant loss on a move the position never saw.
-
-        Stop: a long exits when a bar's low reaches it, a short when a bar's high does. The
-        fill is the stop, or the bar's open when the bar gapped straight through it -
-        whichever is worse - then slippage.
-
-        Target, agent accounts only (the yardstick's frozen rule has no target, so a bot
-        position's target is never honoured): a resting take-profit, the mirror image of
-        the stop. A long exits when a bar's high reaches it, a short when a bar's low does.
-        The fill is the target, or the bar's open when the price gapped through it -
-        whichever is better, as a resting limit fills - then slippage, the same as every
-        other arena fill. Until 2026-09-24 the target was stored and never acted on, though
-        the decider set it believing it was a take-profit. 42364dc filled targets with no
-        slippage, which flattered the agent's account against its yardstick; target fills pay
-        it from 2026-09-23.
-
-        One bar reaching both: the stop is taken. A minute bar does not say which came
-        first, so the arena assumes the worse.
-
-        A position opened before targets were honoured has its target honoured from the
-        first time this runs on it, and from then on it is checked exactly like any other
-        (_arm_target). If the price is already past the target at that moment, nothing
-        special happens: the target rests from there. The first bar after it that reaches
-        the target fills it - at that bar's open if the open is at or beyond the target,
-        otherwise at the target - and if the price has fallen back, the position holds until
-        a later bar reaches the target. 42364dc instead sold such a position at the first
-        open whatever that open was, which is a market order, not a take-profit.
-        """
-        now = now or datetime.now(SYD)
-        out: list[FillOutcome] = []
-        armed = False
-        for ticker, pos in list(acct.positions.items()):
-            if pos.qty == 0:
-                continue
-            since = _minute_after(pos.opened_at)  # opened_at is the entry bar's minute
-            long = pos.qty > 0
-            stop_hit = None
-            if pos.stop is not None:
-                stop_hit = self.minutes.first_trigger(
-                    ticker, since, float(pos.stop), "down" if long else "up", until=now.date()
-                )
-            target_hit = None
-            if acct.kind == "agent" and pos.target is not None:
-                if not pos.target_from:
-                    # Armed at `now`, so `now` must be fresh: the watcher reads the clock
-                    # again just before calling this, never reusing its cycle's start time.
-                    self._arm_target(acct, pos, now)
-                    armed = True
-                t_since = max(since, _minute_after(pos.target_from))
-                target_hit = self.minutes.first_trigger(
-                    ticker, t_since, float(pos.target), "up" if long else "down",
-                    until=now.date(),
-                )  # fmt: skip
-            if stop_hit is not None and (target_hit is None or stop_hit[0] <= target_hit[0]):
-                out.append(self._exit_at_stop(acct, ticker, pos, *stop_hit))
-            elif target_hit is not None:
-                out.append(self._exit_at_target(acct, ticker, pos, *target_hit))
-        if out or armed:
-            self.store.save(acct)
-        return out
-
-    def _exit_at_stop(
-        self, acct: Account, ticker: str, pos: Position, ts: datetime, raw: float
-    ) -> FillOutcome:
-        adv = self.adv_lookup(ticker)
-        slip = self.costs.slippage_pct(abs(pos.qty) * raw, adv)
-        side = "sell" if pos.qty > 0 else "cover"
-        px = raw * (1 - slip) if side == "sell" else raw * (1 + slip)
-        oid = self.store.next_order_id()
-        o = ArenaOrder(
-            order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
-            limit=round(px, 4), **self._resting_times(ts, pos.opened_at),
-            reason=f"STOP hit at {pos.stop:.3f}", model="code (stop, not the agent)",
-            placed_by="code",
-        )  # fmt: skip
-        acct.orders[oid] = o
-        basis = (
-            f"stop {pos.stop:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
-            f"filled at {raw:.4f} after the gap rule, then slippage"
-        )
-        return self._apply_fill(acct, o, px, ts, basis)
-
-    def _exit_at_target(
-        self, acct: Account, ticker: str, pos: Position, ts: datetime, raw: float
-    ) -> FillOutcome:
-        adv = self.adv_lookup(ticker)
-        slip = self.costs.slippage_pct(abs(pos.qty) * raw, adv)
-        side = "sell" if pos.qty > 0 else "cover"
-        px = raw * (1 - slip) if side == "sell" else raw * (1 + slip)
-        reason = f"TARGET reached at {pos.target:.3f}"
-        if pos.target_past_when_armed:
-            reason += (
-                f" (it was already past when targets began to be honoured, {pos.target_from},"
-                " and rested from there)"
-            )
-        basis = (
-            f"target {pos.target:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
-            f"{raw:.4f} (the target, or the bar's open if it gapped through), "
-            f"{'less' if side == 'sell' else 'plus'} {slip * 100:.3f}% slippage"
-        )
-        oid = self.store.next_order_id()
-        o = ArenaOrder(
-            order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
-            limit=round(px, 4),
-            **self._resting_times(ts, _later(pos.opened_at, pos.target_from)),
-            reason=reason, model="code (target, not the agent)", placed_by="code",
-        )  # fmt: skip
-        acct.orders[oid] = o
-        return self._apply_fill(acct, o, px, ts, basis)
 
     def _resting_times(self, trigger: datetime, rests_from: str) -> dict:
         """The three times on a stop or target exit. The level had been resting since
@@ -583,15 +766,65 @@ def _move_target(pos: Position, o: ArenaOrder, minute: datetime) -> None:
     pos.target_past_when_armed = False
 
 
-def _session_over(decided: datetime, now: datetime, feed_delay_minutes: int = 0) -> bool:
-    """True once the ASX session the order was decided in has finished AND the delayed feed
-    has had time to show its last minutes. Until 2026-09-23 this ignored the delay, so a
-    resting limit could expire at 16:11 with the feed still twenty minutes short of the
-    close - bars that might have filled it not yet visible."""
-    if now.date() > decided.date():
+def _session_day(decided: datetime) -> date:
+    """The session a day order works in: the one it was recorded in, or - recorded at or
+    after the 16:10 closing auction, at a weekend or on an ASX holiday - the next one."""
+    local = decided.astimezone(SYD)
+    day = local.date()
+    if local.time() >= SESSION_CLOSE:
+        day += timedelta(days=1)
+    while not _is_session(day):
+        day += timedelta(days=1)
+    return day
+
+
+def _is_session(day: date) -> bool:
+    if day.weekday() >= 5:
+        return False
+    try:
+        from asxbot.announcements.live import is_trading_day
+
+        return bool(is_trading_day(day))
+    except Exception:  # noqa: BLE001 - a calendar that does not reach this far: weekdays
         return True
-    close = datetime.combine(decided.date(), SESSION_CLOSE, tzinfo=SYD)
-    return now >= close + timedelta(minutes=feed_delay_minutes)
+
+
+def _order_from(o: ArenaOrder) -> datetime:
+    """The first bar an order may still use: the one after the last it was worked against;
+    for a new exit, the bar that reached its level; for a new order, the first bar that
+    starts strictly after it was recorded."""
+    if o.worked_through:
+        return _minute_after(o.worked_through)
+    if o.order_type in ("stop", "target"):
+        return _aware(o.data_as_of).replace(second=0, microsecond=0)
+    return first_minute_after(_aware(o.decided_at))
+
+
+def _priority(o: ArenaOrder) -> tuple:
+    rank = {"stop": 0, "target": 1}.get(o.order_type, 2)
+    return (rank, _aware(o.decided_at), o.order_id)
+
+
+def _reaches(bar, level: float, direction: str) -> bool:
+    """direction 'down': the bar's low reached the level; 'up': its high did."""
+    if direction == "down":
+        return float(bar["low"]) <= level
+    return float(bar["high"]) >= level
+
+
+def _gap_price(bar, level: float, *, worse: bool, sell: bool) -> float:
+    """The level itself, or the bar's open when the bar opened through it: the worse of the
+    two for a stop, the better for a take-profit (a resting limit fills at the better)."""
+    op = float(bar["open"])
+    if worse:
+        return min(level, op) if sell else max(level, op)
+    return max(level, op) if sell else min(level, op)
+
+
+def _meets(o: ArenaOrder, px: float) -> bool:
+    if o.side in ("buy", "cover"):
+        return px <= o.limit + 1e-9
+    return px >= o.limit - 1e-9
 
 
 def _aware(iso: str) -> datetime:
