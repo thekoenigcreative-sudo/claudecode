@@ -104,7 +104,7 @@ log disagree). Clear by hand with `asxbot alerts-clear <key>` once you understan
 Every tactic is run by the AI agent in a fake-money arena before any real money is
 considered. See ARENA.md for the design and PLAN.md for the order tactics are built in.
 
-Each playbook gets two simulated $10,000 accounts: one traded by the agents, one by a
+Each playbook gets two simulated $20,000 accounts ($10,000 until 23 Sep 2026): one traded by the agents, one by a
 rule-based yardstick bot that runs the same playbook's plain rule with no model at all.
 The gap between them is the measure of what the agent's judgment adds.
 

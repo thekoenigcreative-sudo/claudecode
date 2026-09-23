@@ -35,7 +35,7 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 - **My time:** a couple of minutes on the evening report, about 10 minutes at each checkpoint, and one message to Claude Code per build.
 
 ## How the arena works
-- Fake money only. Each playbook gets its own simulated $10,000 account, so every playbook's results are separate.
+- Fake money only. Each playbook gets its own simulated $20,000 account ($10,000 until 23 Sep 2026, raised to match the real account), so every playbook's results are separate.
 - The agent trades on its own in the arena, with no approvals, because it is fake money. `place_order` limits (set by the playbook's level) still apply. Approvals come back on for real money.
 - AI decisions can't be tested on past news the model may already know the outcome of, so every playbook is proven forward, live, in the arena.
 - Rule-based bots: for each playbook, code also runs its plain starting rule as a rule-based bot with its own simulated account (no model use). That shows whether the agent's judgment is adding money on top of the setup itself, and any rule-based bot that makes money after costs is eligible for real money too, on the same promotion rule. In the queue below, "Yardstick" means that playbook's rule-based bot.

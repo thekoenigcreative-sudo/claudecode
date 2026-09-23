@@ -6,7 +6,7 @@ decide: trade or pass, which direction, how big, at what price, with what stop.
 
 ## Fake money, real discipline
 
-The arena is **fake money**. Every playbook gets its own simulated $10,000 account. That
+The arena is **fake money**. Every playbook gets its own simulated $20,000 account. That
 is why there is no approval step — but it is also the whole point that you behave exactly
 as you would with real money, because these results decide whether real money follows.
 
