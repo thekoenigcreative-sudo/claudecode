@@ -274,8 +274,14 @@ class ArenaBroker:
     def apply_stops(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
         """Trigger any stop the minute bars have already reached. Always on, never skipped.
 
-        A stop is checked from the minute the position opened. The fill is the stop price,
-        or the bar's open when the bar gapped straight through it - whichever is worse.
+        A stop is checked from the minute AFTER the position opened. The fill is the stop
+        price, or the bar's open when the bar gapped straight through it - whichever is worse.
+
+        The entry bar is excluded because the entry filled at that bar's close (the default
+        `arena.fill.minute_price`), so its high and low happened before the position existed.
+        Until 2026-09-23 the scan included it: a bar that dipped 8% and recovered to close
+        at the fill price registered as both the entry and the stop, for two lots of
+        brokerage and an instant loss on a move the position never saw.
         """
         now = now or datetime.now(SYD)
         out: list[FillOutcome] = []
@@ -285,6 +291,7 @@ class ArenaBroker:
             since = datetime.fromisoformat(pos.opened_at)
             if since.tzinfo is None:
                 since = since.replace(tzinfo=SYD)
+            since += timedelta(minutes=1)  # opened_at is the entry bar's minute; skip it
             direction = "down" if pos.qty > 0 else "up"
             hit = self.minutes.first_trigger(ticker, since, float(pos.stop), direction)
             if hit is None:

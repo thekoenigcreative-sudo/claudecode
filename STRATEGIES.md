@@ -25,7 +25,7 @@ Every figure carries its source in brackets. Figures from `reports/phase1.md` ar
 | A | Announcement gap | **Dropped** | Archive + prices | Keep running live only as a machinery test |
 | B | Volume surprise | **Dropped** | Prices | None |
 | C | Earnings drift | **Keep, rebuild** | Archive + prices | Measure surprise against the company's own prior guidance; 30–60 session hold |
-| D | Trading-halt resumptions | Keep, low | Archive + prices | Check whether the tradability screen still rejects reinstatements |
+| D | Trading-halt resumptions | Keep, low | Archive + prices | Screen fixed 23 Sep: reinstatements now pass, halts and suspensions don't |
 | E | Directors buying | **Upgraded** | Archive + 3Y PDFs + prices | Reader classifies each Appendix 3Y; test small and large firms separately; hold measured in months |
 | F | 52-week-high breakout | **Downgraded** | Prices | Build only because it is cheap; expect it to fail |
 | G | Pullbacks | **Reframed** | Prices + industry classification | Large, liquid stock down against its industry peers over a month, momentum controlled for |
@@ -45,7 +45,7 @@ Loses after costs, on both universes at 1× and 2× slippage (`reports/phase1.md
 Post-earnings-announcement drift is documented in Australia but has weakened as information spreads faster and costs fall. The only positive slice of A was results announcements: 181 trades, +0.90% average, 53.6% win rate (`reports/phase1.md`, announcement-type split). That is a hypothesis found by slicing, not a finding. Rebuild C to measure the surprise against the company's own prior guidance in the announcement archive, with a 30–60 session hold.
 
 ### D — trading-halt resumptions: KEEP, LOW
-No evidence found either way. Before building, check whether the tradability screen still rejects reinstatements.
+No evidence found either way. The live tradability screen rejected every reinstatement until 23 Sep; it now lets them through (`arena/tradability.py`, `is_halt`) and still rejects halts and suspensions.
 
 ### E — directors buying: UPGRADED
 Discretionary director purchases showed a +4.6% cumulative abnormal return over 200 trading days; non-discretionary purchases showed −4.7% (Foley, Kwan, McInish & Philip 2016). That study classified over 60,000 director transactions as discretionary or non-discretionary using the trading motive the insider gave — the same classification the reader would do on each Appendix 3Y.

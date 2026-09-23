@@ -180,7 +180,14 @@ class AnnouncementDriftBot(Bot):
         return out, why
 
     def _size(self, equity: float, limit: float, stop: float) -> int:
-        """The level's risk cap decides how many shares an 8% stop allows."""
+        """The level's risk cap decides how many shares an 8% stop allows.
+
+        Then the smallest of: equity, the playbook's max position share of equity, and the
+        per-order guard `arena.guards.max_order_value_aud`, which arena_place_order enforces
+        on the order's limit value. Without the guard here, an account whose 40% share grew
+        past $8,000 would size an order the broker refuses outright - a missed trade, not a
+        smaller one.
+        """
         risk_each = limit - stop
         if risk_each <= 0:
             return 0
@@ -189,7 +196,9 @@ class AnnouncementDriftBot(Bot):
         max_pct = self.playbook.guidance("max_position_pct_of_equity")
         if max_pct is not None:
             qty = min(qty, int(math.floor(equity * float(max_pct) / 100.0 / limit)))
-        return qty
+        max_order = float((self.cfg.get("arena.guards") or {}).get("max_order_value_aud", 8000))
+        qty = min(qty, int(math.floor(max_order / limit + 1e-9)))
+        return max(qty, 0)
 
     # -- exits ---------------------------------------------------------------
     def manage(self, acct: Account, now: datetime) -> list[BotDecision]:

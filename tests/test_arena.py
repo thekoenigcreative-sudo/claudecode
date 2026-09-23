@@ -445,6 +445,36 @@ def test_a_stop_on_the_wrong_side_of_the_fill_is_re_derived(setup):
     assert pos.stop == pytest.approx(filled.avg_price * (1 - 0.10 / 1.20), rel=1e-3)
 
 
+def test_a_stop_cannot_fire_in_the_bar_the_position_opened(setup):
+    """The fill is the entry bar's close, so that bar's low came before the position existed.
+
+    Found by reading the code on 23 Sep: the stop scan started from the entry minute, so a
+    bar that dipped 10% and recovered to close at the fill price opened the position and
+    stopped it out at once - two lots of brokerage and a loss on a move it never held.
+    """
+    cfg, broker, pb, acct = setup
+    rows = [
+        (10, 0, 1.00, 1.00, 0.90, 1.00, 50_000),  # dips 10%, closes at 1.00: the entry
+        (10, 1, 1.00, 1.01, 0.99, 1.00, 10_000),  # quiet
+        (10, 2, 1.00, 1.00, 0.85, 0.86, 20_000),  # a real fall, after the position opened
+        (16, 10, 0.86, 0.86, 0.86, 0.86, 100_000),
+    ]
+    write_parquet_atomic(minute_frame(rows), broker.minutes._path("CCC", DAY))
+    o = broker.submit(
+        acct, ticker="CCC", side="buy", qty=1000, limit=1.20, stop_pct=8.0,
+        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD),
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:00")
+    pos = acct.positions["CCC"]
+    assert 0.90 < pos.stop  # the entry bar's own low is below the stop
+
+    out = broker.apply_stops(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    stop_fill = acct.orders[out[0].order_id] if out else None
+    # The stop is not hit in 10:00, the entry bar. It is hit at 10:02, when the stock fell.
+    assert stop_fill is not None and stop_fill.fill_minute.startswith("2026-01-06T10:02")
+
+
 # -- the pre-close sweep (Level 1 is intraday) -----------------------------
 class _FakeArena:
     """Just enough of Arena for the sweep: one account, prices, no network."""
@@ -864,6 +894,33 @@ def test_a_halt_and_a_stock_that_has_not_traded_are_both_rejected():
     assert not quiet.ok and quiet.test == "halted"
 
 
+def test_a_reinstatement_passes_the_screen_but_a_halt_or_suspension_does_not():
+    """The classifier files halts, suspensions and reinstatements under one type, and the
+    screen used to reject the whole type - which destroyed strategy D's only trigger."""
+    from asxbot.arena.tradability import screen
+
+    liquid = (_quote(last=5.00), _daily(2_000_000, price=5.00), 250_000, _AT)
+    for headline in (
+        "Reinstatement to Official Quotation",
+        "Reinstatement to Quotation",
+        "Trading Halt Lifted",
+    ):
+        a = _ann(headline)
+        assert a.type == "trading_halt"  # the classifier is unchanged
+        assert screen(a, *liquid).ok, headline
+    for headline in (
+        "Trading Halt",
+        "Suspension from Official Quotation",
+        "Request for Voluntary Suspension",
+    ):
+        v = screen(_ann(headline), *liquid)
+        assert not v.ok and v.test == "halted", headline
+    # A reinstated stock that still has not traded by 10:30 is rejected all the same.
+    quiet = screen(_ann("Reinstatement to Official Quotation"), _quote(last=5.00, volume=0.0),
+                   _daily(2_000_000, price=5.00), 250_000, _AT)  # fmt: skip
+    assert not quiet.ok and quiet.test == "halted"
+
+
 def test_no_quote_is_rejected_and_a_liquid_stock_passes():
     from asxbot.arena.tradability import screen
 
@@ -1141,3 +1198,31 @@ def test_the_yardstick_enters_at_the_next_open_once_and_never_late(setup, monkey
     assert W.yardstick_entries(fake, pb, datetime(2026, 1, 7, 10, 30, tzinfo=SYD)) == []
     missed = json.loads(state.read_text())
     assert missed["status"] == "missed" and "2026-01-06" in missed["missed"]
+
+
+def test_the_yardstick_sizes_within_the_per_order_guard(setup, monkeypatch):
+    """On a larger account the 40% position cap passes $8,000, and arena_place_order refuses
+    any single order above arena.guards.max_order_value_aud. The bot's own sizing never
+    looked at that guard, so it would have sized an order the broker refused: no trade."""
+    import dataclasses
+
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    pb = dataclasses.replace(pb, raw={**pb.raw, "warmup_start": None})
+    live = cfg.data_dir / "announcements" / "live"
+    live.mkdir(parents=True, exist_ok=True)
+    _ann_frame(("AAA", "2026-01-05 08:30", True)).to_parquet(live / "2026-01-05.parquet")
+    frames = {"^AXJO": _index_daily(), "AAA": _stock_daily(6, 4)}
+    bot = _yardstick(cfg, broker, pb, frames)
+    monkeypatch.setattr(W, "make_bot", lambda arena, pb, quotes=None: bot)
+    acct.cash = 50_000.0  # 40% of equity is $20,000, well past the $8,000 guard
+
+    guard = float(cfg.get("arena.guards.max_order_value_aud"))
+    placed = W.yardstick_entries(_FakeArena(cfg, broker, acct), pb,
+                                 datetime(2026, 1, 6, 7, 45, tzinfo=SYD))  # fmt: skip
+    assert [p["ticker"] for p in placed] == ["AAA"]
+    assert "refused" not in placed[0], placed[0].get("refused")  # sized down, not refused
+    o = acct.orders[placed[0]["order_id"]]
+    assert o.qty * o.limit <= guard
+    assert o.qty == int(guard / o.limit)  # the guard is what binds, and nothing smaller

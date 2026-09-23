@@ -111,7 +111,7 @@ def arena_place_order(
         )
     if value < float(guards.get("min_order_aud", 500)) - 1e-6:
         raise refuse(
-            f"order value {value:,.2f} is below the minimum parcel "
+            f"order value {value:,.2f} is below the minimum order "
             f"{float(guards.get('min_order_aud', 500)):,.2f}"
         )
 

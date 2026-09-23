@@ -7,11 +7,21 @@ costs money and teaches nothing, because the answer is always "cannot trade it".
 
 So four tests, all arithmetic, no model:
 
-  1. HALTED OR SUSPENDED - the announcement itself is a halt/suspension/reinstatement, or
-     the market has been open a while and the stock has not traded at all today.
+  1. HALTED OR SUSPENDED - the announcement itself is a halt or a suspension, or the
+     market has been open a while and the stock has not traded at all today.
+
+     A REINSTATEMENT is let through. The headline classifier (announcements/model.py) puts
+     halts, suspensions and reinstatements in one `trading_halt` type, and until 2026-09-23
+     this screen rejected the whole type. But a reinstatement means the stock is trading
+     again, and a stock reinstated after a halt is the only trigger strategy D
+     (STRATEGIES.md, trading-halt resumptions) has - so rejecting the type destroyed D's
+     trigger. The classifier is left alone, because the backtest's type split uses it; the
+     reinstatement is told apart here, from the headline. The no-trades test below still
+     applies to it: a reinstated stock that has not traded by 10:30 is still rejected.
   2. NO LIVE QUOTE - nothing to price an entry or a stop against.
-  3. TICK TOO COARSE - one ASX tick is worth more than 1% of the price, so the spread
-     alone eats the edge.
+  3. TICK TOO COARSE - one ASX tick is worth more than the playbook's `max_tick_pct` of the
+     price (1% if unset; 3% in config.yaml since 2026-09-23), so the spread alone eats
+     the edge.
   4. TOO THIN - median 20-day dollar turnover below `universe.turnover_floor_aud`.
 
 A rejection here is logged (events: `arena_screened`) and NOT alerted: these are the
@@ -24,6 +34,7 @@ whole arena exists to make.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -38,6 +49,10 @@ SYD = ZoneInfo("Australia/Sydney")
 
 MAX_TICK_PCT = 1.0  # one tick worth more than this much of the price is untradeable
 NO_TRADE_BY = time(10, 30)  # by this time a live stock has traded; a halted one has not
+# Inside the `trading_halt` type, a headline naming a reinstatement (or a resumption of
+# trading, or a halt lifted) announces that trading is back; everything else in the type
+# announces that it has stopped. The reinstatement wins when a headline names both.
+_RESUMES = re.compile(r"reinstat|\bresum|halt lifted|lifting of (the )?(trading )?halt", re.I)
 
 
 @dataclass(frozen=True)
@@ -50,6 +65,11 @@ class Screen:
 
     def __bool__(self) -> bool:
         return self.ok
+
+
+def is_halt(a: Announcement) -> bool:
+    """A halt or suspension notice. A reinstatement is not one: trading is back."""
+    return a.type == "trading_halt" and not _RESUMES.search(a.headline or "")
 
 
 def tick_pct(price: float) -> float:
@@ -67,7 +87,7 @@ def screen(
     """Decide in plain code whether this is worth a model's time. No network, no model."""
     now = (now or datetime.now(SYD)).astimezone(SYD)
 
-    if a.type == "trading_halt":
+    if is_halt(a):
         return Screen(False, f"the announcement is a halt or suspension ({a.headline})", "halted")
 
     if quote is None:

@@ -156,7 +156,7 @@ def simulate(
                 fill = costs.buy_price(px, size, adv)
                 qty = int(math.floor(min(size, cash) / fill))
                 if qty <= 0 or fill * qty < min_order_aud:
-                    continue  # below the minimum marketable parcel: no trade
+                    continue  # below our $500 minimum order (limits.min_order_aud): no trade
                 value = fill * qty
                 fee = costs.brokerage(value)
                 if value + fee > cash:

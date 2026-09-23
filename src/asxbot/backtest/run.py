@@ -85,7 +85,7 @@ def run_phase1(
             "costs": f"{cfg.get('costs.brokerage_pct')}% min "
             f"${cfg.get('costs.brokerage_min_aud')}; slippage {cfg.get('costs.slippage')}",
             "priority when slots are full": "highest volume multiple first",
-            "minimum order": f"${cfg.get('limits.min_order_aud', 500)} (ASX minimum parcel)",
+            "minimum order": f"${cfg.get('limits.min_order_aud', 500)} (ours, not an ASX rule)",
         },
         oos_start=oos_start,
         in_sample_only=in_sample_only,

@@ -457,7 +457,7 @@ def render_shorts(runs, ev1, ev2, bench, first, oos_start, years, label, n_codes
         in_ev = ev[pd.to_datetime(ev["date"]) <= oos_start] if len(ev) else ev
         L += [f"## {title}", "", f"In-sample events: {len(in_ev)} across "
               f"{in_ev['ticker'].nunique() if len(in_ev) else 0} companies (before slots, "
-              "the turnover floor at entry and the minimum parcel).", ""]  # fmt: skip
+              "the turnover floor at entry and the minimum order).", ""]  # fmt: skip
         if nm == "S2" and len(in_ev):
             q = in_ev["cover_basis"].astype(str).str.startswith("quotation").sum()
             L += [
