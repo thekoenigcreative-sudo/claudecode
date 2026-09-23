@@ -1,8 +1,9 @@
 # secrets
 .env
 
-# bulky data (copy across manually when moving PCs)
-data/
+# bulky data (copy across manually when moving PCs). Root only: a bare `data/` also
+# matched src/asxbot/data, so the data-provider package was never committed.
+/data/
 
 # python
 .venv/
