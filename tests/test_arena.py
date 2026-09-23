@@ -5,7 +5,8 @@ the warm-up's results mean anything: a decision must never be filled at a price 
 before the decision was made.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -398,6 +399,17 @@ class _FakeArena:
         return lambda t: None
 
 
+def _intraday(pb):
+    """The playbook as it was before 23 Sep: intraday, so the pre-close sweep applies.
+
+    The live playbook now holds for 10 sessions to match its yardstick, but the sweep is
+    still the rule for any intraday playbook and is still worth testing.
+    """
+    import dataclasses
+
+    return dataclasses.replace(pb, raw={**pb.raw, "holding": "intraday"})
+
+
 def _offline_price(monkeypatch, price: float = 1.00):
     """The sweep prices its exit from the minute bars. Without this the test reaches for
     yfinance - and AAA.AX is a real ETF, so these tests quietly depended on its live price."""
@@ -425,7 +437,7 @@ def test_preclose_closes_the_position_when_no_reason_is_given(setup, monkeypatch
 
     reply = type("R", (), {"text": '{"action": "close", "reason": "move is done"}', "model": "m"})
     monkeypatch.setattr(W, "call_agent", lambda *a, **k: reply())
-    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    out = W.sweep_before_close(fake, _intraday(pb), now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
     assert out[0]["action"] == "close"
     assert any(o.side == "sell" for o in acct.orders.values())
 
@@ -443,7 +455,7 @@ def test_preclose_keeps_it_only_when_a_reason_is_written(setup, monkeypatch):
                   "model": "m"}  # fmt: skip
     )
     monkeypatch.setattr(W, "call_agent", lambda *a, **k: reply())
-    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    out = W.sweep_before_close(fake, _intraday(pb), now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
     assert out[0]["action"] == "hold"
     assert acct.positions["AAA"].hold == "overnight"
     assert "results due" in acct.positions["AAA"].hold_reason
@@ -460,7 +472,7 @@ def test_preclose_holds_need_an_actual_reason_not_just_the_word_hold(setup, monk
 
     reply = type("R", (), {"text": '{"action": "hold", "reason": "   "}', "model": "m"})
     monkeypatch.setattr(W, "call_agent", lambda *a, **k: reply())
-    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    out = W.sweep_before_close(fake, _intraday(pb), now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
     assert out[0]["action"] == "close", "a hold with no written reason must not hold"
 
 
@@ -478,7 +490,7 @@ def test_preclose_closes_when_the_agent_cannot_be_reached(setup, monkeypatch):
         raise AgentCallFailed("the agent is down")
 
     monkeypatch.setattr(W, "call_agent", boom)
-    out = W.sweep_before_close(fake, pb, now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
+    out = W.sweep_before_close(fake, _intraday(pb), now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD))
     assert out[0]["action"] == "close"
     assert any(o.side == "sell" for o in acct.orders.values())
 
@@ -500,8 +512,8 @@ def test_preclose_asks_once_a_day(setup, monkeypatch):
 
     monkeypatch.setattr(W, "call_agent", counted)
     now = datetime(2026, 1, 6, 15, 50, tzinfo=SYD)
-    W.sweep_before_close(fake, pb, now=now)
-    W.sweep_before_close(fake, pb, now=now)  # the loop runs every minute; don't re-ask
+    W.sweep_before_close(fake, _intraday(pb), now=now)
+    W.sweep_before_close(fake, _intraday(pb), now=now)  # the loop runs every minute; don't re-ask
     assert len(calls) == 1
 
 
@@ -804,3 +816,104 @@ def test_before_the_open_zero_volume_is_not_a_halt():
     early = datetime(2026, 1, 6, 8, 30, tzinfo=SYD)
     v = screen(_ann(), _quote(last=5.00, volume=0.0), _daily(2_000_000, price=5.00), 250_000, early)
     assert v.ok
+
+
+# -- the 10-session horizon and the 10:20 re-look (23 Sep) ------------------
+def test_the_playbook_holding_overrides_the_level(cfg):
+    from asxbot.arena.levels import load_playbook
+
+    pb = load_playbook(cfg, "asx_announcements")
+    assert pb.level.holding == "intraday"  # the level is unchanged
+    assert pb.holding == "days" and pb.hold_sessions == 10  # the playbook is not
+
+
+def test_the_sweep_leaves_a_multi_day_playbook_alone(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    _hold_position(acct)
+    called = []
+    monkeypatch.setattr(W, "call_agent", lambda *a, **k: called.append(1))
+    assert W.sweep_before_close(_FakeArena(cfg, broker, acct), pb, now=_AT) == []
+    assert called == []  # the decider is not even asked
+
+
+def test_the_sweep_leaves_a_written_multi_day_thesis_alone(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    _hold_position(acct)
+    acct.positions["AAA"].hold = "overnight"
+    acct.positions["AAA"].hold_reason = "results due Thursday, the thesis needs two sessions"
+    monkeypatch.setattr(W, "call_agent", lambda *a, **k: 1 / 0)  # must not be called
+    out = W.sweep_before_close(
+        _FakeArena(cfg, broker, acct), _intraday(pb), now=datetime(2026, 1, 6, 15, 50, tzinfo=SYD)
+    )
+    assert out[0]["action"] == "hold" and "Thursday" in out[0]["reason"]
+
+
+def test_a_position_is_closed_at_the_horizon(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    _hold_position(acct)  # opened 2026-01-06
+    fake = _FakeArena(cfg, broker, acct)
+    fake.universe, fake.short_universe = {"AAA"}, set()
+
+    nine = datetime(2026, 1, 19, 11, 0, tzinfo=SYD)  # 9 weekdays later
+    assert W.horizon_exit(fake, pb, now=nine) == []
+    ten = datetime(2026, 1, 20, 11, 0, tzinfo=SYD)  # 10
+    out = W.horizon_exit(fake, pb, now=ten)
+    assert len(out) == 1 and "horizon reached" in out[0]["reason"]
+    assert any(o.side == "sell" for o in acct.orders.values())
+
+
+def _pass_record(cfg, ids_id, at, action="pass", **extra):
+    from asxbot.log import EventLog
+
+    rec = {
+        "stage": "decider", "ticker": "AAA", "ids_id": ids_id,
+        "decision": {"action": action, "why": "the 10:00 auction has not happened yet"},
+    }  # fmt: skip
+    ev = EventLog(cfg.data_dir)
+    row = ev.append("arena_decisions", {**rec, **extra})
+    # rewrite the timestamp: the event log stamps "now", and these are historical
+    p = ev.path("arena_decisions")
+    lines = p.read_text(encoding="utf-8").splitlines()
+    import json as _json
+
+    lines[-1] = _json.dumps({**_json.loads(lines[-1]), "ts": at.astimezone(UTC).isoformat()})
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return row
+
+
+def test_only_pre_open_passes_are_re_looked_and_only_once(cfg):
+    from asxbot.arena.watch import _save_relooked, relook_candidates
+
+    day = datetime.now(SYD).date()
+    morning = datetime.combine(day, dtime(9, 30), tzinfo=SYD)
+    after = datetime.combine(day, dtime(11, 0), tzinfo=SYD)
+    _pass_record(cfg, "PRE-OPEN", morning)
+    _pass_record(cfg, "AFTER-OPEN", after)  # judged with the reaction visible; it stands
+    _pass_record(cfg, "TRADED", morning, action="trade")
+    _pass_record(cfg, "A-TEST", morning, is_test=True)
+    _pass_record(cfg, "ALREADY-RELOOKED", morning, relook=True)
+
+    now = datetime.combine(day, dtime(10, 20), tzinfo=SYD)
+    ids = [c["ids_id"] for c in relook_candidates(cfg, now)]
+    assert ids == ["PRE-OPEN"]
+
+    _save_relooked(cfg.data_dir, day, {"PRE-OPEN"})
+    assert relook_candidates(cfg, now) == []  # one re-look each, and no more
+
+
+def test_the_re_look_note_carries_the_earlier_reason():
+    from asxbot.arena.watch import relook_note
+
+    assert relook_note("") == ""
+    note = relook_note("the auction has not happened yet")
+    assert "RE-LOOK" in note and "the auction has not happened yet" in note
+    assert "Passing again is a" in note  # it must not read as pressure to trade

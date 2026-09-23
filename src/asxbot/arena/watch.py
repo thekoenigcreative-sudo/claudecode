@@ -44,6 +44,7 @@ from asxbot.arena.agents import (
 )
 from asxbot.arena.hours import announcement_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
+from asxbot.arena.notify import one_line
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.runtime import Arena, make_bot
 from asxbot.arena.tally import session_summary_text
@@ -57,13 +58,15 @@ log = get_logger("asxbot.arena.watch")
 SYD = ZoneInfo("Australia/Sydney")
 
 
-def is_test_id(ids_id: str) -> bool:
-    """Fake announcements get a FAKE... id (arena/cli.py), and never count as real."""
-    return str(ids_id).upper().startswith("FAKE")
-
 READER_MODEL = "anthropic/claude-sonnet-5"
 DECIDER_MODEL = "anthropic/claude-opus-5"
 MAX_PDF_CHARS = 24000
+SESSION_OPEN = time_cls(10, 0)  # the ASX opening auction; before it, no reaction exists
+
+
+def is_test_id(ids_id: str) -> bool:
+    """Fake announcements get a FAKE... id (arena/cli.py), and never count as real."""
+    return str(ids_id).upper().startswith("FAKE")
 
 
 # --------------------------------------------------------------------------
@@ -288,6 +291,15 @@ def decider_packet(
         }
         for t, p in acct.positions.items()
     ]
+    holding = (
+        f"{pb.holding}"
+        + (f", closed by code after {pb.hold_sessions} sessions" if pb.hold_sessions else "")
+        + (
+            " - the same horizon as the yardstick bot you are measured against"
+            if pb.hold_sessions
+            else ""
+        )
+    )
     return f"""You are trader-decider. Decide whether to trade this ASX announcement.
 
 This is the FAKE-MONEY arena. No real money is at risk, so there is no approval step - but
@@ -327,7 +339,7 @@ WHAT THE CODE WILL ALLOW
   - long anything in the universe; SHORT only ASX 200 stocks
   - every opening trade needs a stop, and longs need the stop below the entry
   - no adding to a losing position
-  - default holding period at this level: {lvl.holding}
+  - holding period for this playbook: {holding}
   - your fill will be the true 1-minute bar price covering the moment you decide, so a
     limit far away from the current price simply will not fill
 
@@ -398,12 +410,19 @@ def handle_announcement(
     text: str = "",
     ignore_warmup: bool = False,
     test: bool = False,
+    relook: bool = False,
+    prior_why: str = "",
 ) -> dict:
     """One announcement, all the way through. Returns what happened, for the log.
 
     `test` marks everything this writes as a rehearsal - a fake announcement used to prove
     the chain - so the day's counts, the hourly digest and the 16:10 summary ignore it and
     a proof run cannot quietly inflate the record of a real trading day.
+
+    `relook` marks a second look at an announcement already passed on, once the reason for
+    passing has expired - almost always "the opening auction has not happened yet". Every
+    record it writes says relook, so a re-look is never mistaken for a fresh announcement,
+    and `prior_why` is what the decider said the first time.
     """
     now = now or datetime.now(SYD)
     cfg = arena.cfg
@@ -412,6 +431,8 @@ def handle_announcement(
     test = bool(test) or is_test_id(a.ids_id)
 
     def record(kind: str, rec: dict) -> None:
+        if relook:
+            rec = {**rec, "relook": True}
         # "is_test", not "test": the screen already writes a "test" field naming which of
         # its checks rejected an announcement, and the two must not collide.
         ev.append(kind, {**rec, "is_test": True} if test else rec)
@@ -550,7 +571,8 @@ def handle_announcement(
     acct = arena.account(pb, "agent")
     try:
         decider = call_agent(
-            DECIDER, decider_packet(arena, pb, acct, a, ctx, reader.text, now),
+            DECIDER,
+            decider_packet(arena, pb, acct, a, ctx, reader.text, now, relook_note(prior_why)),
             expect_model=DECIDER_MODEL, data_dir=cfg.data_dir,
             purpose=f"decide {a.code} {a.ids_id}",
         )  # fmt: skip
@@ -738,6 +760,23 @@ def watch(
             arena.broker.apply_stops(acct, now)
             arena.broker.resolve_pending(acct, now)
 
+        # The horizon exit, every cycle: a position that has run its sessions is closed.
+        try:
+            horizon_exit(arena, pb, now)
+        except Exception as e:  # noqa: BLE001
+            log.exception("the horizon exit failed: %s", e)
+
+        # One second look each, once the opening auction has settled.
+        if now.astimezone(SYD).time() >= relook_time(cfg):
+            try:
+                again = do_relooks(arena, pb, now)
+                if again:
+                    log.info(
+                        "re-looked at %d announcement(s) passed on before the open", len(again)
+                    )
+            except Exception as e:  # noqa: BLE001
+                log.exception("the re-look failed: %s", e)
+
         # Before the close, settle the day's Level 1 positions.
         sweep_at, deadline = preclose_window(cfg)
         if sweep_at <= now.astimezone(SYD).time() < deadline:
@@ -776,7 +815,162 @@ def _save_handled(data_dir: Path, day: date, handled: set[str]) -> None:
 
 
 # --------------------------------------------------------------------------
-# the pre-close sweep (Level 1 is intraday)
+# the 10:20 re-look, and the horizon exit
+# --------------------------------------------------------------------------
+def relook_note(prior_why: str) -> str:
+    """The block that tells the decider this is a second look, and why there is one."""
+    if not prior_why:
+        return ""
+    return f"""THIS IS A RE-LOOK
+  You already saw this announcement before the market opened and passed, saying:
+    "{one_line(prior_why)}"
+  The opening auction has now happened, so the price reaction above is real rather
+  than absent. Judge it again from what is in front of you now. Passing again is a
+  perfectly good answer - a reaction that has already run is a reason to pass, not a
+  reason to chase. This is your only second look at this announcement.
+
+"""
+
+
+def relook_time(cfg) -> time_cls:
+    """When the re-look runs. After the opening auction has settled, not at 10:00 sharp."""
+    return time_cls.fromisoformat(str((cfg.get("arena.relook") or {}).get("time", "10:20")))
+
+
+def _relooked_path(data_dir: Path, day: date) -> Path:
+    p = Path(data_dir) / "arena" / "relooked"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / f"{day.isoformat()}.json"
+
+
+def _load_relooked(data_dir: Path, day: date) -> set[str]:
+    p = _relooked_path(data_dir, day)
+    return set(json.loads(p.read_text(encoding="utf-8"))) if p.exists() else set()
+
+
+def _save_relooked(data_dir: Path, day: date, done: set[str]) -> None:
+    from asxbot.io import write_text_atomic
+
+    write_text_atomic(json.dumps(sorted(done)), _relooked_path(data_dir, day))
+
+
+def relook_candidates(cfg, now: datetime) -> list[dict]:
+    """Today's passes whose reason has since expired: decided before the open.
+
+    An announcement judged pre-open was judged without the one thing that matters most -
+    what the market did with it. Those are the passes worth looking at once more. A pass
+    decided after the open was made with the reaction visible, so it stands.
+    """
+    day = now.date()
+    done = _load_relooked(cfg.data_dir, day)
+    out, seen = [], set()
+    for r in EventLog(cfg.data_dir).read("arena_decisions"):
+        if r.get("stage") != "decider" or r.get("is_test") or r.get("relook"):
+            continue
+        when = datetime.fromisoformat(r["ts"]).astimezone(SYD)
+        if when.date() != day or when.time() >= SESSION_OPEN:
+            continue
+        d = r.get("decision") or {}
+        if str(d.get("action", "pass")).lower() == "trade":
+            continue
+        ids = str(r.get("ids_id", ""))
+        if not ids or ids in done or ids in seen:
+            continue
+        seen.add(ids)
+        out.append({"ids_id": ids, "ticker": r.get("ticker", ""), "why": str(d.get("why", ""))})
+    return out
+
+
+def announcement_by_id(cfg, day: date, ids_id: str) -> Announcement | None:
+    """Rebuild one of today's announcements from what the collector wrote down."""
+    import pandas as pd
+
+    path = cfg.data_dir / "announcements" / "live" / f"{day.isoformat()}.parquet"
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    rows = df[df["ids_id"].astype(str) == str(ids_id)]
+    if not len(rows):
+        return None
+    r = rows.iloc[0]
+    return Announcement(
+        str(r["code"]), r["released_at"].to_pydatetime(), str(r["headline"]),
+        bool(r["price_sensitive"]), str(r["ids_id"]), str(r["pdf_url"]),
+        r.get("pages"), r.get("size"),
+    )  # fmt: skip
+
+
+def do_relooks(arena: Arena, pb: Playbook, now: datetime | None = None) -> list[dict]:
+    """One second look each, with the opening reaction visible. The bot is not re-run:
+    its rule is frozen, and re-running it would change what the yardstick measures."""
+    now = now or datetime.now(SYD)
+    cfg = arena.cfg
+    day = now.date()
+    done = _load_relooked(cfg.data_dir, day)
+    out = []
+    for c in relook_candidates(cfg, now):
+        a = announcement_by_id(cfg, day, c["ids_id"])
+        done.add(c["ids_id"])
+        _save_relooked(cfg.data_dir, day, done)  # one each, even if this one fails
+        if a is None:
+            log.warning("re-look: %s is no longer in today's announcement file", c["ids_id"])
+            continue
+        log.info("RE-LOOK %s %s (passed pre-open: %s)", a.code, a.ids_id, one_line(c["why"]))
+        try:
+            out.append(
+                handle_announcement(
+                    arena, pb, a, now, run_bot=False, relook=True, prior_why=c["why"]
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception("re-look on %s failed: %s", a.code, e)
+    return out
+
+
+def horizon_exit(arena: Arena, pb: Playbook, now: datetime | None = None) -> list[dict]:
+    """Close agent positions that have reached the playbook's holding horizon.
+
+    The agent was given the yardstick's 10-session horizon on 2026-09-23, so it needs the
+    yardstick's time exit too: without one, "not intraday" would mean "held until the stop
+    or forever", which is not the same race either.
+    """
+    now = now or datetime.now(SYD)
+    if pb.hold_sessions <= 0:
+        return []
+    from asxbot.arena.bots.announcement_drift import _sessions_between
+
+    cfg = arena.cfg
+    acct = arena.account(pb, "agent")
+    out = []
+    for ticker, pos in list(acct.positions.items()):
+        opened = datetime.fromisoformat(pos.opened_at)
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=SYD)
+        held = _sessions_between(opened, now)
+        if held < pb.hold_sessions:
+            continue
+        price = arena.broker.minutes.last_price(ticker) or pos.avg_cost
+        side = "sell" if pos.qty > 0 else "cover"
+        limit = round(price * (0.97 if side == "sell" else 1.03), 3)
+        reason = (
+            f"horizon reached: held {held} sessions, the playbook's limit is "
+            f"{pb.hold_sessions} (the same as the yardstick's)"
+        )
+        try:
+            o = arena_place_order(
+                cfg, arena.broker, acct, pb, ticker=ticker, side=side, qty=abs(pos.qty),
+                limit=limit, reason=reason, model="code (horizon exit)", placed_by="agent",
+                universe=arena.universe, short_universe=arena.short_universe, now=now,
+            )  # fmt: skip
+            log.info("horizon exit %s with %s: %s", ticker, o.order_id, reason)
+            out.append({"ticker": ticker, "order_id": o.order_id, "reason": reason})
+        except ArenaOrderRefused as e:
+            log.error("horizon exit of %s was refused: %s", ticker, e)
+    return out
+
+
+# --------------------------------------------------------------------------
+# the pre-close sweep (only when the playbook is intraday)
 # --------------------------------------------------------------------------
 PRECLOSE_PROMPT = """You are trader-decider. The ASX close is coming and you hold this
 position. Level {level} ({level_name}) is an INTRADAY level: the default is to close before
@@ -813,15 +1007,21 @@ def preclose_window(cfg) -> tuple[time_cls, time_cls]:
 
 
 def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) -> list[dict]:
-    """Close Level 1 positions before the close unless the decider writes a reason to hold.
+    """Close intraday positions before the close unless the decider writes a reason to hold.
 
     The decider is asked about each position AT the close, so the reason to hold is written
     then rather than inferred from what it intended hours earlier. If the agent cannot be
-    reached, or its answer cannot be read, the position is CLOSED - the level says intraday,
-    and the safe failure is to follow the level.
+    reached, or its answer cannot be read, the position is CLOSED - the playbook says
+    intraday, and the safe failure is to follow it.
+
+    Two things changed on 2026-09-23. The sweep now follows the PLAYBOOK's holding rather
+    than its level's, so a playbook given a multi-day horizon is not flattened every
+    afternoon; and even under an intraday playbook, a position the decider opened with a
+    stated multi-day thesis is left alone rather than asked about, because the answer was
+    already written when the trade was made.
     """
     now = now or datetime.now(SYD)
-    if pb.level.holding != "intraday":
+    if pb.holding != "intraday":
         return []
     cfg = arena.cfg
     ev = EventLog(cfg.data_dir)
@@ -832,6 +1032,9 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
     for ticker, pos in list(acct.positions.items()):
         if pos.hold_asked_on == today:
             continue  # already settled today, either way
+        if pos.hold == "overnight" and pos.hold_reason:
+            out.append({"ticker": ticker, "action": "hold", "reason": pos.hold_reason})
+            continue  # a multi-day thesis, written when the position was opened
         price = arena.broker.minutes.last_price(ticker) or pos.avg_cost
         open_pnl = (price - pos.avg_cost) * pos.qty
         daily = arena.daily_lookup()(ticker)

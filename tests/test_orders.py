@@ -1,7 +1,7 @@
 """place_order limits, the sim broker, the scanner and reconciliation. No network."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,22 @@ from asxbot.log import EventLog
 from fake_provider import synthetic_bars
 
 SYD = ZoneInfo("Australia/Sydney")
-NOON = datetime(2026, 9, 22, 12, 0, tzinfo=SYD)
+
+
+def _last_weekday_noon() -> datetime:
+    """Noon Sydney on the most recent weekday.
+
+    This used to be a fixed date. The limits count positions "opened today" from the event
+    log, so once the wall clock passed that date the count was always zero and the test
+    silently stopped testing anything. Deriving it keeps the test honest on any day it runs.
+    """
+    d = datetime.now(SYD).replace(hour=12, minute=0, second=0, microsecond=0)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+NOON = _last_weekday_noon()
 
 
 @pytest.fixture

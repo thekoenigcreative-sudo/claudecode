@@ -152,6 +152,15 @@ arena:
   # Level 1 is an intraday level: positions are closed before the 16:10 close unless the
   # decider writes a reason to hold. The sweep asks it about each open position, so the
   # reason is written at the close - not assumed from what it intended hours earlier.
+  # Added 2026-09-23. An announcement released before the open is judged without the one
+  # thing that matters most: what the market did with it. Both A1M announcements were
+  # passed on pre-open with the stated blocker being that the 10:00 auction had not
+  # happened. Each such pass now gets ONE second look after the auction has settled, with
+  # the opening move against the index and the volume against the 20-day average visible.
+  # Re-looks are logged as re-looks, and still face the screen and both reader gates.
+  relook:
+    time: "10:20"
+
   preclose:
     sweep_time: "15:50"      # Sydney; must leave time for the fill before 16:10
     close_deadline: "16:10"  # the ASX closing auction
@@ -181,6 +190,15 @@ arena:
       enabled: true
       status: warmup            # build | shakedown | warmup | test | passed | retired
       warmup_start: "2026-09-23T07:30:00+10:00"
+      # Holding, set 2026-09-23. The level's default is intraday, which put the agent in a
+      # different race from its own yardstick: the 15:50 sweep flattened the agent every
+      # day while the bot held 10 sessions. At 09:58 the decider passed on A1M and said so
+      # itself - "the yardstick bot will likely take this and may well beat me, because its
+      # 10-session horizon captures M&A drift that an intraday position cannot". The agent
+      # now gets the same horizon as the thing it is measured against. The yardstick's own
+      # frozen rule (below) is untouched.
+      holding: days
+      hold_sessions: 10         # same as the yardstick's hold_days; code closes at this
       data_basis: "free delayed quotes; fills deferred to the true minute bar"
       # The agent's trigger: every price-sensitive announcement above the liquidity floor.
       trigger:
@@ -189,7 +207,15 @@ arena:
         # Added 2026-09-23 after the first warm-up morning: one ASX tick worth more than
         # this much of the price makes a stock untradeable whatever the news says, so it
         # is rejected in plain code before any model is called (arena/tradability.py).
-        max_tick_pct: 1.0
+        #
+        # Raised 1.0 -> 3.0 on 2026-09-23. At 1.0 this was arithmetically a 50c price
+        # floor: ASX ticks are 0.1c below 10c, 0.5c to $2 and 1c above, so 1% excluded
+        # every stock under 50c and bound nothing at all above $2. It caused 32 of the 47
+        # screen rejections that morning. 3.0 admits everything above about 17c.
+        # This is a DELIBERATE, DATED LOOSENING to get the arena trading and to see what
+        # the agent does with a real flow of announcements. It is not a tuned result, and
+        # nothing about it was chosen by looking at returns.
+        max_tick_pct: 3.0
       # Starting guidance for the agent (it may deviate, and must write down why).
       guidance:
         default_exit: same_day

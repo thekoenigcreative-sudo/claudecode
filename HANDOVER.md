@@ -226,6 +226,25 @@ The report now says NO TRADES rather than claiming a zero-trade run beat a losin
 Not a go/no-go either way: yfinance has no delisted stocks, and the momentum baseline's
 24.5% CAGR is survivorship bias in plain sight. Norgate first.
 
+## Three changes to get the arena trading (23 Sep, all dated in config.yaml)
+
+1. **Same race as the yardstick.** The playbook now states `holding: days` and
+   `hold_sessions: 10`, matching the bot's frozen 10-session rule. The level stays
+   intraday; only this playbook overrides it. The 15:50 sweep no longer runs for a
+   multi-day playbook, and even under an intraday one it leaves alone a position opened
+   with a written multi-day thesis. A new `horizon_exit` closes agent positions at 10
+   sessions, so "not intraday" cannot quietly become "held forever".
+2. **The 10:20 re-look.** An announcement judged before the open was judged without the
+   reaction. Each pre-open pass now gets ONE second look at 10:20 with the opening move and
+   volume visible, logged as a re-look (`relook: true` on every record), still facing the
+   screen and both reader gates. The yardstick is NOT re-run: its rule is frozen.
+   Re-looks done are tracked in `data/arena/relooked/<date>.json`.
+3. **max_tick_pct 1.0 -> 3.0.** At 1% this was arithmetically a 50c price floor and bound
+   nothing above $2; it caused 32 of 47 screen rejections. A deliberate, dated loosening to
+   get the arena trading, not a tuned result.
+
+Frozen strategy A parameters, the holdout and the yardstick's rule were not touched.
+
 ## Open items
 
 1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed

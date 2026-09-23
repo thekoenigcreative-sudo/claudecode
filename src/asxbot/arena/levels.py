@@ -68,6 +68,21 @@ class Playbook:
     def bot_account(self) -> str:
         return f"{self.key}__bot"
 
+    @property
+    def holding(self) -> str:
+        """The playbook's holding period, which may override its level's.
+
+        Added 2026-09-23: the agent was on the level's intraday default while its own
+        yardstick held 10 sessions, so the two were not running the same race. A playbook
+        may now state its own holding; everything else still comes from the level.
+        """
+        return str(self.raw.get("holding", self.level.holding))
+
+    @property
+    def hold_sessions(self) -> int:
+        """How many sessions a position may be held before code closes it. 0 = no limit."""
+        return int(self.raw.get("hold_sessions", 0))
+
     def guidance(self, name: str, default=None):
         return self.raw.get("guidance", {}).get(name, default)
 
