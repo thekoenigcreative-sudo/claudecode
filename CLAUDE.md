@@ -14,6 +14,7 @@ Rules for every session:
 - Secrets only in `.env` (gitignored). Bulky data only in `data/` (gitignored).
 - Test each stage before the next; commit after each working stage.
 - The repo is in Google Drive: keep the virtual environment outside Drive (one per PC) and no SQLite or other live database files inside the repo.
+- Never start the watcher (`asxbot arena watch`) from a Claude Code shell or any terminal that might be closed. Always start it through its scheduled task: `schtasks /run /tn "ASXBot Arena Warmup"`. A watcher tied to a window dies with that window. On 23 Sep a window was closed at 13:32, the watcher went with it, and nothing reported it.
 
 ## Verification
 

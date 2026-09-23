@@ -27,6 +27,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from asxbot.arena.heartbeat import quiet
 from asxbot.log import EventLog, get_logger
 
 log = get_logger("asxbot.arena.agents")
@@ -95,9 +96,12 @@ def call_agent(
         "--json", "--timeout", str(timeout_s),
     ]  # fmt: skip
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_s + 60, encoding="utf-8"
-        )
+        # A model call can legitimately run to its timeout with nothing logged; say so, so
+        # the watchdog does not report a quiet log as a dead watcher.
+        with quiet(timeout_s + 120, f"waiting on {agent}"):
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout_s + 60, encoding="utf-8"
+            )
     except subprocess.TimeoutExpired as e:
         raise AgentCallFailed(f"{agent} timed out after {timeout_s}s") from e
     finally:

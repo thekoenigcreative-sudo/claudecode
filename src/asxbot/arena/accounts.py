@@ -42,9 +42,10 @@ class Position:
     hold_asked_on: str = ""  # the day the pre-close sweep last asked about this position
     # The minute the take-profit target is honoured from (checked from the minute after it).
     # A position opened before targets were honoured (2026-09-24) gets this the first time
-    # the broker sees it; if it was already past its target then, it exits at the first open.
+    # the broker sees it, and its target rests from then like any other. Whether the price
+    # was already past the target at that moment is recorded, for the audit trail only.
     target_from: str = ""
-    target_exit_at_open: bool = False
+    target_past_when_armed: bool = False
 
     @property
     def is_short(self) -> bool:
@@ -56,10 +57,20 @@ class Position:
         # started before these fields existed (as ArenaOrder does with stop_pct).
         if not d["target_from"]:
             del d["target_from"]
-        if not d["target_exit_at_open"]:
-            del d["target_exit_at_open"]
+        if not d["target_past_when_armed"]:
+            del d["target_past_when_armed"]
         return d
 
+
+
+def _position(raw: dict) -> Position:
+    """A position from a saved book. 42364dc called target_past_when_armed
+    target_exit_at_open (and sold at the first open whatever the price); a book written by
+    it still loads, and the flag now means only what its new name says."""
+    raw = dict(raw)
+    if "target_exit_at_open" in raw:
+        raw.setdefault("target_past_when_armed", raw.pop("target_exit_at_open"))
+    return Position(**raw)
 
 @dataclass
 class ArenaOrder:
@@ -188,7 +199,7 @@ class AccountStore:
                 level=int(raw.get("level", level)),
                 starting_cash=float(raw["starting_cash"]),
                 cash=float(raw["cash"]),
-                positions={k: Position(**v) for k, v in raw.get("positions", {}).items()},
+                positions={k: _position(v) for k, v in raw.get("positions", {}).items()},
                 orders={k: ArenaOrder(**v) for k, v in raw.get("orders", {}).items()},
                 next_id=int(raw.get("next_id", 1)),
                 realised_pnl=float(raw.get("realised_pnl", 0.0)),

@@ -8,9 +8,9 @@ What this broker does:
   * later fills it from the minute bar covering that minute (see minutes.py), capped at
     the order's limit - a limit the market never reached rests, then expires at the close;
   * enforces stops from the minute bars, with the gap rule, and - for the agent's accounts -
-    take-profit targets the same way, mirrored;
-  * charges IBKR brokerage both ways, adverse slippage (which stands in for the spread),
-    and a daily borrow cost on short positions;
+    take-profit targets the same way, mirrored, as resting limits;
+  * charges IBKR brokerage both ways, adverse slippage on every fill (it stands in for the
+    spread), and a daily borrow cost on short positions;
   * marks every account to market daily, which is what the daily loss limit and the
     scoreboard are measured against.
 
@@ -291,19 +291,26 @@ class ArenaBroker:
         whichever is worse - then slippage.
 
         Target, agent accounts only (the yardstick's frozen rule has no target, so a bot
-        position's target is never honoured): the mirror image. A long exits when a bar's
-        high reaches it, a short when a bar's low does. The fill is the target, or the bar's
-        open when the price gapped through it - whichever is better, as a resting limit
-        fills - with no slippage, because a limit never fills past its price. Until
-        2026-09-24 the target was stored and never acted on, though the decider set it
-        believing it was a take-profit.
+        position's target is never honoured): a resting take-profit, the mirror image of
+        the stop. A long exits when a bar's high reaches it, a short when a bar's low does.
+        The fill is the target, or the bar's open when the price gapped through it -
+        whichever is better, as a resting limit fills - then slippage, the same as every
+        other arena fill. Until 2026-09-24 the target was stored and never acted on, though
+        the decider set it believing it was a take-profit. 42364dc filled targets with no
+        slippage, which flattered the agent's account against its yardstick; target fills pay
+        it from 2026-09-23.
 
         One bar reaching both: the stop is taken. A minute bar does not say which came
         first, so the arena assumes the worse.
 
         A position opened before targets were honoured has its target honoured from the
-        first time this runs on it; if the price is already past the target then, it exits
-        at the first available open rather than at some bar in the past (_arm_target).
+        first time this runs on it, and from then on it is checked exactly like any other
+        (_arm_target). If the price is already past the target at that moment, nothing
+        special happens: the target rests from there. The first bar after it that reaches
+        the target fills it - at that bar's open if the open is at or beyond the target,
+        otherwise at the target - and if the price has fallen back, the position holds until
+        a later bar reaches the target. 42364dc instead sold such a position at the first
+        open whatever that open was, which is a market order, not a take-profit.
         """
         now = now or datetime.now(SYD)
         out: list[FillOutcome] = []
@@ -324,13 +331,10 @@ class ArenaBroker:
                     self._arm_target(acct, pos, now)
                     armed = True
                 t_since = max(since, _minute_after(pos.target_from))
-                if pos.target_exit_at_open:
-                    target_hit = self.minutes.first_open(ticker, t_since, until=now.date())
-                else:
-                    target_hit = self.minutes.first_trigger(
-                        ticker, t_since, float(pos.target), "up" if long else "down",
-                        until=now.date(),
-                    )  # fmt: skip
+                target_hit = self.minutes.first_trigger(
+                    ticker, t_since, float(pos.target), "up" if long else "down",
+                    until=now.date(),
+                )  # fmt: skip
             if stop_hit is not None and (target_hit is None or stop_hit[0] <= target_hit[0]):
                 out.append(self._exit_at_stop(acct, ticker, pos, *stop_hit))
             elif target_hit is not None:
@@ -361,22 +365,23 @@ class ArenaBroker:
         return self._apply_fill(acct, o, px, ts, basis)
 
     def _exit_at_target(
-        self, acct: Account, ticker: str, pos: Position, ts: datetime, px: float
+        self, acct: Account, ticker: str, pos: Position, ts: datetime, raw: float
     ) -> FillOutcome:
+        adv = self.adv_lookup(ticker)
+        slip = self.costs.slippage_pct(abs(pos.qty) * raw, adv)
         side = "sell" if pos.qty > 0 else "cover"
-        if pos.target_exit_at_open:
-            reason = (
-                f"TARGET {pos.target:.3f} already passed when targets began to be honoured "
-                f"({pos.target_from}); exit at the first open"
+        px = raw * (1 - slip) if side == "sell" else raw * (1 + slip)
+        reason = f"TARGET reached at {pos.target:.3f}"
+        if pos.target_past_when_armed:
+            reason += (
+                f" (it was already past when targets began to be honoured, {pos.target_from},"
+                " and rested from there)"
             )
-            basis = f"the open of the {ts:%Y-%m-%d %H:%M} minute bar, {px:.4f}; no slippage"
-        else:
-            reason = f"TARGET reached at {pos.target:.3f}"
-            basis = (
-                f"target {pos.target:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
-                f"filled at {px:.4f} (the target, or the bar's open if it gapped through); "
-                "no slippage on a limit"
-            )
+        basis = (
+            f"target {pos.target:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
+            f"{raw:.4f} (the target, or the bar's open if it gapped through), "
+            f"{'less' if side == 'sell' else 'plus'} {slip * 100:.3f}% slippage"
+        )
         oid = self.store.next_order_id()
         o = ArenaOrder(
             order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
@@ -389,16 +394,17 @@ class ArenaBroker:
     def _arm_target(self, acct: Account, pos: Position, now: datetime) -> None:
         """Start honouring the target of a position opened before targets were honoured.
 
-        From this minute on it is checked like any other. If the last traded price is
-        already past it, the position exits at the first available open: the target was
-        reached while nothing was acting on it, and exiting at an earlier bar would be a
-        trade in the past.
+        From the minute after this one it rests like any other target. Exiting at an
+        earlier bar, when nothing was acting on it, would be a trade in the past. Whether
+        the last traded price was already past it is recorded, for the audit trail only.
         """
         at = now.astimezone(SYD).replace(second=0, microsecond=0)
         target = float(pos.target)
         px = self.minutes.price_at(pos.ticker, at)
         pos.target_from = at.isoformat(timespec="minutes")
-        pos.target_exit_at_open = px is not None and (px >= target if pos.qty > 0 else px <= target)
+        pos.target_past_when_armed = px is not None and (
+            px >= target if pos.qty > 0 else px <= target
+        )
         if px is None:
             log.warning(
                 "arena %s %s: target %.4f honoured from %s; no recent price is known, so "
@@ -409,15 +415,16 @@ class ArenaBroker:
             log.info(
                 "arena %s %s: target %.4f honoured from %s; last price %.4f%s",
                 acct.name, pos.ticker, target, pos.target_from, px,
-                " is already past it, so it exits at the first open"
-                if pos.target_exit_at_open else "",
+                " is already past it; the target rests from here, and the next bar to reach "
+                "it fills it (at its open if that open is at or beyond the target)"
+                if pos.target_past_when_armed else "",
             )  # fmt: skip
         self.events.append(
             "arena_orders",
             {
                 "account": acct.name, "ticker": pos.ticker, "event": "target_armed",
                 "target": target, "target_from": pos.target_from, "last_price": px,
-                "exit_at_open": pos.target_exit_at_open,
+                "past_when_armed": pos.target_past_when_armed,
             },
         )  # fmt: skip
 
@@ -539,7 +546,7 @@ def _move_target(pos: Position, o: ArenaOrder, minute: datetime) -> None:
         return
     pos.target = o.target
     pos.target_from = minute.isoformat(timespec="minutes")
-    pos.target_exit_at_open = False
+    pos.target_past_when_armed = False
 
 
 def _session_over(decided: datetime, now: datetime) -> bool:

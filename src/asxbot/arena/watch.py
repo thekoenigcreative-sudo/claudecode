@@ -43,6 +43,7 @@ from asxbot.arena.agents import (
     parse_decision,
     parse_verdict,
 )
+from asxbot.arena.heartbeat import Heartbeat, quiet
 from asxbot.arena.hours import announcement_window, order_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
 from asxbot.arena.notify import one_line
@@ -370,7 +371,7 @@ WHAT THE CODE WILL ALLOW
     the target; a short is covered when a bar's high reaches the stop, or its low reaches
     the target. The stop fills at the stop (or the bar's open if the price gapped through
     it), less slippage. The target fills at the target (or the bar's open if the price
-    gapped through it). If one bar reaches both, the stop is taken.
+    gapped through it), less slippage too. If one bar reaches both, the stop is taken.
   - so the target is a real take-profit: the whole position is closed there. Set one only
     if you want to be out at that price. A long's target must be above the entry, a
     short's below it. null means no target: the position is held until the stop, the
@@ -737,118 +738,138 @@ def watch(
         )  # fmt: skip
 
     alert = notify.get(arena)
-    while True:
-        now = datetime.now(SYD)
-        if alert:
-            alert.flush_passes(now)  # one digest an hour; passes are never instant
-        if stop_at is not None and now >= stop_at:
+    # The watchdog (watchdog.py) reads this from outside: it is how a watcher that died
+    # without a word - as it did at 13:32 on 23 Sep 2026 - gets reported. Not for --once,
+    # which is a manual test and must not overwrite the scheduled watcher's heartbeat.
+    hb = None if once else Heartbeat(cfg.data_dir, stop_at).start()
+    ended = "crashed"
+    try:
+        while True:
+            now = datetime.now(SYD)
             if alert:
-                alert.flush_passes(now, force=True)  # do not leave the last part-hour unsent
-            log.info("reached the stop time %s; the watcher is done for today", until)
-            return
-        start = warmup_start(pb)
-        if start is not None and now < start:
-            log.info(
-                "the warm-up for %s starts at %s; waiting (nothing will be traded before then)",
-                pb.key, start.strftime("%Y-%m-%d %H:%M"),
-            )  # fmt: skip
+                alert.flush_passes(now)  # one digest an hour; passes are never instant
+            if stop_at is not None and now >= stop_at:
+                if alert:
+                    alert.flush_passes(now, force=True)  # never leave the last part-hour unsent
+                log.info("reached the stop time %s; the watcher is done for today", until)
+                ended = "stopped"
+                return
+            start = warmup_start(pb)
+            if start is not None and now < start:
+                log.info(
+                    "the warm-up for %s starts at %s; waiting (nothing will be traded before then)",
+                    pb.key, start.strftime("%Y-%m-%d %H:%M"),
+                )  # fmt: skip
+                if once:
+                    return
+                wait = min(300, max(30, (start - now).total_seconds()))
+                _sleep(wait, "waiting for the warm-up to start")
+                continue
+            if not is_trading_day(now.date()):
+                log.info("not an ASX trading day; nothing to watch")
+                if once:
+                    return
+                _sleep(1800, "not an ASX trading day")
+                continue
+            if not caught_up:
+                caught_up = True
+                try:
+                    done = catch_up(arena, pb, now)
+                    if done:
+                        log.info("catch-up worked %d announcement(s) from earlier days", len(done))
+                except Exception as e:  # noqa: BLE001
+                    log.exception("catch-up failed: %s", e)
+            if not in_hours(now, *hours) and not once:
+                log.info("outside announcement hours %s-%s Sydney; sleeping", *hours)
+                _sleep(300, "outside announcement hours")
+                continue
+            try:
+                new = poller.poll_once(now)
+            except Exception as e:  # noqa: BLE001
+                log.error("poll failed: %s", e)
+                new = []
+            for a in new:
+                if not a.price_sensitive or a.code not in arena.universe:
+                    continue
+                if a.ids_id in handled:
+                    continue
+                handled.add(a.ids_id)
+                _save_handled(cfg.data_dir, now.date(), handled)
+                log.info("working announcement %s %s", a.code, a.headline[:70])
+                try:
+                    handle_announcement(arena, pb, a, now)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("handling %s failed: %s", a.code, e)
+
+            # The yardstick's entries: once a day, before the open.
+            try:
+                yardstick_entries(arena, pb, now)
+            except Exception as e:  # noqa: BLE001
+                log.exception("the yardstick's entries failed: %s", e)
+
+            # Fills, stops and targets, every cycle.
+            for kind in ("agent", "bot"):
+                acct = arena.account(pb, kind)
+                arena.broker.apply_exits(acct, now)
+                arena.broker.resolve_pending(acct, now)
+
+            # Keep the short universe current. Stale means the arena starts refusing shorts in
+            # real index members, silently, which is how TUA was refused twice on 23 September.
+            _refresh_short_universe(arena, now)
+
+            # The system checks itself, every cycle. A fault here is shouted, not logged.
+            try:
+                selfcheck.report(arena, pb, now)
+            except Exception as e:  # noqa: BLE001 - the checks must never stop the watcher
+                log.exception("the self-checks failed to run: %s", e)
+
+            # The horizon exit, every cycle: a position that has run its sessions is closed.
+            try:
+                horizon_exit(arena, pb, now)
+            except Exception as e:  # noqa: BLE001
+                log.exception("the horizon exit failed: %s", e)
+
+            # One second look each, once the opening auction has settled.
+            if now.astimezone(SYD).time() >= relook_time(cfg):
+                try:
+                    again = do_relooks(arena, pb, now)
+                    if again:
+                        log.info(
+                            "re-looked at %d announcement(s) passed on before the open", len(again)
+                        )
+                except Exception as e:  # noqa: BLE001
+                    log.exception("the re-look failed: %s", e)
+
+            # Before the close, settle the day's Level 1 positions.
+            sweep_at, deadline = preclose_window(cfg)
+            if sweep_at <= now.astimezone(SYD).time() < deadline:
+                for r in sweep_before_close(arena, pb, now):
+                    log.info("pre-close %s: %s", r["ticker"], r["action"])
+
+            # The close itself: one message with the day's totals. Once a day, after the
+            # pre-close sweep has had its say, so the balances in it are settled ones.
+            if alert and now.astimezone(SYD).time() >= deadline:
+                try:
+                    if alert.session_summary(session_summary_text(arena, pb, now), now):
+                        log.info("end-of-session summary sent")
+                except Exception as e:  # noqa: BLE001 - a summary must never stop the watcher
+                    log.exception("the end-of-session summary failed: %s", e)
+
             if once:
                 return
-            time.sleep(min(300, max(30, (start - now).total_seconds())))
-            continue
-        if not is_trading_day(now.date()):
-            log.info("not an ASX trading day; nothing to watch")
-            if once:
-                return
-            time.sleep(1800)
-            continue
-        if not caught_up:
-            caught_up = True
-            try:
-                done = catch_up(arena, pb, now)
-                if done:
-                    log.info("catch-up worked %d announcement(s) from earlier days", len(done))
-            except Exception as e:  # noqa: BLE001
-                log.exception("catch-up failed: %s", e)
-        if not in_hours(now, *hours) and not once:
-            log.info("outside announcement hours %s-%s Sydney; sleeping", *hours)
-            time.sleep(300)
-            continue
-        try:
-            new = poller.poll_once(now)
-        except Exception as e:  # noqa: BLE001
-            log.error("poll failed: %s", e)
-            new = []
-        for a in new:
-            if not a.price_sensitive or a.code not in arena.universe:
-                continue
-            if a.ids_id in handled:
-                continue
-            handled.add(a.ids_id)
-            _save_handled(cfg.data_dir, now.date(), handled)
-            log.info("working announcement %s %s", a.code, a.headline[:70])
-            try:
-                handle_announcement(arena, pb, a, now)
-            except Exception as e:  # noqa: BLE001
-                log.exception("handling %s failed: %s", a.code, e)
+            _sleep(interval_s, "between polls")
+    except KeyboardInterrupt:
+        ended = "interrupted"
+        raise
+    finally:
+        if hb is not None:
+            hb.stop(ended)
 
-        # The yardstick's entries: once a day, before the open.
-        try:
-            yardstick_entries(arena, pb, now)
-        except Exception as e:  # noqa: BLE001
-            log.exception("the yardstick's entries failed: %s", e)
 
-        # Fills, stops and targets, every cycle.
-        for kind in ("agent", "bot"):
-            acct = arena.account(pb, kind)
-            arena.broker.apply_exits(acct, now)
-            arena.broker.resolve_pending(acct, now)
-
-        # Keep the short universe current. Stale means the arena starts refusing shorts in
-        # real index members, silently, which is how TUA was refused twice on 23 September.
-        _refresh_short_universe(arena, now)
-
-        # The system checks itself, every cycle. A fault here is shouted, not logged.
-        try:
-            selfcheck.report(arena, pb, now)
-        except Exception as e:  # noqa: BLE001 - the checks must never stop the watcher
-            log.exception("the self-checks failed to run: %s", e)
-
-        # The horizon exit, every cycle: a position that has run its sessions is closed.
-        try:
-            horizon_exit(arena, pb, now)
-        except Exception as e:  # noqa: BLE001
-            log.exception("the horizon exit failed: %s", e)
-
-        # One second look each, once the opening auction has settled.
-        if now.astimezone(SYD).time() >= relook_time(cfg):
-            try:
-                again = do_relooks(arena, pb, now)
-                if again:
-                    log.info(
-                        "re-looked at %d announcement(s) passed on before the open", len(again)
-                    )
-            except Exception as e:  # noqa: BLE001
-                log.exception("the re-look failed: %s", e)
-
-        # Before the close, settle the day's Level 1 positions.
-        sweep_at, deadline = preclose_window(cfg)
-        if sweep_at <= now.astimezone(SYD).time() < deadline:
-            for r in sweep_before_close(arena, pb, now):
-                log.info("pre-close %s: %s", r["ticker"], r["action"])
-
-        # The close itself: one message with the day's totals. Once a day, after the
-        # pre-close sweep has had its say, so the balances in it are settled ones.
-        if alert and now.astimezone(SYD).time() >= deadline:
-            try:
-                if alert.session_summary(session_summary_text(arena, pb, now), now):
-                    log.info("end-of-session summary sent")
-            except Exception as e:  # noqa: BLE001 - a summary must never stop the watcher
-                log.exception("the end-of-session summary failed: %s", e)
-
-        if once:
-            return
-        time.sleep(interval_s)
+def _sleep(seconds: float, why: str) -> None:
+    """Sleep, telling the heartbeat first, so the watchdog knows a silent log is expected."""
+    with quiet(seconds + 60, why):
+        time.sleep(seconds)
 
 
 _LAST_UNIVERSE_TRY: list = [None]

@@ -4,7 +4,7 @@ Living plan. Reviewed and updated by Claude every time a Claude Code output come
 before the next prompt is handed over. Every line here is either verified against a file,
 a log or a command output, or labelled as unverified.
 
-**Last reviewed:** 2026-09-23 11:58 AEST
+**Last reviewed:** 2026-09-23 15:50 AEST (Claude Code, watcher and target job)
 **Visual version:** https://claude.ai/artifact/Pg5TsxMqKkbbwz2aFF3UqZ — republished to the
 same link whenever this file changes.
 
@@ -66,7 +66,7 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 |---|---|---|---|
 | 1 | ~~Live bot enters intraday; frozen rule is enter-next-open~~ | — | **Fixed `a7665ac`** — confirms at close, enters next open before 10:00; loads 07:30 24 Sep |
 | 2 | ~~Arena sizing ≠ backtest ≠ real-money limits~~ | — | **Fixed `150297c`** — $20k, 4 positions, 1.0x, $5k max position |
-| 3 | `target` stored on positions but never acted on — agent believes it set a take-profit | Medium | **Not yet queued** |
+| 3 | ~~`target` stored on positions but never acted on — agent believes it set a take-profit~~ | — | **Fixed `42364dc` + this job** — a resting take-profit, agent accounts only, less slippage like every fill. 42364dc's rule for a position already past its target (sell at the first open whatever it is) was a spec error, corrected: it sells at an open only if that open is at or beyond the target, otherwise holds until a bar reaches it. A1M (target 0.90): sells at the 24 Sep open only if that open is ≥ 0.90 |
 | 4 | ASX 300 universe is a market-cap proxy, like the ASX 200 was | Medium | **Not yet queued** |
 | 5 | `universe.asx300_source: vas_holdings` never read | Low | **Not yet queued** |
 | 6 | Stop can fire in the entry minute | Medium | PROMPTS #4 |
@@ -81,6 +81,11 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 15 | Setup 8 pullback exit ("first up close or 5 days") was written for 3-day dips; may not suit a one-month reversal signal. Decide when G's rule is frozen, not before | Low | When G is built |
 | 16 | Yahoo's ^AXJO series was missing 22 Sep 2026 on 23 Sep. The yardstick now needs the index's daily bar each morning; a late bar means a missed day (logged, never traded late). Watch 24 Sep 07:30 | Medium | Watch, then decide |
 | 17 | Not yet confirmed what the $20k change did to the open arena accounts (A1M) — the session's own report wasn't reviewed | Medium | Check before 07:30 24 Sep |
+| 18 | ~~Stop scan looked only five calendar days from entry, so a stop went dead on any position held past the first week (the yardstick holds ten sessions)~~ | — | **Found and fixed `42364dc`** — scans through today |
+| 19 | **The watcher died at 13:32:51 on 23 Sep** and nothing said so. Log stops mid-poll, no error; task result 0xC000013A (console closed / Ctrl+C). It ran in a visible console window, almost certainly closed by accident while other terminals were opened. The self-checks run inside the watcher, so they died with it. No polling, alerts or pre-close sweep after 13:32 (A1M went overnight without the sweep) | High | Fixed in code, **waiting on Rick** — hidden launcher `scripts/arena_warmup.pyw`; `scripts/schedule_watcher_hidden.ps1` re-points the task, not yet run. Until then 07:30 still starts it in a visible window |
+| 20 | No outside check that the watcher is alive | High | Built, **waiting on Rick** — `watchdog.py` + heartbeat, run every 5 min by `ASXBot Arena Watchdog` (`scripts/schedule_watchdog.ps1`, not yet run). One Telegram alert per outage, one on recovery |
+| 21 | ~~`.gitignore`'s `data/` also hid `src/asxbot/data` — 8 modules never committed, a clone would not import~~ | — | **Fixed `76c2036`** — pattern is now `/data/` |
+| 22 | The 22 Sep marks are in `events/arena_marks.jsonl` but `data/arena/marks/` is empty. Not a bug: `arena reset --yes` at 21:40 22 Sep (the deliberate cleanup in HANDOVER.md) deleted the marks files for test accounts that no longer exist; the event log is append-only and keeps them. No real account ever had a 22 Sep mark. `reset` writes nothing to the event log, so the log reads as if those marks still apply | Low | Optional: have `reset` log an event |
 
 ---
 
@@ -101,6 +106,14 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 ---
 
 ## Review log
+
+- **23 Sep 15:50** — Watcher death at 13:32 diagnosed (#19): closed console window,
+  0xC000013A. Built a windowless launcher, a heartbeat inside the watcher and a watchdog
+  outside it (#20); both scheduled-task changes are written as scripts and **not run**,
+  waiting on Rick. #3 corrected: a target is a resting take-profit that pays slippage;
+  a position past its target sells at an open only if that open reaches it. The marks
+  folder is empty because of the 22 Sep reset, not a bug (#22). Found and fixed
+  `.gitignore` hiding `src/asxbot/data` (#21). 225 tests pass.
 
 - **23 Sep 14:50** — Short side tested (`d009048` rules committed first, `c5f3711`). Both
   lose in-sample inside today's ASX 200: S1 earnings-miss short avg −0.34% to −0.73% a

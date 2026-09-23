@@ -329,6 +329,31 @@ asked whether the flagship strategy made money, and it said no.
 
 ---
 
+## 14. The watcher died and nothing inside it could say so
+
+At 13:32:51 on 23 Sep the watcher's log stopped mid-poll: a routine "0 new" line, no
+error after it. The warm-up task's last result was 0xC000013A (console closed / Ctrl+C).
+The watcher had been running in a visible console window, and that window was closed,
+almost certainly by accident while other terminals were being opened. The seven
+self-checks run inside the watcher, so they died with it. The hourly digest stopped
+too, but a missing message is easy to miss. Nothing was polled or alerted after
+13:32, and the pre-close sweep never ran, so A1M went overnight without it. Stops
+catch up from the minute bars when the watcher restarts, but only after the fact.
+Nobody noticed until someone read the log.
+
+Two lessons. A check that runs inside the process it checks cannot report that
+process's death, so liveness has to be watched from outside (watchdog.py, fed by
+heartbeat.py). And a long-running process should not own a window someone can close.
+The warm-up now has a pythonw launcher with no console (scripts/arena_warmup.pyw).
+
+Found the same afternoon, while testing a fix from a clean checkout: `.gitignore` held
+`data/`, which matches every folder named data, so `src/asxbot/data` (eight modules the
+backtest and the arena import) had never been committed. The code existed only on
+Google Drive. An ignore rule hides mistakes as well as files. `git status` showed
+nothing because git was told not to look.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not
@@ -343,6 +368,8 @@ asked whether the flagship strategy made money, and it said no.
    its holdout run, not a conclusion.
 7. Judge an event when it can actually be judged, not when it happens to arrive.
 8. One Claude Code session per repository at a time.
+9. Nothing can report its own death. Watch long-running processes from outside, and
+   never run them in a window that can be closed.
 9. On fake money, an observation is worth more than a rule that prevents all
    observation.
 10. Nothing on yfinance data is a go or a no-go. Norgate first.

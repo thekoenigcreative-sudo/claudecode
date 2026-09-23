@@ -1,0 +1,154 @@
+"""The watcher's heartbeat: a small file the watchdog (watchdog.py) reads from outside.
+
+The self-checks run inside the watcher, so they die with it. On 23 Sep 2026 the watcher's
+console window was closed at 13:32 and nothing said so: the last log line is a routine
+poll, with no error after it, and no check was left running to notice.
+
+While the watcher runs, a background thread rewrites data/arena/watcher_heartbeat.json
+every minute with:
+  * pid, started, stop_at - which process this is, and when it means to stop;
+  * beat          - the thread's own clock: the process is alive and not suspended;
+  * last_activity - the watcher's last log line, or the end of a wait it announced;
+  * quiet_until / quiet_why - a wait the watcher announced in advance (a sleep, or a model
+    call that may take up to its timeout), during which a silent log is expected;
+  * state         - running | stopped (reached its stop time) | crashed.
+
+The main loop never writes the file itself, so a slow write (Google Drive) can never
+stall trading, and a failed write is simply retried a minute later.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from asxbot.io import write_text_atomic
+
+SYD = ZoneInfo("Australia/Sydney")
+FILE = "watcher_heartbeat.json"
+BEAT_S = 60
+
+_current: Heartbeat | None = None
+
+
+def heartbeat_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "arena" / FILE
+
+
+def read(data_dir: Path) -> dict | None:
+    """The last heartbeat written, or None if there is none (or it cannot be read)."""
+    p = heartbeat_path(data_dir)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+class _Activity(logging.Handler):
+    """Records the time of every log line this process writes. Nothing else."""
+
+    def __init__(self, hb: Heartbeat):
+        super().__init__(level=logging.DEBUG)
+        self.hb = hb
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.hb.last_activity = datetime.fromtimestamp(record.created, SYD)
+
+
+class Heartbeat:
+    def __init__(self, data_dir: Path, stop_at: datetime | None = None, beat_s: float = BEAT_S):
+        self.path = heartbeat_path(data_dir)
+        self.pid = os.getpid()
+        self.started = _now()
+        self.stop_at = stop_at
+        self.beat_s = float(beat_s)
+        self.last_activity = self.started
+        self.quiet_until: datetime | None = None
+        self.quiet_why = ""
+        self.state = "running"
+        self.last_write_error = ""
+        self._handler = _Activity(self)
+        self._stopping = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def payload(self, now: datetime | None = None) -> dict:
+        def iso(t: datetime | None) -> str | None:
+            return t.isoformat(timespec="seconds") if t is not None else None
+
+        return {
+            "pid": self.pid,
+            "started": iso(self.started),
+            "stop_at": iso(self.stop_at),
+            "beat": iso(now or _now()),
+            "last_activity": iso(self.last_activity),
+            "quiet_until": iso(self.quiet_until),
+            "quiet_why": self.quiet_why,
+            "state": self.state,
+        }
+
+    def write(self) -> bool:
+        try:
+            write_text_atomic(json.dumps(self.payload(), indent=2), self.path)
+            self.last_write_error = ""
+            return True
+        except OSError as e:  # Drive can hold the file for a moment; try again next beat
+            self.last_write_error = str(e)
+            return False
+
+    def start(self) -> Heartbeat:
+        global _current
+        logging.getLogger("asxbot").addHandler(self._handler)
+        self.write()
+        self._thread = threading.Thread(target=self._run, name="heartbeat", daemon=True)
+        self._thread.start()
+        _current = self
+        return self
+
+    def _run(self) -> None:
+        while not self._stopping.wait(self.beat_s):
+            self.write()
+
+    def stop(self, state: str = "stopped") -> None:
+        global _current
+        self._stopping.set()
+        logging.getLogger("asxbot").removeHandler(self._handler)
+        self.state = state
+        self.quiet_until = None
+        self.quiet_why = ""
+        self.write()
+        if _current is self:
+            _current = None
+
+    @contextmanager
+    def quiet(self, seconds: float, why: str):
+        """A wait of up to `seconds` during which the watcher will log nothing."""
+        prior = (self.quiet_until, self.quiet_why)
+        until = _now() + timedelta(seconds=float(seconds))
+        if prior[0] is None or until > prior[0]:
+            self.quiet_until, self.quiet_why = until, why
+        try:
+            yield
+        finally:
+            self.quiet_until, self.quiet_why = prior
+            self.last_activity = _now()
+
+
+@contextmanager
+def quiet(seconds: float, why: str):
+    """Announce a silent wait to the running watcher's heartbeat. A no-op without one."""
+    hb = _current
+    if hb is None:
+        yield
+        return
+    with hb.quiet(seconds, why):
+        yield
+
+
+def _now() -> datetime:
+    return datetime.now(SYD)

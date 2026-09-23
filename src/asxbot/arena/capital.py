@@ -49,10 +49,12 @@ from asxbot.log import EventLog, setup_logging
 SYD = ZoneInfo("Australia/Sydney")
 AMOUNT = 10_000.0
 TASKS = ("ASXBot Arena Warmup", "ASXBot Arena Evening")
-# Anything that could be reading or writing the books: the scheduled tasks' scripts, and
-# any `asxbot arena ...` command, the watcher (`arena watch`) above all.
+# Anything that could be reading or writing the books: the scheduled tasks' scripts (the
+# PowerShell ones, and the hidden pythonw launcher), and any `asxbot arena ...` command, the
+# watcher (`arena watch`) above all. The watchdog (arena_watchdog.pyw) only reads, and is
+# deliberately not matched.
 ARENA_PROCESS = re.compile(
-    r"arena_(warmup|evening)\.ps1|asxbot(\.exe)?\"?\s+arena\s|\barena\s+watch\b", re.I
+    r"arena_(warmup|evening)\.(ps1|pyw)|asxbot(\.exe)?\"?\s+arena\s|\barena\s+watch\b", re.I
 )
 REPORT_STEP = "--- asxbot arena report"
 

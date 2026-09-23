@@ -45,13 +45,17 @@ def test_the_watcher_and_the_evening_routine_are_seen_but_this_process_is_not():
         (11, 10, r'"C:\venvs\asx-bot\Scripts\asxbot.exe" arena watch --until auto'),
         (12, 1, r'"C:\venvs\asx-bot\Scripts\python.exe" "C:\venvs\asx-bot\Scripts\asxbot.exe" '
                 r"arena resolve"),
+        (13, 1, r'C:\venvs\asx-bot\Scripts\pythonw.exe "G:\My Drive\asx-bot'
+                r'\scripts\arena_warmup.pyw"'),  # the hidden launcher
         (20, 1, "powershell.exe"),
         (21, 20, r'python.exe "G:\My Drive\asx-bot\scripts\arena_add_capital.py"'),
         (30, 1, r"C:\venvs\etf-agent\Scripts\python.exe core_read.py links.json VAS VGS"),
+        (40, 1, r'C:\venvs\asx-bot\Scripts\pythonw.exe "G:\My Drive\asx-bot'
+                r'\scripts\arena_watchdog.pyw"'),  # it only reads; it must not block the top-up
     ]  # fmt: skip
     found = C.arena_processes(listing, me=21)
-    assert [f.split(":")[0] for f in found] == ["pid 10", "pid 11", "pid 12"]
-    assert C.arena_processes(listing[3:], me=21) == []
+    assert [f.split(":")[0] for f in found] == ["pid 10", "pid 11", "pid 12", "pid 13"]
+    assert C.arena_processes(listing[4:], me=21) == []
 
 
 LOG = """skipped 2026-09-22 20:52: not today's evening slot

@@ -214,21 +214,6 @@ class MinuteBars:
             return ts.to_pydatetime(), float(price)
         return None
 
-    def first_open(
-        self, code: str, since: datetime, until: date | None = None
-    ) -> tuple[datetime, float] | None:
-        """The first traded minute at or after `since`, and its open. None if none yet."""
-        target = since.astimezone(SYD).replace(second=0, microsecond=0)
-        for day_offset in range(0, _days_to_scan(target, until)):
-            day = (target + timedelta(days=day_offset)).date()
-            df = self.fetch(code, day)
-            if df is None or not len(df):
-                continue
-            window = df[(df.index >= target) & (df["volume"] > 0)]
-            if len(window):
-                return window.index[0].to_pydatetime(), float(window.iloc[0]["open"])
-        return None
-
     def price_at(self, code: str, when: datetime, days_back: int = 7) -> float | None:
         """The close of the last traded minute at or before `when`. None if none is known."""
         at = when.astimezone(SYD)
