@@ -47,9 +47,9 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | B | Volume-confirmed surprise | Loses after costs | **Drop** | Built | None |
 | C | Earnings drift, done properly | PEAD confirmed in Australia but weakened; results only positive slice (+0.90%, 181 trades) | **Keep, rebuild** | Not built | Measure surprise vs prior guidance in the archive, 30–60 day hold |
 | D | Trading-halt resumptions | None found | Keep, low | Screen now lets reinstatements through? **unverified** | Check screen, then backtest |
-| E | Directors buying | Discretionary +4.6% / 200d; non-discretionary −4.7%; larger firms | **Upgrade** | Not built; PDFs now work | Reader classifies 3Y as discretionary on-market; long horizon |
-| F | 52-week-high breakout | Tested on ASX: not practical after costs and short limits | **Downgrade** | Not built | Cheap test only; expect failure |
-| G | Pullback in strong stock | Not researched yet | Keep, untested | Not built | Research, then test |
+| E | Directors buying | Foley et al. 2016: discretionary +4.6% / 200d, non-discretionary −4.7%, strongest for purchases and larger trades. **Firm size conflicts**: Foley finds small firms earn more; a 2023 study finds larger firms. Foley classified 60,000 trades by the director's stated motive — what the reader would do | **Upgrade** | Not built; PDFs now work | Reader classifies 3Y by stated motive; test small and large firms separately; long horizon |
+| F | 52-week-high breakout | Bettman, Sault & von Reibnitz 2010: not practical on ASX after costs and short limits | **Downgrade** | Not built | Cheap test only; expect failure |
+| G | Industry-relative pullback | Chai & Do: in AU small stocks reverse (illiquidity), large stocks trend; large stocks reverse within their industry once momentum is controlled | **Reframed** | Not built | Large liquid stock down vs industry peers over a month |
 | N1 | Placement overhang | No resale limits in AU; capital_raising −1.30%, 34.5% win; decider reasons about it unprompted | **New, promising as a veto** | Not built | As a filter on other strategies first |
 | N2 | Index deletion reversal | ASX 200 deletions reverse after announcement (2011); likely decayed | New, low | Not built | Needs rebalance history since 2011 |
 | Base | 12-1 momentum | Real anomaly; 24.5% here is survivorship | Baseline only | Built | Rerun on Norgate |
@@ -69,6 +69,9 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 7 | Screen rejects reinstatements (kills D) | Medium | PROMPTS #4 — verify if already fixed |
 | 8 | Win rate before costs; raw P&L comparison; trades count legs | Medium | PROMPTS #5 |
 | 9 | Decider asserts stale world facts confidently (NUF "index member") | Medium | **Not yet queued** |
+| 10 | Decider can't see its own pending orders, and code doesn't block a duplicate opening order while one is pending | Medium | Next prompt |
+| 11 | STRATEGIES.md says E evidence is "stronger in larger firms" — wrong; the sources conflict | Low | Next prompt |
+| 12 | ARENA.md setup 8 still describes the old G | Low | Next prompt |
 
 ---
 
@@ -90,6 +93,12 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 
 ## Review log
 
+- **23 Sep 12:26** — STRATEGIES.md rewritten and committed (`2407016`). Chasing its
+  missing citations found an error I introduced: E's "stronger in larger firms" merged
+  two studies that disagree. Foley et al. 2016 (the source of the +4.6%/−4.7%) finds
+  small-firm purchases earn more. Added defects #10–#12. G now researched. Norgate
+  deferred: biased data only inflates results, so it can kill strategies for free; clean
+  data is only needed to confirm a winner, and the three-week trial may cover that.
 - **23 Sep 11:55** — Created. Strategy register rewritten after research: A and B dropped,
   E upgraded, F downgraded on direct ASX evidence, N1 and N2 added. Four defects found
   on review and not yet queued (#3, #4, #5, #9).

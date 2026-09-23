@@ -26,7 +26,7 @@ Every figure carries its source in brackets. Figures from `reports/phase1.md` ar
 | B | Volume surprise | **Dropped** | Prices | None |
 | C | Earnings drift | **Keep, rebuild** | Archive + prices | Measure surprise against the company's own prior guidance; 30–60 session hold |
 | D | Trading-halt resumptions | Keep, low | Archive + prices | Check whether the tradability screen still rejects reinstatements |
-| E | Directors buying | **Upgraded** | Archive + 3Y PDFs + prices | Reader classifies each Appendix 3Y; hold measured in months |
+| E | Directors buying | **Upgraded** | Archive + 3Y PDFs + prices | Reader classifies each Appendix 3Y; test small and large firms separately; hold measured in months |
 | F | 52-week-high breakout | **Downgraded** | Prices | Build only because it is cheap; expect it to fail |
 | G | Pullbacks | **Reframed** | Prices + industry classification | Large, liquid stock down against its industry peers over a month, momentum controlled for |
 | N1 | Placement overhang | **New** | Archive + prices | Build first as a veto on other strategies |
@@ -46,10 +46,14 @@ Post-earnings-announcement drift is documented in Australia but has weakened as 
 No evidence found either way. Before building, check whether the tradability screen still rejects reinstatements.
 
 ### E — directors buying: UPGRADED
-Discretionary director purchases showed a +4.6% cumulative abnormal return over 200 trading days; non-discretionary purchases showed −4.7% (published study; citation not yet recorded, see Sources). The evidence is stronger in larger firms. The reader should classify each Appendix 3Y as a discretionary on-market purchase versus a plan, dividend reinvestment or option exercise. Hold measured in months, not 10 sessions.
+Discretionary director purchases showed a +4.6% cumulative abnormal return over 200 trading days; non-discretionary purchases showed −4.7% (Foley, Kwan, McInish & Philip 2016). That study classified over 60,000 director transactions as discretionary or non-discretionary using the trading motive the insider gave — the same classification the reader would do on each Appendix 3Y.
+
+The evidence on firm size conflicts. Foley et al. find director purchases in small firms earn higher returns, and that returns are higher for larger trades and strongest for purchases. A separate 2023 Australian study ("Director trades, profitability and market efficiency: New evidence") finds insiders profit mainly in larger firms. Test E on small and large firms separately.
+
+The reader should classify each Appendix 3Y as a discretionary on-market purchase versus a plan, dividend reinvestment or option exercise. Hold measured in months, not 10 sessions.
 
 ### F — 52-week-high breakout: DOWNGRADED
-Tested on the ASX over 1996–2008 and found not of practical use once short-sale restrictions and transaction costs are counted (published study; citation not yet recorded, see Sources). Build only because it is cheap; expect it to fail.
+Tested on the ASX over 1996–2008 and found not of practical use once short-sale restrictions and transaction costs are counted (Bettman, Sault & von Reibnitz 2010). Build only because it is cheap; expect it to fail.
 
 ### G — pullbacks: REFRAMED
 In Australia, over a one-month horizon, small stocks tend to reverse while large stocks tend to trend, and the small-stock reversals are driven by illiquidity, so costs consume them (Chai & Do 2016). What holds up is narrower: large stocks show intra-industry reversals once price momentum is controlled for. Rebuild G as a large, liquid stock that has fallen against its own industry peers over the past month, with momentum controlled for. Plain "buy any dip in an uptrend" is dropped.
@@ -58,7 +62,7 @@ In Australia, over a one-month horizon, small stocks tend to reverse while large
 Australia puts no resale restriction on placement shares, so holders can sell immediately. Capital-raising announcements scored a −1.30% average and a 34.5% win rate in A, on 29 trades (`reports/phase1.md`, announcement-type split). The decider reasoned about quotation-date supply unprompted on TGN and AUE on 23 Sep (`data/logs/asxbot.log`). Build first as a VETO on other strategies: do not open a long when new placement shares quote inside the hold window.
 
 ### N2 — index deletion reversal: NEW, LOW
-S&P/ASX 200 deletions showed negative returns on announcement that began to reverse afterwards (2011 study; citation not yet recorded, see Sources). Long-only friendly and scheduled, but likely decayed. Needs rebalance history, which Norgate supplies.
+S&P/ASX 200 deletions showed negative returns on announcement that began to reverse afterwards (Schmidt, Zhao & Terry 2011). Long-only friendly and scheduled, but likely decayed. Needs rebalance history, which Norgate supplies.
 
 ### Baseline — momentum: KEEP AS BASELINE ONLY
 Its 24.5% CAGR is survivorship bias (`reports/phase1.md`): on a universe of today's largest companies, momentum buys the stocks that went on to become large.
@@ -74,5 +78,8 @@ Its 24.5% CAGR is survivorship bias (`reports/phase1.md`): on a universe of toda
 - `reports/phase1.md` — Phase 1 backtest, generated 23 Sep 2026 09:51. yfinance, no delisted stocks; ASX 300 proxy universe; in-sample to 22 Sep 2023.
 - `data/logs/asxbot.log` — decider passes on TGN (07:52) and AUE (10:36), 23 Sep 2026.
 - McLean, R. D. & Pontiff, J. (2016), "Does Academic Research Destroy Stock Return Predictability?", *Journal of Finance* 71(1).
-- Chai & Do (2016) — one-month reversal and momentum by firm size in Australia. Full citation to add.
-- To add: the director-trading study behind E, the ASX 1996–2008 52-week-high study behind F, and the 2011 S&P/ASX 200 deletion study behind N2.
+- Foley, S., Kwan, A., McInish, T. & Philip, R. (2016). Director discretion and insider trading profitability. *Pacific-Basin Finance Journal* 39, 28–43. doi:10.1016/j.pacfin.2016.05.005 — E.
+- "Director trades, profitability and market efficiency: New evidence" (2023), an Australian study — E, firm size. Authors and journal not yet recorded.
+- Bettman, J. L., Sault, S. J. & von Reibnitz, A. H. (2010). The impact of liquidity and transaction costs on the 52-week high momentum strategy in Australia. *Australian Journal of Management* 35(3), 227–244. doi:10.1177/0312896210385282 — F.
+- Chai, D. & Do, B. (2016). Co-existence of short-term reversals and momentum in the Australian equity market. *Australian Journal of Management* 41(1), 55–76. doi:10.1177/0312896214535789 — G. Print issue February 2016, online first 10 Oct 2014 (Crossref).
+- Schmidt, C., Zhao, R. & Terry, C. S. (2011). Index Effects: Further Evidence for the S&P/ASX 200. SSRN 1914170 — N2.
