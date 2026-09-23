@@ -444,6 +444,14 @@ with Yahoo to the cent, which only showed they share a vendor. So the auction pr
 (the daily close matches the closing-auction bar 348 of 348 times; every open is on the tick
 grid) but not confirmed. Two sources agreeing is only evidence if they are independent.
 
+**Rick's decisions, 23 Sep 22:20 AEST (in chat), recorded, nothing changed:** the 20% auction
+volume share is confirmed. The auction price stays "checked, not confirmed" until IBKR live
+data starts; then it is confirmed against a broker trade record (TRACKER #34), and until then
+nothing may call it confirmed. Auction fills keep the 0.10% slippage base, as the frozen
+backtest does. Two simplifications are accepted as they are: an order recorded between
+09:59:00 and 10:00 misses the auction and fills at the first traded minute, and the staggered
+open is not modelled (every auction is stamped 09:59, TRACKER #33).
+
 ---
 
 ## Standing rules

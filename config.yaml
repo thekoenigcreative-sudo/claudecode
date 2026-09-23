@@ -309,7 +309,9 @@ arena:
     # No more than this share of the auction's estimated volume (Yahoo's daily volume less the
     # day's minute volumes - an upper bound, as it also holds off-market trades) fills in the
     # auction; the rest carries into the minute bars. 0.20 is Rick's bar figure reused, not
-    # chosen by looking at any result. RICK TO CONFIRM.
+    # chosen by looking at any result. CONFIRMED by Rick 2026-09-23 22:20 AEST (in chat),
+    # value unchanged. Auction fills keep the costs.slippage base (0.10%), as the frozen
+    # backtest's open fills do - also confirmed 2026-09-23, unchanged.
     auction_volume_share: 0.20
     # How long past the open plus resolve_after_minutes to wait for Yahoo's daily bar before
     # giving up on the day's auction (10:52 with the 22-minute delay). Nothing in the ticker is
