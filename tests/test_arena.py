@@ -1257,6 +1257,40 @@ def test_the_yardstick_enters_at_the_next_open_once_and_never_late(setup, monkey
     assert missed["status"] == "missed" and "2026-01-06" in missed["missed"]
 
 
+def test_the_yardstick_enters_at_the_opening_auction_price(setup, monkeypatch):
+    """TRACKER #28: the frozen rule enters at the next open, and the backtest takes the daily
+    open. With the day's auction available (Yahoo's daily open 1.02, 100,000 shares estimated
+    in the auction) the order placed at 07:45 fills there, not at the 10:00 bar's close (1.04),
+    which is what aab9e55 did."""
+    import dataclasses
+
+    from asxbot.arena import watch as W
+    from asxbot.arena.minutes import MinuteBars
+
+    cfg, broker, pb, acct = setup
+    pb = dataclasses.replace(pb, raw={**pb.raw, "warmup_start": None})
+    live = cfg.data_dir / "announcements" / "live"
+    live.mkdir(parents=True, exist_ok=True)
+    _ann_frame(("AAA", "2026-01-05 08:30", True)).to_parquet(live / "2026-01-05.parquet")
+    frames = {"^AXJO": _index_daily(), "AAA": _stock_daily(6, 4)}
+    bot = _yardstick(cfg, broker, pb, frames)
+    monkeypatch.setattr(W, "make_bot", lambda arena, pb, quotes=None: bot)
+    row = {"open": 1.02, "high": 1.12, "low": 0.90, "close": 0.96, "volume": 780_000.0}
+    monkeypatch.setattr(MinuteBars, "fetch_daily_row",
+                        lambda self, code, day: row if (code, day) == ("AAA", DAY) else None,
+                        raising=False)  # fmt: skip
+
+    broker.clock = Clock(datetime(2026, 1, 6, 7, 45, tzinfo=SYD))
+    placed = W.yardstick_entries(_FakeArena(cfg, broker, acct), pb,
+                                 datetime(2026, 1, 6, 7, 45, tzinfo=SYD))  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 30, tzinfo=SYD))
+    o = acct.orders[placed[0]["order_id"]]
+    assert o.status == "filled" and o.fill_minute.startswith("2026-01-06T09:59")
+    assert o.fills[0]["bar_price"] == pytest.approx(1.02)
+    assert "opening auction" in o.fill_basis
+    assert o.stop == pytest.approx(o.avg_price * 0.92, abs=1e-4)  # 8% below the auction fill
+
+
 def test_the_yardstick_sizes_within_the_per_order_guard(setup, monkeypatch):
     """On a larger account the 40% position cap passes $8,000, and arena_place_order refuses
     any single order above arena.guards.max_order_value_aud. The bot's own sizing never
@@ -1603,6 +1637,9 @@ def test_the_decider_is_told_its_target_is_a_real_take_profit(setup, monkeypatch
     assert "the target is a real take-profit" in packet
     assert "gapped through it), less slippage too" in packet  # targets pay it like any fill
     assert '"target": 0.9' in packet  # the open position shows the target it carries
+    # TRACKER #28: the decider is told how an order before the open fills.
+    assert "before 09:59 joins the opening auction" in packet
+    assert "at most 20% of the auction's estimated volume" in packet
 
 
 def test_target_hits_are_alerted_as_targets_not_stops(setup, monkeypatch):
@@ -1780,8 +1817,10 @@ def test_a_target_exit_rests_from_when_it_was_armed(setup):
 def test_the_yardstick_does_not_trade_late_when_its_orders_reach_the_broker_after_the_open(
     setup, monkeypatch
 ):
-    """`now` said 09:59:50, but by the time the orders are recorded it is 10:00:05. They
-    would fill at the first bar after 10:00:05, not at the open: a late entry."""
+    """`now` said 09:58:50, but by the time the orders are recorded it is 09:59:05. They
+    would miss the opening auction, which an order joins only if recorded before 09:59
+    (TRACKER #28), and fill in continuous trading, not at the open: a late entry. Until
+    2026-09-24 the cut-off was 10:00 (09:59:50 and 10:00:05 here)."""
     import dataclasses
     import json
 
@@ -1795,13 +1834,13 @@ def test_the_yardstick_does_not_trade_late_when_its_orders_reach_the_broker_afte
     frames = {"^AXJO": _index_daily(), "AAA": _stock_daily(6, 4)}
     monkeypatch.setattr(W, "make_bot", lambda arena, pb, quotes=None: _yardstick(
         cfg, broker, pb, frames))  # fmt: skip
-    broker.clock = Clock(datetime(2026, 1, 6, 10, 0, 5, tzinfo=SYD))
+    broker.clock = Clock(datetime(2026, 1, 6, 9, 59, 5, tzinfo=SYD))
     placed = W.yardstick_entries(
-        _FakeArena(cfg, broker, acct), pb, datetime(2026, 1, 6, 9, 59, 50, tzinfo=SYD)
+        _FakeArena(cfg, broker, acct), pb, datetime(2026, 1, 6, 9, 58, 50, tzinfo=SYD)
     )
     assert placed == [] and not acct.orders
     state = json.loads(W._yardstick_path(cfg.data_dir, DAY).read_text())
-    assert state["status"] == "missed" and "10:00:05" in state["missed"]
+    assert state["status"] == "missed" and "09:59:05" in state["missed"]
 
 
 def test_each_re_look_is_worked_at_its_own_time(setup, monkeypatch):

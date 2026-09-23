@@ -139,6 +139,15 @@ working into the next session until the position is out. The stop always gets a 
 first. A bar is used only once it is final (it has ended and is not the newest row of an
 intraday fetch). The full rule is in `ArenaBroker.work` (`arena/broker.py`).
 
+Since 2026-09-24 an order recorded before 09:59 fills at the **opening auction**, not at the
+first traded minute (the minute feed leaves the auction out, TRACKER #28). The auction is
+priced at Yahoo's daily open, checked but not confirmed against the ASX
+(`reports/auction_open_check.md`, rerun with `scripts/check_auction_open.py`), and no more than
+`arena.fill.auction_volume_share` (20%) of its estimated volume fills there, the rest in the
+minute bars. Stops and targets the auction gaps through fill at the auction price. A day with
+no auction price the arena trusts fills at the first traded minute, and the fill says so.
+`arena.fill.opening_auction: first_minute` restores the old rule.
+
 ### The two agents
 
 `trader-reader` (Sonnet 5) reads each announcement and writes a quotable summary ending in

@@ -428,6 +428,22 @@ a console program (the PE header's subsystem field says so: 2 GUI, 3 console).
 - **A uv venv's python.exe sets PYTHONHOME for its children.** A different Python started
   underneath it loads the wrong standard library and dies on import.
 
+## 18. The open was not in the feed
+
+An order "at the open" filled at the close of the first traded minute, because that was the
+first bar the minute feed held. The ASX opening auction is not in the feed at all: 75% of days
+start with a zero-volume row, and the daily volume runs about 5% above the minute volumes. Over
+348 stock-days, Yahoo's daily open (the auction) was 0.30% from the first traded minute's open
+at the median and 9.69% at worst (TUA, 23 Sep: 2.49 against 2.27). The slippage model's base is
+0.10%. So the arena's "at the open" was a different price from the one the frozen backtest
+uses, by more than the cost model, and nothing said so. Fixed 24 Sep (#28).
+
+What could not be done is as useful to know. No free source outside Yahoo's vendor would let a
+script read the official open (Stooq, MarketWatch, Market Index, Google, the FT). CNBC agreed
+with Yahoo to the cent, which only showed they share a vendor. So the auction price is checked
+(the daily close matches the closing-auction bar 348 of 348 times; every open is on the tick
+grid) but not confirmed. Two sources agreeing is only evidence if they are independent.
+
 ---
 
 ## Standing rules

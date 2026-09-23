@@ -297,6 +297,24 @@ arena:
     # newest row are also held back; 0, because no evidence asks for more. ASX bars were not
     # polled during a session; if they are seen to change, raise it here, dated.
     settle_minutes: 0
+    # Added 2026-09-23 night, in force from the 24 Sep 07:30 start (TRACKER #28). A DELIBERATE
+    # CHANGE to the fill model, approved by Rick on 23 Sep, not a finding and not tuned: an
+    # order "at the open" fills at the ASX opening auction price, which is what a real order
+    # at the open gets. The 1-minute feed leaves the auction out, so until now such an order
+    # filled at the close of the first traded minute after it. `daily_open` prices the auction
+    # at Yahoo's daily open (checked, not confirmed against the ASX: reports/auction_open_check.md
+    # and minutes.opening_auction); `first_minute` restores the old rule. An order joins the
+    # auction if recorded before 09:59:00; so does a stop or target the auction price reaches.
+    opening_auction: daily_open
+    # No more than this share of the auction's estimated volume (Yahoo's daily volume less the
+    # day's minute volumes - an upper bound, as it also holds off-market trades) fills in the
+    # auction; the rest carries into the minute bars. 0.20 is Rick's bar figure reused, not
+    # chosen by looking at any result. RICK TO CONFIRM.
+    auction_volume_share: 0.20
+    # How long past the open plus resolve_after_minutes to wait for Yahoo's daily bar before
+    # giving up on the day's auction (10:52 with the 22-minute delay). Nothing in the ticker is
+    # worked while it waits. Then the orders fill at the first traded minute, labelled.
+    auction_wait_minutes: 30
 
   # Level 1 is an intraday level: positions are closed before the 16:10 close unless the
   # decider writes a reason to hold. The sweep asks it about each open position, so the

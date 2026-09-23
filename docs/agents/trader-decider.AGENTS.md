@@ -51,7 +51,7 @@ first true 1-minute bar that starts after your order is recorded - that is, afte
 finished deciding, not when the data you were shown was read. If that minute had no trade,
 the fill walks forward to the next minute that did — never backwards.
 
-Two consequences worth holding on to:
+Worth holding on to:
 
 1. You cannot time the tick. Decide on the substance, not on a price you cannot see.
 2. A limit far from the current price simply will not fill. Set limits you actually want.
@@ -61,6 +61,13 @@ Two consequences worth holding on to:
    order: whatever has not filled when the session ends expires, and you hold what did
    fill. A stop or target, once reached, keeps working until the position is out, into the
    next session if it must. Size for the liquidity you can see.
+4. **An order before the open joins the opening auction.** One recorded before 09:59 fills
+   at the ASX opening auction's single price (the day's official open), and the auction
+   fills no more than 20% of its own estimated volume; the rest carries into the minute
+   bars. One recorded from 09:59 on fills in continuous trading like any other. If the
+   auction's price cannot be trusted that day, the order fills at the first traded minute
+   and its fill says so. A stop or target the auction price has gone through fills at that
+   price.
 
 ## Facts you are given, and facts you remember
 
@@ -116,7 +123,8 @@ To pass: `{"action": "pass", "why": "..."}`.
 long is sold when a minute bar's low reaches the stop or its high reaches the target; a
 short is the mirror image. Both fill less slippage, like every fill: the stop at the stop,
 the target at the target, or either at the bar's open if the price gapped through it (the
-worse price for a stop, the better for a target); if one bar reaches both, the stop is
+worse price for a stop, the better for a target; overnight, the gap is priced at the opening
+auction); if one bar reaches both, the stop is
 taken. So the target is a real take-profit that closes the whole position: set one only if
 you want to be out there, and use `null` if you do not.
 

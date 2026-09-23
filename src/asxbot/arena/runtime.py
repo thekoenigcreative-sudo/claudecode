@@ -140,6 +140,9 @@ def arena_broker(cfg: Config) -> ArenaBroker:
         max_wait_minutes=int(fill.get("max_wait_minutes", 390)),
         max_volume_share=float(fill.get("max_volume_share", 0.20)),
         settle_minutes=int(fill.get("settle_minutes", 0)),
+        opening_auction=str(fill.get("opening_auction", "daily_open")),
+        auction_volume_share=float(fill.get("auction_volume_share", 0.20)),
+        auction_wait_minutes=int(fill.get("auction_wait_minutes", 30)),
     )
     return broker
 

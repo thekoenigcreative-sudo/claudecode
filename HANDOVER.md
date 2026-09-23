@@ -60,7 +60,14 @@ knowable when the decision is made. So:
   order part-filled at the close ends `partial`; a stop or target exit keeps working into the
   next session. Stop first, then target, then the rest, from each bar's volume;
 - (2026-09-24, #26) a bar is used only once final: it has ended, and it is not the newest
-  row of an intraday fetch (Yahoo's placeholder for the minute still forming).
+  row of an intraday fetch (Yahoo's placeholder for the minute still forming);
+- (2026-09-24, #28) an order recorded before 09:59 fills at the opening auction: Yahoo's
+  daily open, at most 20% of the auction's estimated volume (daily volume less the minute
+  volumes, an upper bound), the rest in the minute bars; stops and targets the auction gaps
+  through fill there too. Each auction is read once and kept
+  (`data/arena/minutes/<code>/<date>.auction.json`). No trusted auction price (no daily bar
+  by 10:52, off-tick, outside the day's range, or no volume left for it): the first traded
+  minute, labelled. `minutes.opening_auction` has the checks.
 
 One consequence, found and fixed tonight: a stop is *chosen* as a distance but *carried* as
 a level, so a fill landing far from the delayed quote could leave a long's stop above its

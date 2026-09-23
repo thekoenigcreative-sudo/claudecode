@@ -46,6 +46,7 @@ from asxbot.arena.agents import (
 from asxbot.arena.heartbeat import Heartbeat, quiet
 from asxbot.arena.hours import announcement_window, order_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
+from asxbot.arena.minutes import AUCTION_MINUTE
 from asxbot.arena.notify import one_line
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.runtime import Arena, make_bot
@@ -64,6 +65,9 @@ READER_MODEL = "anthropic/claude-sonnet-5"
 DECIDER_MODEL = "anthropic/claude-opus-5-5"
 MAX_PDF_CHARS = 24000
 SESSION_OPEN = time_cls(10, 0)  # the ASX opening auction; before it, no reaction exists
+# An order joins the opening auction only if recorded before this minute (minutes.py,
+# TRACKER #28); the yardstick's orders must reach the broker by then to enter at the open.
+AUCTION_CUTOFF = AUCTION_MINUTE
 
 
 def is_test_id(ids_id: str) -> bool:
@@ -327,6 +331,7 @@ def decider_packet(
     prices = arena.broker.prices(acct)
     equity = acct.equity(prices)
     loss_today = arena.broker.day_loss_pct(acct)
+    auction_share = float(getattr(arena.broker, "auction_volume_share", 0.20))
     positions = [
         {
             "ticker": t,
@@ -426,7 +431,10 @@ WHAT THE CODE WILL ALLOW
   - no second opening order in a ticker that already has one waiting to fill
   - holding period for this playbook: {holding}
   - your fill will be the first true 1-minute bar after your order is recorded (after you
-    finish deciding), so a limit far away from the current price simply will not fill
+    finish deciding), so a limit far away from the current price simply will not fill.
+    An order recorded before 09:59 joins the opening auction instead and fills at its
+    single price, at most {auction_share:.0%} of the auction's estimated volume, the rest in the
+    minute bars; a stop or target the auction gaps through fills at the auction price
 
 {relook_note}HOW TO DECIDE - work through this and show it:
   1. WHAT IS NEW: what does this change that the market did not already know?
@@ -1166,7 +1174,7 @@ def yardstick_entries(
 
     The rule confirms an event at the close of its reaction session and enters at the next
     open. So each morning the bot confirms the previous session on its completed daily bar
-    and places its orders; decided before the open, they fill at the opening minute. A
+    and places its orders; recorded before 09:59, they join the opening auction (#28). A
     morning first reached after the open is recorded as missed, not traded late: a late
     entry is a different strategy.
     """
@@ -1193,19 +1201,24 @@ def yardstick_entries(
 
         write_text_atomic(json.dumps({**record, "status": status}, indent=2), path)
 
-    if local.time() >= SESSION_OPEN:
-        # A missed day is recorded, with its reason, in data/arena/yardstick/<day>.json and
-        # logged as a WARNING. Until 2026-09-24 it was an ERROR, so a watcher (re)started after
-        # 10:00 - which cannot enter at an open that has passed, by design - tripped the
+    if local.time() >= AUCTION_CUTOFF:
+        # From 2026-09-24 the open is the opening auction, which an order joins only if it is
+        # recorded before 09:59 (TRACKER #28); after that the orders would fill in continuous
+        # trading, which is not the rule. A missed day is recorded, with its reason, in
+        # data/arena/yardstick/<day>.json and logged as a WARNING. Until 2026-09-24 it was an
+        # ERROR, so a watcher (re)started after 10:00 - which cannot enter at an open that has
+        # passed, by design - tripped the
         # errors_logged self-check and a CRITICAL Telegram alert (23 Sep, 15:56 and 16:56).
         if prior.get("waiting_for"):
             record["missed"] = (
-                f"still waiting at the {SESSION_OPEN:%H:%M} open for: {prior['waiting_for']}"
+                f"still waiting at the {AUCTION_CUTOFF:%H:%M} auction cut-off for: "
+                f"{prior['waiting_for']}"
             )
         else:
             record["missed"] = (
-                f"first reached at {local:%H:%M}, after the {SESSION_OPEN:%H:%M} open: the "
-                "watcher was not running before the open (started or restarted late)"
+                f"first reached at {local:%H:%M}, after the {AUCTION_CUTOFF:%H:%M} opening "
+                "auction cut-off: the watcher was not running before the open (started or "
+                "restarted late)"
             )
         log.warning(
             "the yardstick missed the %s open (session %s confirmed on nothing): %s. The rule "
@@ -1232,11 +1245,11 @@ def yardstick_entries(
     alert = notify.get(arena)
     out = []
     recorded_at = arena.broker.clock().astimezone(SYD)
-    if recorded_at.date() != day or recorded_at.time() >= SESSION_OPEN:
-        # The orders would be stamped now, and fill at the first bar after now: not the open.
+    if recorded_at.date() != day or recorded_at.time() >= AUCTION_CUTOFF:
+        # The orders would be stamped now, too late for the opening auction: not the open.
         record["missed"] = (
             f"confirmed in time but reached the broker at {recorded_at:%H:%M:%S}, after the "
-            f"{SESSION_OPEN:%H:%M} open"
+            f"{AUCTION_CUTOFF:%H:%M} opening auction cut-off"
         )
         log.error(
             "the yardstick missed the %s open: %s. Nothing is traded late.",

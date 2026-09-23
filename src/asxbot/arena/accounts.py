@@ -135,6 +135,9 @@ class ArenaOrder:
     # A stop or target exit only: the price the bar that reached the level traded at (the
     # level, or the bar's open if it gapped through). Its slippage is sized from this.
     trigger_price: float | None = None
+    # Set when the order would have joined an opening auction that had no price the arena
+    # trusts (TRACKER #28): why it filled at the first traded minute after it instead.
+    open_note: str = ""
 
     @property
     def remaining(self) -> int:
@@ -153,7 +156,8 @@ class ArenaOrder:
         if not d["rests_from"]:
             del d["rests_from"]
         for k, blank in (
-            ("order_type", "limit"), ("fills", []), ("worked_through", ""), ("trigger_price", None)
+            ("order_type", "limit"), ("fills", []), ("worked_through", ""),
+            ("trigger_price", None), ("open_note", ""),
         ):  # fmt: skip
             if d[k] == blank:
                 del d[k]

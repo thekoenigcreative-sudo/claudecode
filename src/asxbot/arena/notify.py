@@ -197,6 +197,8 @@ class Notifier:
         is_stop = o.placed_by == "code" and o.reason.startswith("STOP")
         is_target = o.placed_by == "code" and o.reason.startswith("TARGET")
         at = o.fill_minute[11:16] if o.fill_minute else "?"
+        if o.fills and o.fills[0].get("auction"):
+            at = "opening auction"  # stamped 09:59 (TRACKER #28)
         if o.side in ("sell", "cover"):
             result = f"result {o.realised:+,.2f} before fees (this leg's fee {o.commission:,.2f})"
             if is_stop:

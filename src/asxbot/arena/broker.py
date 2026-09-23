@@ -8,7 +8,9 @@ What this broker does:
     (`decided_at`) and with the time of the data the decision was made on (`data_as_of`);
   * later fills it from the first traded minute bar that starts strictly after `decided_at`
     (see minutes.py), capped at the order's limit - a limit the market never reached rests,
-    then expires once the delayed feed has caught up with the close;
+    then expires once the delayed feed has caught up with the close. An order recorded before
+    the open joins the opening auction first, at the auction's price (from 2026-09-24,
+    TRACKER #28), as do stops and targets the auction price has gone through;
   * enforces stops from the minute bars, with the gap rule, and - for the agent's accounts -
     take-profit targets the same way, mirrored, as resting limits;
   * charges IBKR brokerage both ways, adverse slippage on every fill (it stands in for the
@@ -28,7 +30,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from asxbot.arena.accounts import Account, AccountStore, ArenaOrder, Mark, Position
-from asxbot.arena.minutes import MinuteBars, NoTradeYet, _price_of, first_minute_after
+from asxbot.arena.minutes import (
+    AUCTION_MINUTE,
+    MinuteBars,
+    NoTradeYet,
+    _price_of,
+    first_minute_after,
+    is_auction,
+)
 from asxbot.backtest.costs import CostModel
 from asxbot.log import EventLog, get_logger
 
@@ -60,6 +69,9 @@ class ArenaBroker:
         clock=None,  # callable() -> aware datetime; the wall clock unless a test sets one
         max_volume_share: float = 0.20,
         settle_minutes: int = 0,
+        opening_auction: str = "daily_open",
+        auction_volume_share: float = 0.20,
+        auction_wait_minutes: int = 30,
     ):
         self.store = AccountStore(data_dir)
         self.costs = costs
@@ -77,6 +89,20 @@ class ArenaBroker:
         self.max_volume_share = float(max_volume_share)
         # Minutes kept back behind the newest row of an intraday fetch (minutes.final_bars).
         self.settle_minutes = int(settle_minutes)
+        # The opening auction (#28): `daily_open` fills orders at the open at the auction's
+        # price; `first_minute` is the rule before 2026-09-24, the first traded minute after.
+        if opening_auction not in ("daily_open", "first_minute"):
+            raise ValueError(
+                "arena.fill.opening_auction must be daily_open|first_minute, "
+                f"got {opening_auction!r}"
+            )
+        self.opening_auction = opening_auction
+        if not 0.0 < float(auction_volume_share) <= 1.0:
+            raise ValueError(
+                f"arena.fill.auction_volume_share must be in (0, 1], got {auction_volume_share}"
+            )
+        self.auction_volume_share = float(auction_volume_share)
+        self.auction_wait_minutes = int(auction_wait_minutes)
         self.events = EventLog(data_dir)
         self.notifier = None  # set by build_arena; alerts are best effort (notify.py)
 
@@ -222,6 +248,15 @@ class ArenaBroker:
             order would still be working in the morning.
         When a stop or target exit is raised, every other working order in that ticker is
         cancelled (its fills stand): the exit takes the whole position.
+
+        The opening auction (TRACKER #28, 2026-09-24). Each day's bars are led by its opening
+        auction (minutes.opening_auction), stamped 09:59: one price, Yahoo's daily open, and
+        an estimated volume. It is worked like a bar. An order recorded before 09:59:00 joins
+        it; a stop or target the auction price has reached is raised there and fills at the
+        auction price. No more than `auction_volume_share` of the auction's estimated volume
+        fills in it, shared in the same order as a bar's; the rest carries into the minute
+        bars. With no auction price the arena will trust, the orders that would have joined it
+        fill at the first traded minute after it, as before, and their fill basis says so.
         """
         now = (now or datetime.now(SYD)).astimezone(SYD)
         out: list[FillOutcome] = []
@@ -236,9 +271,13 @@ class ArenaBroker:
             start = self._work_start(acct, ticker)
             if start is None:
                 continue
+            wait = self.auction_wait_minutes if self.opening_auction == "daily_open" else None
             for ts, bar in self.minutes.final_bars(
-                ticker, start, now, self.settle_minutes, self.resolve_after_minutes
+                ticker, start, now, self.settle_minutes, self.resolve_after_minutes, wait
             ):
+                if is_auction(bar) and not bar["available"]:
+                    self._no_auction(acct, ticker, ts, str(bar["reason"]))
+                    continue
                 out.extend(self._work_bar(acct, ticker, ts, bar))
         out.extend(self._end_sessions(acct, now))
         self.store.save(acct)
@@ -283,8 +322,10 @@ class ArenaBroker:
             ):
                 out.extend(self._raise_exit(acct, pos, "target", ts, bar, live))
 
-        # 2. The bar's volume, shared: stop exit, target exit, then the rest by age.
-        room = int(float(bar["volume"]) * self.max_volume_share)
+        # 2. The bar's volume, shared: stop exit, target exit, then the rest by age. The
+        # opening auction has its own share of its estimated volume.
+        share = self.auction_volume_share if is_auction(bar) else self.max_volume_share
+        room = int(float(bar["volume"]) * share)
         live = [o for o in acct.orders.values() if o.working and o.ticker == ticker]
         for o in sorted(live, key=_priority):
             if ts < _order_from(o):
@@ -313,6 +354,16 @@ class ArenaBroker:
             out.append(self._fill_slice(acct, o, qty, px, raw, ts, bar))
             room -= qty
         return out
+
+    def _no_auction(self, acct: Account, ticker: str, ts: datetime, reason: str) -> None:
+        """No auction price to trust: the orders that would have joined it are told why they
+        fill at the first traded minute after it."""
+        for o in acct.orders.values():
+            if o.working and o.ticker == ticker and not o.fills and ts >= _order_from(o):
+                o.open_note = (
+                    f"no opening auction price for {ticker} on {ts:%d %b} ({reason}); filled at "
+                    "the first traded minute after it instead"
+                )
 
     def _bar_price(self, o: ArenaOrder, ts: datetime, bar) -> float | None:
         """The raw price this order trades at in this bar, before slippage; None if it
@@ -441,6 +492,7 @@ class ArenaBroker:
             "minute": ts.isoformat(timespec="minutes"), "qty": int(qty),
             "price": price, "bar_price": raw,
             "bar_volume": float(bar["volume"]),
+            **({"auction": True} if is_auction(bar) else {}),
         })  # fmt: skip
         o.filled_qty += int(qty)
         avg = sum(f["qty"] * f["price"] for f in o.fills) / o.filled_qty
@@ -490,7 +542,7 @@ class ArenaBroker:
         o.commission = round(o.commission + fee, 2)
         if first_slice:
             o.fill_minute = ts.isoformat(timespec="minutes")
-            o.fill_basis = self._first_basis(o, ts, raw)
+            o.fill_basis = self._first_basis(o, ts, raw, bar)
         self.events.append(
             "arena_fill_slices",
             {"account": acct.name, "order_id": o.order_id, "ticker": o.ticker, "side": o.side,
@@ -513,7 +565,30 @@ class ArenaBroker:
         )  # fmt: skip
         return FillOutcome(o.order_id, "pending_fill", o.message)
 
-    def _first_basis(self, o: ArenaOrder, ts: datetime, raw: float) -> str:
+    def _first_basis(self, o: ArenaOrder, ts: datetime, raw: float, bar=None) -> str:
+        basis = self._basis(o, ts, raw, bar)
+        return f"{basis}; {o.open_note}" if o.open_note else basis
+
+    def _auction_basis(self, ts: datetime, bar) -> str:
+        return (
+            f"the {ts:%Y-%m-%d} opening auction at {float(bar['close']):.4f} (Yahoo's daily "
+            f"open; TRACKER #28), at most {self.auction_volume_share:.0%} of its estimated "
+            f"volume {float(bar['volume']):,.0f} (the daily volume less the minute bars', an "
+            "upper bound)"
+        )
+
+    def _basis(self, o: ArenaOrder, ts: datetime, raw: float, bar=None) -> str:
+        if bar is not None and is_auction(bar):
+            side = "less" if o.side in ("sell", "short") else "plus"
+            if o.order_type in ("stop", "target"):
+                return (
+                    f"{o.order_type} {o.limit:.3f} reached at {self._auction_basis(ts, bar)}; "
+                    f"filled at {raw:.4f}, {side} {self._slip(o) * 100:.3f}% slippage"
+                )
+            return (
+                f"{self._auction_basis(ts, bar)}; recorded at {_aware(o.decided_at):%H:%M:%S}, "
+                f"before the auction; {side} {self._slip(o) * 100:.3f}% slippage"
+            )
         if o.order_type == "stop":
             reached = _aware(o.data_as_of)
             how = (
@@ -521,16 +596,15 @@ class ArenaBroker:
                 else f"in the {ts:%H:%M} bar, a market order once the stop was reached"
             )  # fmt: skip
             return (
-                f"stop {o.limit:.3f} reached in the {reached:%Y-%m-%d %H:%M} minute bar; "
+                f"stop {o.limit:.3f} reached in {_bar_name(reached)}; "
                 f"filled at {raw:.4f} {how}, then slippage"
             )
         if o.order_type == "target":
             reached = _aware(o.data_as_of)
             where = (
-                f"reached in the {ts:%Y-%m-%d %H:%M} minute bar"
+                f"reached in {_bar_name(ts)}"
                 if ts == reached
-                else f"reached in the {reached:%Y-%m-%d %H:%M} minute bar, first filled in the "
-                f"{ts:%H:%M} bar"
+                else f"reached in {_bar_name(reached)}, first filled in the {ts:%H:%M} bar"
             )
             return (
                 f"target {o.limit:.3f} {where}; {raw:.4f} (the target, or the bar's open if it "
@@ -546,8 +620,13 @@ class ArenaBroker:
             fmt = "%H:%M" if first.date() == last.date() else "%d %b %H:%M"
             o.fill_basis += (
                 f"; filled over {len(o.fills)} bars, {first:{fmt}} to {last:{fmt}}, no bar "
-                f"filling more than {self.max_volume_share:.0%} of its traded volume; "
-                f"average {o.avg_price:.4f} after slippage"
+                f"filling more than {self.max_volume_share:.0%} of its traded volume"
+                + (
+                    f" (the opening auction, stamped 09:59: {self.auction_volume_share:.0%} "
+                    "of its estimated volume)"
+                    if any(f.get("auction") for f in o.fills) else ""
+                )
+                + f"; average {o.avg_price:.4f} after slippage"
             )
         if not o.filled_qty:
             self.events.append("arena_orders", {**o.to_dict(), "event": o.status})
@@ -742,6 +821,14 @@ def _stop_rescaled_to_fill(o: ArenaOrder, price: float) -> ArenaOrder:
     ).strip("; ")
     o.stop = round(new_stop, 4)
     return o
+
+
+def _bar_name(ts: datetime) -> str:
+    """How a fill's bar is named: the opening auction has its own stamp (AUCTION_MINUTE)."""
+    ts = ts.astimezone(SYD)
+    if ts.time() == AUCTION_MINUTE:
+        return f"the {ts:%Y-%m-%d} opening auction"
+    return f"the {ts:%Y-%m-%d %H:%M} minute bar"
 
 
 def _minute_after(iso_minute: str) -> datetime:
