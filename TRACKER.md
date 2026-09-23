@@ -64,8 +64,8 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 
 | # | Defect | Severity | Where it's queued |
 |---|---|---|---|
-| 1 | Live bot enters intraday; frozen rule is enter-next-open | High | PROMPTS #2 |
-| 2 | Arena sizing ≠ backtest ≠ real-money limits | High | PROMPTS #2 |
+| 1 | ~~Live bot enters intraday; frozen rule is enter-next-open~~ | — | **Fixed `a7665ac`** — confirms at close, enters next open before 10:00; loads 07:30 24 Sep |
+| 2 | ~~Arena sizing ≠ backtest ≠ real-money limits~~ | — | **Fixed `150297c`** — $20k, 4 positions, 1.0x, $5k max position |
 | 3 | `target` stored on positions but never acted on — agent believes it set a take-profit | Medium | **Not yet queued** |
 | 4 | ASX 300 universe is a market-cap proxy, like the ASX 200 was | Medium | **Not yet queued** |
 | 5 | `universe.asx300_source: vas_holdings` never read | Low | **Not yet queued** |
@@ -76,9 +76,11 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 10 | ~~Decider can't see its own pending orders; duplicate opening order allowed~~ | — | **Fixed `22b2f1a`**; loads at 07:30 24 Sep restart |
 | 11 | ~~STRATEGIES.md E firm-size error~~ | — | **Fixed `6bfbb8d`** |
 | 12 | ~~ARENA.md setup 8 old G~~ | — | **Fixed `6bfbb8d`** |
-| 13 | Pending orders don't count toward max open positions or the leverage cap: 3 held + 2 pending in different tickers can fill to 5 | Medium | **Not yet queued** |
+| 13 | ~~Pending orders don't count toward max open positions or the leverage cap~~ | — | **Fixed `a7665ac`** |
 | 14 | STRATEGIES.md order of work still puts survivorship-free data second; decided 23 Sep to defer it until a strategy survives free data. N3–N6 not yet in STRATEGIES.md | Low | **Not yet queued** |
 | 15 | Setup 8 pullback exit ("first up close or 5 days") was written for 3-day dips; may not suit a one-month reversal signal. Decide when G's rule is frozen, not before | Low | When G is built |
+| 16 | Yahoo's ^AXJO series was missing 22 Sep 2026 on 23 Sep. The yardstick now needs the index's daily bar each morning; a late bar means a missed day (logged, never traded late). Watch 24 Sep 07:30 | Medium | Watch, then decide |
+| 17 | Not yet confirmed what the $20k change did to the open arena accounts (A1M) — the session's own report wasn't reviewed | Medium | Check before 07:30 24 Sep |
 
 ---
 
@@ -86,7 +88,7 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 
 1. Machinery works and checks itself — **done 23 Sep**
 2. First honest strategy result — **done 23 Sep** (A dead)
-3. Arena measures fairly — sizing, entry rule, scoring — *in progress*
+3. Arena measures fairly — sizing and entry rule **done 23 Sep**; scoring (PROMPTS #5) still to do
 4. Strategy harness with trial counting — *queued*
 5. Survivorship-free data — *gate, Rick's decision*
 6. C, E, F, G, N1 tested in-sample on clean data
@@ -100,6 +102,18 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 
 ## Review log
 
+- **23 Sep 14:50** — Short side tested (`d009048` rules committed first, `c5f3711`). Both
+  lose in-sample inside today's ASX 200: S1 earnings-miss short avg −0.34% to −0.73% a
+  trade; S2 placement short avg −1.52% to −1.88%, worst trade −35%. Survivorship runs
+  against shorts (today's ASX 200 is the set that grew), so not conclusive — the remedy is
+  point-in-time membership, not tuning. S2 does not earn a holdout run. From now on Claude
+  runs Claude Code jobs headless (`C:\Users\Richa\.cc-jobs`), Telegram ping on finish.
+- **23 Sep 14:25** — $20k job landed (`150297c`, `a7665ac`, `f516bc3`; 166 pass). At
+  $20k A improves (1x: avg +0.37%, CAGR +1.4%; 2x: +0.08%, −0.3%) but still earns about a
+  fifth of the 6.9% benchmark on survivorship-inflated data — still dropped. Yardstick
+  now runs the frozen rule; pending orders count toward limits. New: #16 (Yahoo index
+  bar missing), #17 (open accounts after the change, unchecked). Short-side strategies
+  (S1 earnings miss, S2 placement) sent for spec and in-sample test.
 - **23 Sep 12:45** — `22b2f1a` pending-orders fix (162 tests pass; both new tests fail on
   old code) and `6bfbb8d` docs. Running watcher keeps old code; `ASXBot Arena Warmup`
   restarts it 07:30 24 Sep, so no mid-session restart with A1M open. Claude Code flagged
