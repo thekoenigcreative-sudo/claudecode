@@ -245,6 +245,23 @@ Not a go/no-go either way: yfinance has no delisted stocks, and the momentum bas
 
 Frozen strategy A parameters, the holdout and the yardstick's rule were not touched.
 
+## The system checks itself (23 Sep)
+
+`arena/selfcheck.py` runs six arithmetic checks every watcher cycle and shouts on Telegram
+when one fails (CRITICAL log line, `arena_selfcheck` event, alerts flag, one message per
+hour per fault, and a message when it clears): a saved "PDF" that is not a PDF, a PDF fetch
+failure in the last hour, one screen test rejecting more than 80% of the day, an agent call
+whose model or effort level is not what config asks for, an order pending past its resolve
+window plus an hour, and any ERROR logged in the last hour. `asxbot arena selfcheck` runs
+them by hand. On the first run it immediately surfaced the re-look crash from 10:22.
+
+`arena/filtercost.py` measures what the screen threw away: every rejection, grouped by the
+test that made it, scored on what the stock did over the next 10 sessions against the index.
+`asxbot arena filter-cost --weeks N`, weekly through the task **ASXBot Filter Cost**
+(Sundays 18:00, `scripts/arena_filter_cost.ps1`), writing `reports/filter_cost.md`.
+**It reports and nothing else.** Today everything is "not yet measurable" - the rejections
+are hours old and the horizon is 10 sessions - which is the honest answer, not a null result.
+
 ## Open items
 
 1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed

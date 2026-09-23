@@ -89,6 +89,15 @@ arena:
   frozen_on: "2026-09-22"
   starting_aud: 10000          # per account; each playbook has an agent account and a bot account
   enabled: true
+  # Added 2026-09-23. What the self-checks expect to be true (arena/selfcheck.py); they
+  # run every watcher cycle and shout on Telegram when they are not.
+  agents:
+    effort:                    # set on the OpenClaw agents themselves; checked, not applied
+      reader: low
+      decider: high
+  selfcheck:
+    repeat_minutes: 60         # a standing failure is re-alerted at most this often
+
   alerts:
     telegram: true             # instant alerts: decisions, fills, stops, closes, refusals
     pass_digest_minutes: 60    # passes are not instant: one digest this often instead

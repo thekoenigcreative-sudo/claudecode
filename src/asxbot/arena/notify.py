@@ -50,6 +50,11 @@ def one_line(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
+def escape_text(text: str) -> str:
+    """Escape for Telegram's HTML parse mode. Detail lines carry file names and errors."""
+    return escape(one_line(text))
+
+
 def who(placed_by: str) -> str:
     return {"agent": "AGENT", "bot": "BOT", "code": "CODE"}.get(placed_by, placed_by.upper())
 

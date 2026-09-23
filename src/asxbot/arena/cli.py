@@ -428,6 +428,50 @@ def cmd_digest(args) -> int:
     return 0
 
 
+def cmd_filter_cost(args) -> int:
+    """Measure what each screen filter threw away. Reports; never acts."""
+    from asxbot.arena.filtercost import measure, render
+    from asxbot.io import write_text_atomic
+
+    cfg, log, arena = _arena()
+    costs = measure(arena, weeks=args.weeks)
+    text = render(costs, args.weeks)
+    out = pathlib.Path(args.out) if args.out else (cfg.root / "reports" / "filter_cost.md")
+    write_text_atomic(text, out)
+    print(text)
+    print(f"[written to {out}]")
+    if args.send:
+        from asxbot.arena.notify import build_notifier
+
+        rows = " · ".join(
+            f"{c.test} {c.measured}/{c.rejected} median {c.median:+.2f}%"
+            for c in sorted(costs.values(), key=lambda c: -c.rejected)
+            if c.measured
+        )
+        body = rows or "nothing measurable yet"
+        build_notifier(cfg).send(
+            f"📏 <b>Filter cost, last {args.weeks} week(s)</b>\n{body}\n"
+            "<i>measurement only; no threshold moves on this</i>"
+        )
+    return 0
+
+
+def cmd_selfcheck(args) -> int:
+    """Run the self-checks now and print them. The watcher runs these every cycle."""
+    from asxbot.arena.selfcheck import report, run_checks
+
+    cfg, log, arena = _arena()
+    pb = _pb(arena, args.playbook)
+    if args.quiet:
+        checks = run_checks(arena, pb)
+    else:
+        report(arena, pb, force=args.force)
+        checks = run_checks(arena, pb)
+    for c in checks:
+        print(f"{'ok   ' if c.ok else 'FAIL '} {c.key:18s} {c.detail}")
+    return 0 if all(c.ok for c in checks) else 3
+
+
 def cmd_reset(args) -> int:
     """Wipe arena accounts back to their opening balance. Fake money only, never live."""
     cfg, log, arena = _arena()
@@ -572,6 +616,18 @@ def add_parsers(sub) -> None:
     dg.add_argument("--print-only", action="store_true", help="show it, do not send it")
     dg.add_argument("--again", action="store_true", help="resend today's summary")
     dg.set_defaults(fn=cmd_digest)
+
+    fc = a.add_parser("filter-cost", help="what each screen filter threw away (reports only)")
+    fc.add_argument("--weeks", type=int, default=4)
+    fc.add_argument("--out", help="where to write the report")
+    fc.add_argument("--send", action="store_true", help="also send a one-line summary")
+    fc.set_defaults(fn=cmd_filter_cost)
+
+    sc = a.add_parser("selfcheck", help="run the system's checks on itself")
+    sc.add_argument("--playbook")
+    sc.add_argument("--quiet", action="store_true", help="print only; do not alert")
+    sc.add_argument("--force", action="store_true", help="alert even if already alerted")
+    sc.set_defaults(fn=cmd_selfcheck)
 
     rs = a.add_parser("reset", help="wipe arena accounts back to their opening balance")
     rs.add_argument("--yes", action="store_true", help="required: this deletes trade records")

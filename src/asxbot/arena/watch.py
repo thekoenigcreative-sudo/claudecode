@@ -31,7 +31,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from asxbot.announcements.model import Announcement
-from asxbot.arena import notify
+from asxbot.arena import notify, selfcheck
 from asxbot.arena.accounts import Account
 from asxbot.arena.agents import (
     DECIDER,
@@ -760,6 +760,12 @@ def watch(
             acct = arena.account(pb, kind)
             arena.broker.apply_stops(acct, now)
             arena.broker.resolve_pending(acct, now)
+
+        # The system checks itself, every cycle. A fault here is shouted, not logged.
+        try:
+            selfcheck.report(arena, pb, now)
+        except Exception as e:  # noqa: BLE001 - the checks must never stop the watcher
+            log.exception("the self-checks failed to run: %s", e)
 
         # The horizon exit, every cycle: a position that has run its sessions is closed.
         try:
