@@ -6,9 +6,9 @@ from asxbot.config import ConfigError, load_config
 def test_defaults_load(config_file, tmp_path):
     cfg = load_config(config_file(), env_file=tmp_path / "nonexistent.env")
     assert cfg.broker == "sim"
-    assert cfg.get("capital.starting_aud") == 10000
+    assert cfg.get("capital.starting_aud") == 20000  # the real account, from 2026-09-23
     assert cfg.get("capital.max_positions") == 4
-    assert cfg.position_size_aud == 2500.0
+    assert cfg.position_size_aud == 5000.0
     assert "plumbing test" in cfg.data_label()
 
 

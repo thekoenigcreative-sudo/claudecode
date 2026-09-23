@@ -5,7 +5,10 @@
 broker: sim   # sim | paper | live.  live also needs LIVE_TRADING_CONFIRMED=yes in .env
 
 capital:
-  starting_aud: 10000
+  # 10000 -> 20000 on 2026-09-23: the account is $20,000. Brokerage is 0.088% with a $6.60
+  # minimum, which binds on any position under $7,500, so at 4 positions the cost drag per
+  # trade halves (0.53% -> 0.26% round trip). Every result before this date was at $10,000.
+  starting_aud: 20000
   max_positions: 4
   # position size = starting_aud / max_positions, equal weight
 
@@ -71,7 +74,9 @@ collector:
   hours: { start: "07:30", end: "19:30", end_dst: "20:30", tz: "Australia/Sydney" }
 
 limits:   # enforced in code by place_order; the agent cannot override these
-  max_position_aud: 2500
+  # 2500 -> 5000 on 2026-09-23, with capital.starting_aud 10000 -> 20000: the same equal
+  # weight, $20,000 / 4 positions. config.py refuses to load a cap below that size.
+  max_position_aud: 5000
   min_order_aud: 500              # ASX minimum marketable parcel; also stops tiny-order death spirals
   max_open_positions: 4
   max_new_positions_per_day: 2
@@ -87,7 +92,9 @@ limits:   # enforced in code by place_order; the agent cannot override these
 # ---------------------------------------------------------------------------
 arena:
   frozen_on: "2026-09-22"
-  starting_aud: 10000          # per account; each playbook has an agent account and a bot account
+  # 10000 -> 20000 on 2026-09-23, to match the real account (see capital above). Used only
+  # when an account is created; accounts already on disk keep the cash they were opened with.
+  starting_aud: 20000          # per account; each playbook has an agent account and a bot account
   enabled: true
   # Added 2026-09-23. What the self-checks expect to be true (arena/selfcheck.py); they
   # run every watcher cycle and shout on Telegram when they are not.
@@ -108,8 +115,14 @@ arena:
       name: daily
       aim: "profit every day"
       risk_per_trade_pct: 5.0        # distance-to-stop x size, as % of account equity
-      max_open_positions: 8          # per playbook account
-      leverage_asx: 3.0
+      # Changed 2026-09-23 to the real-money limits (8 -> 4 positions, 3.0 -> 1.0 leverage).
+      # At $20,000, 4 positions is $5,000 each and a 0.26% round trip in brokerage, against
+      # 0.53% at 8 positions; strategy A's average trade after costs was +0.05% at $10,000,
+      # so the difference is the whole edge and more. And 3x leverage means a 10% adverse
+      # move costs 30% of equity in a day, whatever the account size. Levels 2 and 3 are
+      # unchanged.
+      max_open_positions: 4          # per playbook account
+      leverage_asx: 1.0
       leverage_crypto: 10.0          # unused until a crypto playbook starts
       daily_loss_limit_pct: 15.0     # then no NEW positions until tomorrow; exits stay allowed
       holding: intraday              # overnight only with a written reason
