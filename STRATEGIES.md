@@ -31,6 +31,8 @@ Every figure carries its source in brackets. Figures from `reports/phase1.md` ar
 | G | Pullbacks | **Reframed** | Prices + industry classification | Large, liquid stock down against its industry peers over a month, momentum controlled for |
 | N1 | Placement overhang | **New** | Archive + prices | Build first as a veto on other strategies |
 | N2 | Index deletion reversal | New, low | Index rebalance history + prices | Needs rebalance history, which Norgate supplies |
+| S1 | Short after an earnings miss | **Tested: loses** | Archive + prices, ASX 200 | Not tuned. Only a rerun of the same rules on survivorship-free data |
+| S2 | Short ahead of placement shares | **Tested: loses** | Archive + prices, ASX 200 | Not tuned. Not worth a holdout run |
 | Baseline | 12-1 momentum | Keep as baseline only | Prices | Rerun on survivorship-free data |
 
 ### A — announcement gap: DROPPED
@@ -64,6 +66,31 @@ Australia puts no resale restriction on placement shares, so holders can sell im
 ### N2 — index deletion reversal: NEW, LOW
 S&P/ASX 200 deletions showed negative returns on announcement that began to reverse afterwards (Schmidt, Zhao & Terry 2011). Long-only friendly and scheduled, but likely decayed. Needs rebalance history, which Norgate supplies.
 
+### S1 and S2 — the short side: TESTED, BOTH LOSE
+Rules written into `config.yaml` (`strategies`) and committed before any run (`3a936e4`), the code committed before its first run too (`d009048`); one variant each, not tuned since. Tested in-sample only, 2003-01-01 to 2023-09-22, inside today's ASX 200 only, the arena's short universe: shares outside it usually cannot be borrowed. Figures below are from `reports/shorts_phase1.md`, across its four cost settings: 1× and 2× slippage, and borrow at 1% and 5% a year. **Both borrow rates are assumptions**; IBKR's rate for ASX 200 shares could not be sourced. Benchmark over the same window: +6.2% a year, worst drawdown −55.1%.
+
+**S1 — short after an earnings miss.** A price-sensitive "results" announcement whose reaction session closes at least 5% below the ASX 200 on 3× volume; short at the next open, cover after 10 sessions, 8% stop tested on the close. A's numbers, sign reversed.
+
+- 245 trades across 100 companies, 11.8 a year (311 events; the rest found the book full).
+- Made money after costs on 50.6% of trades at the cheapest setting, 46.5% at the dearest.
+- Average trade −0.34% to −0.73%; median hold 10 sessions; 55 stops.
+- Hedged with a long ASX 200 position over the same window it does worse, −0.83% to −1.22%: the loss is not the market rising.
+- Worst drawdown −46.6% to −54.8%; −1.4% to −2.5% a year.
+- The tail: worst trade −28.1% (WOR, Feb 2017, stopped, and the next open gapped through the stop); 5th percentile −12.7%.
+
+**S2 — short ahead of placement shares.** A price-sensitive equity placement; short at the first open after it; cover 5 sessions after the quotation notice (Appendix 2A) when one follows within 10 sessions, else after 10 sessions; 8% stop. Quotation notices exist only from December 2019, so 107 of 445 events were covered by one and the rest by the fixed 10 sessions.
+
+- 249 trades across 101 companies, 12.0 a year. Of the 196 events not traded, 153 were below the turnover floor at entry.
+- Made money on 43.4% to 41.4% of trades.
+- Average trade −1.52% to −1.88%, about the same hedged (−1.54% to −1.90%); median hold 10 sessions; 58 stops.
+- Worst drawdown −66.3% to −72.7%; −4.7% to −5.7% a year.
+- The tail: worst trade −35.4% (PDN, Feb 2004); 5th percentile −13.6%. PDN, a small uranium explorer in 2004 and an ASX 200 member today, is four of the five worst trades.
+
+**What this does and does not show.**
+- Survivorship runs against these results: the universe is today's ASX 200, the companies that went on to grow, applied to every past year. That is PDN. So the losses are biased against shorting, and neither a loss nor a pass here is conclusive. The remedy is survivorship-free data with point-in-time index membership, run on the same frozen rules, not a new parameter.
+- S2's idea came from slicing this same in-sample data (A's capital-raising slice), so it could not have been independent evidence even had it passed. Having lost, it does not earn a holdout run under rule 3.
+- For N1: S2 is N1's thesis turned into a short. Inside the ASX 200, placement supply did not push prices down over the following 10 sessions on average. That weakens the veto's premise for large stocks, though it does not test the veto itself, which applies to longs across both universes.
+
 ### Baseline — momentum: KEEP AS BASELINE ONLY
 Its 24.5% CAGR is survivorship bias (`reports/phase1.md`): on a universe of today's largest companies, momentum buys the stocks that went on to become large.
 
@@ -76,6 +103,7 @@ Its 24.5% CAGR is survivorship bias (`reports/phase1.md`): on a universe of toda
 
 ## Sources
 - `reports/phase1.md` — Phase 1 backtest, generated 23 Sep 2026 09:51. yfinance, no delisted stocks; ASX 300 proxy universe; in-sample to 22 Sep 2023.
+- `reports/shorts_phase1.md` — S1 and S2, generated 23 Sep 2026 14:38. yfinance, no delisted stocks; today's ASX 200 (194 of 200 with an archive and prices); in-sample 2003-01-01 to 22 Sep 2023; borrow at 1% and 5% a year, both assumed. Rules: `config.yaml` `strategies`, commit `3a936e4`.
 - `data/logs/asxbot.log` — decider passes on TGN (07:52) and AUE (10:36), 23 Sep 2026.
 - McLean, R. D. & Pontiff, J. (2016), "Does Academic Research Destroy Stock Return Predictability?", *Journal of Finance* 71(1).
 - Foley, S., Kwan, A., McInish, T. & Philip, R. (2016). Director discretion and insider trading profitability. *Pacific-Basin Finance Journal* 39, 28–43. doi:10.1016/j.pacfin.2016.05.005 — E.
