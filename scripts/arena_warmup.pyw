@@ -11,7 +11,8 @@ console window.
 
 Why: on 23 Sep 2026 the watcher ran in a visible console window, which was closed at
 13:32 (exit 0xC000013A, "console closed / Ctrl+C") and took the watcher with it, mid-poll
-and without a word. pythonw has no console. The watcher itself is started with
+and without a word. pythonw has no console (checked: the venv's must be CPython's GUI
+launcher, not uv's console one - TRACKER #32). The watcher itself is started with
 CREATE_NO_WINDOW, so it and everything it runs (the OpenClaw agent calls) share one
 console that has no window at all: nothing to close, and nothing flashing up on screen.
 

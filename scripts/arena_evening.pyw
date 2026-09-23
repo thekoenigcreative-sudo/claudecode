@@ -17,7 +17,8 @@ does, in the same order and with the same log lines in data/arena_evening.log:
 
 Why: on 23 Sep 2026 the watcher, which ran in a visible console window, died when that
 window was closed at 13:32. The evening task ran the same way; closing its window would
-lose the day's settlement and the report. pythonw has no console, and each step runs
+lose the day's settlement and the report. pythonw has no console (the venv's must be
+CPython's GUI launcher, not uv's console one - TRACKER #32), and each step runs
 under CREATE_NO_WINDOW, so it and the OpenClaw call the report makes share one console
 that has no window at all.
 

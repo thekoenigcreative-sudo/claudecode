@@ -40,3 +40,24 @@ def run(args, **kw) -> subprocess.CompletedProcess:
 def popen(args, **kw) -> subprocess.Popen:
     """subprocess.Popen, windowless."""
     return subprocess.Popen(args, **_hidden(kw))
+
+
+def pe_subsystem(path) -> str:
+    """"GUI" or "CONSOLE": which kind of Windows program an .exe is (its PE header).
+
+    A console program gets a console window when nothing gives it one, so a scheduled task
+    that starts it flashes a window. On 23 Sep 2026 the venv's pythonw.exe - uv's launcher -
+    turned out to be a console program, byte for byte the same as python.exe, and every
+    task that started "pythonw" flashed a window (TRACKER #32).
+    """
+    import struct
+
+    with open(path, "rb") as fh:
+        head = fh.read(4096)
+    if head[:2] != b"MZ":
+        raise ValueError(f"{path} is not a Windows program")
+    pe = struct.unpack_from("<I", head, 0x3C)[0]
+    if head[pe : pe + 4] != b"PE\0\0":
+        raise ValueError(f"{path} has no PE header")
+    sub = struct.unpack_from("<H", head, pe + 24 + 68)[0]
+    return {2: "GUI", 3: "CONSOLE"}.get(sub, f"subsystem {sub}")

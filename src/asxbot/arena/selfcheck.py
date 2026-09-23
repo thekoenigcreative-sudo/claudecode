@@ -17,6 +17,8 @@ All arithmetic and file checks. No judgement, no model, nothing that needs inter
                      was recorded (or, for a stop or target, after it began resting)
   errors_logged      an ERROR line in the last hour
   short_universe     the ASX 200 list is short, stale, or not a constituent list at all
+  console_launcher   the venv's pythonw.exe, which every scheduled task starts, is a console
+                     program, so each start flashes a window (scripts/install_gui_launcher.py)
 
 A failure is loud: CRITICAL in the log, an `arena_selfcheck` event, an alerts flag file,
 and a Telegram message. The same failure is not repeated more often than
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -390,6 +393,26 @@ def check_errors_logged(cfg, now: datetime) -> Check:
     )
 
 
+def check_gui_launcher(scripts: Path | None = None) -> Check:
+    """The venv's pythonw.exe - what the Warmup, Evening and Watchdog tasks start - has no
+    console. uv's own venv launcher does (TRACKER #32); rebuilding the venv with uv brings
+    it back, and every task start flashes a window again."""
+    from asxbot.proc import pe_subsystem
+
+    exe = (scripts or Path(sys.prefix) / "Scripts") / "pythonw.exe"
+    if (sys.platform != "win32" and scripts is None) or not exe.exists():
+        return Check("console_launcher", True, f"no {exe} here to check")
+    kind = pe_subsystem(exe)
+    if kind == "GUI":
+        return Check("console_launcher", True, f"{exe} is a GUI program")
+    return Check(
+        "console_launcher",
+        False,
+        f"{exe} is a {kind} program, so every scheduled task that starts it flashes a window. "
+        "Put CPython's own GUI launcher back: python scripts/install_gui_launcher.py",
+    )
+
+
 # -- running them -----------------------------------------------------------
 def expected_agents(cfg) -> dict[str, tuple[str, str]]:
     """agent -> (model, effort) that the agent_mismatch check holds every call to.
@@ -421,6 +444,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("fill_before_order", lambda: check_fills_after_orders(arena, pb)),
         ("errors_logged", lambda: check_errors_logged(cfg, now)),
         ("short_universe", lambda: check_short_universe(cfg)),
+        ("console_launcher", check_gui_launcher),
     ]
     out = []
     for key, fn in runners:

@@ -410,6 +410,24 @@ Three more from the same night, all found by reading a state file or a log line:
   bar that had volume. What it does rewrite is its newest row, a placeholder for the
   minute still forming, and that row is never used now.
 
+## 17. pythonw that had a console
+
+"pythonw has no console" was the premise of the hidden launchers (#19, #23): the scheduled
+tasks were pointed at `C:\venvs\asx-bot\Scripts\pythonw.exe` on that basis, and nobody
+checked the file. uv 0.10.2 writes the same console launcher to `pythonw.exe` as to
+`python.exe`, byte for byte. So every task start opened a console window, and the watchdog
+added one every 5 minutes. A process recorder found it in one pass: the launcher itself was
+a console program (the PE header's subsystem field says so: 2 GUI, 3 console).
+
+- **A file's name is not its behaviour.** `pythonw.exe` is a claim; the PE header is the
+  fact. `asxbot.proc.pe_subsystem` reads it, and the `console_launcher` self-check holds
+  the venv to it.
+- **Prove "no window" with a recording, not a belief.** Record process creation and new
+  visible windows while the real task runs, and run the old way in the same recording so
+  the recorder is shown to catch the fault.
+- **A uv venv's python.exe sets PYTHONHOME for its children.** A different Python started
+  underneath it loads the wrong standard library and dies on import.
+
 ---
 
 ## Standing rules
