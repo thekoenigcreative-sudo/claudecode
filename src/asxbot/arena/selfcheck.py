@@ -231,6 +231,12 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
 
 ERROR_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ (ERROR|CRITICAL) (\S+): (.*)")
 
+# The checks' own voices. Without this the error check feeds on itself: raising an alert
+# logs CRITICAL, the next cycle counts that line as an error, raises another, and the count
+# climbs on its own - 8, 10, 12 - with nothing actually wrong. Seen within a minute of
+# turning these on.
+SELF_LOGGERS = ("asxbot.alerts", "asxbot.arena.selfcheck")
+
 
 def check_errors_logged(cfg, now: datetime) -> Check:
     """Any ERROR or CRITICAL logged in the last hour.
@@ -243,9 +249,12 @@ def check_errors_logged(cfg, now: datetime) -> Check:
         m = ERROR_LINE.match(line)
         if not m:
             continue
+        logger = m.group(3)
+        if logger in SELF_LOGGERS:
+            continue  # an alert about an error is not itself an error
         when = datetime.fromisoformat(m.group(1)).replace(tzinfo=SYD)
         if when >= since:
-            hits.append(f"{m.group(1)[11:]} {m.group(3)}: {m.group(4)[:110]}")
+            hits.append(f"{m.group(1)[11:]} {logger}: {m.group(4)[:110]}")
     if not hits:
         return Check("errors_logged", True, "no ERROR logged in the last hour")
     return Check(
@@ -320,14 +329,19 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
                 alerts.clear(c.key)
                 log.info("self-check %s is clear again: %s", c.key, c.detail)
             continue
+        last = state.get(c.key)
+        due = force or last is None or (now - datetime.fromisoformat(last)) >= repeat
         events.append(
             "arena_selfcheck",
             {"check": c.key, "ok": False, "detail": c.detail, "count": c.count, **c.facts},
         )
-        log.critical("SELF-CHECK FAILED [%s] %s", c.key, c.detail)
-        alerts.raise_alert(c.key, c.detail)
-        last = state.get(c.key)
-        due = force or last is None or (now - datetime.fromisoformat(last)) >= repeat
+        if due:
+            # Only shout when it is due. The watcher runs every minute, and a standing
+            # fault logged every minute is the log nobody reads all over again.
+            log.critical("SELF-CHECK FAILED [%s] %s", c.key, c.detail)
+            alerts.raise_alert(c.key, c.detail)
+        else:
+            log.info("self-check %s still failing (already reported): %s", c.key, c.detail)
         if due and alert:
             alert.send(f"🚨 <b>SELF-CHECK: {c.key}</b>\n{notify.escape_text(c.detail)}")
             state[c.key] = now.isoformat(timespec="seconds")

@@ -156,11 +156,11 @@ def test_an_order_stuck_past_its_resolve_window_is_caught(cfg):
 
 
 # -- 6. an ERROR in the log ------------------------------------------------
-def _log_line(cfg, when: datetime, level: str, msg: str):
+def _log_line(cfg, when: datetime, level: str, msg: str, logger: str = "asxbot.arena.watch"):
     p = cfg.data_dir / "logs" / "asxbot.log"
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
-        fh.write(f"{when:%Y-%m-%d %H:%M:%S},123 {level} asxbot.arena.watch: {msg}\n")
+        fh.write(f"{when:%Y-%m-%d %H:%M:%S},123 {level} {logger}: {msg}\n")
 
 
 def test_an_error_logged_in_the_last_hour_is_caught(cfg):
@@ -215,3 +215,36 @@ def test_a_check_that_itself_breaks_is_a_failure_not_a_crash(cfg, monkeypatch):
     checks = S.run_checks(arena, None, NOW)
     bad = [c for c in checks if c.key == "pdf_not_pdf"]
     assert bad and not bad[0].ok and "the check itself failed" in bad[0].detail
+
+
+def test_the_error_check_does_not_feed_on_its_own_alerts(cfg):
+    """It did, within a minute of going live: raising an alert logs CRITICAL, the next
+    cycle counted that line, and the count climbed on its own with nothing wrong."""
+    _log_line(
+        cfg, NOW - timedelta(minutes=3), "CRITICAL",
+        "ALERT [errors_logged] 8 ERROR line(s)", "asxbot.alerts",
+    )  # fmt: skip
+    _log_line(
+        cfg, NOW - timedelta(minutes=2), "CRITICAL",
+        "SELF-CHECK FAILED [errors_logged] x", "asxbot.arena.selfcheck",
+    )  # fmt: skip
+    assert S.check_errors_logged(cfg, NOW).ok  # its own voice does not count
+
+    _log_line(cfg, NOW - timedelta(minutes=1), "ERROR", "a real failure somewhere else")
+    assert not S.check_errors_logged(cfg, NOW).ok
+
+
+def test_a_standing_failure_is_not_logged_every_cycle(cfg, monkeypatch, caplog):
+    import logging
+
+    arena = _Alerting(cfg, _acct_with_pending(NOW))
+    monkeypatch.setattr(S, "run_checks", lambda a, p, n: [S.Check("stuck_pending", False, "stuck")])
+    with caplog.at_level(logging.INFO, logger="asxbot.arena.selfcheck"):
+        S.report(arena, None, NOW)
+        S.report(arena, None, NOW + timedelta(minutes=1))
+    criticals = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.CRITICAL and r.name == "asxbot.arena.selfcheck"
+    ]
+    assert len(criticals) == 1  # shouted once, not once a minute
