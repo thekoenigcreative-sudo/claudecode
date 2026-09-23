@@ -193,6 +193,15 @@ def cmd_asx200(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_shorts(args: argparse.Namespace) -> int:
+    from asxbot.backtest.shorts import run_shorts
+
+    cfg = load_config()
+    log = setup_logging(cfg.data_dir)
+    log.info("done: %s", run_shorts(cfg))
+    return 0
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     from asxbot.backtest.run import run_phase1
 
@@ -560,6 +569,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="stop every run at the start of the holdout; those years are not simulated",
     )  # fmt: skip
     bt.set_defaults(fn=cmd_backtest)
+    sub.add_parser(
+        "shorts", help="backtest S1 and S2, in-sample only, and write reports/shorts_phase1.md"
+    ).set_defaults(fn=cmd_shorts)
     sub.add_parser("scan", help="check today's announcements and write proposals").set_defaults(
         fn=cmd_scan
     )
