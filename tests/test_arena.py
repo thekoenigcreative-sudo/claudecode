@@ -160,7 +160,7 @@ def test_the_stop_is_enforced_by_code(setup):
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     assert acct.orders[o.order_id].status == "filled"
-    out = broker.apply_stops(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
+    out = broker.apply_exits(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
     assert any(r.status == "filled" for r in out)
     assert "AAA" not in acct.positions  # the stop closed it
 
@@ -469,7 +469,7 @@ def test_a_stop_cannot_fire_in_the_bar_the_position_opened(setup):
     pos = acct.positions["CCC"]
     assert 0.90 < pos.stop  # the entry bar's own low is below the stop
 
-    out = broker.apply_stops(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    out = broker.apply_exits(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     stop_fill = acct.orders[out[0].order_id] if out else None
     # The stop is not hit in 10:00, the entry bar. It is hit at 10:02, when the stock fell.
     assert stop_fill is not None and stop_fill.fill_minute.startswith("2026-01-06T10:02")
@@ -771,7 +771,7 @@ def test_fills_and_stops_are_alerted_as_they_happen(setup, monkeypatch):
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     assert len(sent) == 1 and "FILLED" in sent[0] and "BUY AAA" in sent[0]
     assert "stop 0.980" in sent[0]
-    broker.apply_stops(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
+    broker.apply_exits(acct, now=datetime(2026, 1, 6, 16, 0, tzinfo=SYD))
     assert len(sent) == 2 and "STOP FIRED" in sent[1] and "result -" in sent[1]
 
 
@@ -1064,7 +1064,7 @@ def test_the_decider_packet_shows_its_orders_waiting_to_fill(setup, monkeypatch)
     _offline_price(monkeypatch)
     broker.submit(
         acct, ticker="AAA", side="buy", qty=3000, limit=0.83,
-        decision_at=_AT - timedelta(minutes=25), stop=0.755,
+        decision_at=_AT - timedelta(minutes=25), stop=0.755, target=0.95,
     )  # fmt: skip
     done = broker.submit(
         acct, ticker="BBB", side="buy", qty=100, limit=1.00,
@@ -1078,7 +1078,7 @@ def test_the_decider_packet_shows_its_orders_waiting_to_fill(setup, monkeypatch)
     shown = _json.loads(line.split("orders waiting to fill:")[1].split("   (")[0])
     assert shown == [
         {"ticker": "AAA", "side": "buy", "qty": 3000, "limit": 0.83, "stop": 0.755,
-         "minutes_waiting": 25}
+         "target": 0.95, "minutes_waiting": 25}
     ]  # fmt: skip
 
 
@@ -1226,3 +1226,265 @@ def test_the_yardstick_sizes_within_the_per_order_guard(setup, monkeypatch):
     o = acct.orders[placed[0]["order_id"]]
     assert o.qty * o.limit <= guard
     assert o.qty == int(guard / o.limit)  # the guard is what binds, and nothing smaller
+
+
+# -- take-profit targets: honoured like stops, mirrored (agent only) ---------
+DAY2 = date(2026, 1, 7)  # the session after DAY
+
+
+def _bars_on(broker, ticker, day, rows):
+    """rows: list of (HH, MM, open, high, low, close, volume) on `day`."""
+    idx = [datetime(day.year, day.month, day.day, h, m, tzinfo=SYD) for h, m, *_ in rows]
+    cols = ("open", "high", "low", "close", "volume")
+    df = pd.DataFrame(
+        {k: [r[i] for r in rows] for i, k in enumerate(cols, start=2)},
+        index=pd.DatetimeIndex(idx, name="Datetime"),
+    )
+    write_parquet_atomic(df, broker.minutes._path(ticker, day))
+
+
+def _open(broker, acct, side, stop, target, qty=1000):
+    """Open a CCC position whose entry fills in the 10:00 bar."""
+    limit = 2.00 if side == "buy" else 0.50
+    o = broker.submit(
+        acct, ticker="CCC", side=side, qty=qty, limit=limit, stop=stop, target=target,
+        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), placed_by=acct.kind,
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 0, tzinfo=SYD))
+    assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:00")
+    return acct.positions["CCC"]
+
+
+def _exits(broker, acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD)):
+    return [acct.orders[r.order_id] for r in broker.apply_exits(acct, now=now)]
+
+
+@pytest.mark.parametrize(
+    "bar, fill",
+    [
+        ((10, 2, 1.01, 1.10, 1.00, 1.08, 20_000), 1.10),  # the high reaches it: the target
+        ((10, 2, 1.15, 1.16, 1.14, 1.15, 20_000), 1.15),  # gapped through: the better open
+    ],
+)
+def test_a_long_exits_at_its_target_from_the_minute_after_entry(setup, bar, fill):
+    """Found 23 Sep (TRACKER #3): the decider set targets believing they were take-profits,
+    and nothing acted on them. A1M held a 0.90 target while trading at 0.917."""
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.12, 0.99, 1.00, 50_000),  # the entry bar: its high passes the target
+        (10, 1, 1.00, 1.02, 0.99, 1.01, 10_000),
+        bar,
+        (16, 10, 1.05, 1.05, 1.05, 1.05, 100_000),
+    ])  # fmt: skip
+    _open(broker, acct, "buy", stop=0.90, target=1.10)
+    out = _exits(broker, acct)
+    assert len(out) == 1
+    o = out[0]
+    assert o.side == "sell" and o.qty == 1000 and o.placed_by == "code"
+    assert o.reason.startswith("TARGET")
+    # Not the entry bar (10:00), though its high passed the target: the 10:02 bar.
+    assert o.fill_minute.startswith("2026-01-06T10:02")
+    assert o.avg_price == pytest.approx(fill)  # no slippage: a limit fills at its price
+    assert "CCC" not in acct.positions
+
+
+@pytest.mark.parametrize(
+    "bar, fill",
+    [
+        ((10, 2, 0.95, 0.96, 0.90, 0.91, 20_000), 0.90),  # the low reaches it: the target
+        ((10, 2, 0.85, 0.86, 0.84, 0.85, 20_000), 0.85),  # gapped through: the better open
+    ],
+)
+def test_a_short_exits_at_its_target_from_the_minute_after_entry(setup, bar, fill):
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.85, 1.00, 50_000),  # the entry bar: its low passes the target
+        (10, 1, 1.00, 1.01, 0.99, 1.00, 10_000),
+        bar,
+        (16, 10, 0.95, 0.95, 0.95, 0.95, 100_000),
+    ])  # fmt: skip
+    _open(broker, acct, "short", stop=1.10, target=0.90)
+    out = _exits(broker, acct)
+    assert len(out) == 1
+    o = out[0]
+    assert o.side == "cover" and o.reason.startswith("TARGET")
+    assert o.fill_minute.startswith("2026-01-06T10:02")
+    assert o.avg_price == pytest.approx(fill)
+    assert "CCC" not in acct.positions
+
+
+def test_a_bar_that_reaches_both_the_stop_and_the_target_takes_the_stop(setup):
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.99, 1.00, 50_000),
+        (10, 1, 1.00, 1.11, 0.91, 1.00, 90_000),  # reaches 0.92 and 1.10 in one minute
+        (16, 10, 1.00, 1.00, 1.00, 1.00, 100_000),
+    ])  # fmt: skip
+    _open(broker, acct, "buy", stop=0.92, target=1.10)
+    out = _exits(broker, acct)
+    assert len(out) == 1 and out[0].reason.startswith("STOP")
+    assert out[0].avg_price < 0.92  # the stop, less slippage: the conservative assumption
+
+
+@pytest.mark.parametrize(
+    "first, second, expect",
+    [
+        ((10, 1, 1.00, 1.10, 0.99, 1.05, 20_000), (10, 2, 1.00, 1.00, 0.90, 0.91, 20_000),
+         "TARGET"),
+        ((10, 1, 1.00, 1.00, 0.91, 0.95, 20_000), (10, 2, 0.95, 1.12, 0.95, 1.10, 20_000),
+         "STOP"),
+    ],
+)  # fmt: skip
+def test_whichever_of_the_stop_and_the_target_is_reached_first_wins(setup, first, second, expect):
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.99, 1.00, 50_000), first, second,
+        (16, 10, 1.00, 1.00, 1.00, 1.00, 100_000),
+    ])  # fmt: skip
+    _open(broker, acct, "buy", stop=0.92, target=1.10)
+    out = _exits(broker, acct)
+    assert len(out) == 1 and out[0].reason.startswith(expect)
+    assert out[0].fill_minute.startswith("2026-01-06T10:01")
+
+
+def test_the_yardsticks_positions_never_gain_a_target(setup):
+    """The frozen rule has no target. A bot position carrying one is not closed by it."""
+    cfg, broker, pb, _ = setup
+    bot = broker.store.open("t__bot", "asx_announcements", "bot", 1, 10_000.0)
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.99, 1.00, 50_000),
+        (10, 2, 1.01, 1.20, 1.00, 1.15, 20_000),
+        (16, 10, 1.15, 1.15, 1.15, 1.15, 100_000),
+    ])  # fmt: skip
+    _open(broker, bot, "buy", stop=0.90, target=1.10)
+    assert _exits(broker, bot) == []
+    assert bot.positions["CCC"].qty == 1000
+
+
+def test_a_stop_still_fires_on_a_position_held_longer_than_five_days(setup):
+    """The stop scan looked at five calendar days from the entry and no further, so the
+    yardstick's ten-session holds lost their stop after the first week. Found 23 Sep."""
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.99, 1.00, 50_000),
+        (16, 10, 1.00, 1.00, 1.00, 1.00, 100_000),
+    ])  # fmt: skip
+    _open(broker, acct, "buy", stop=0.92, target=None)
+    later = date(2026, 1, 13)  # a week on, the same weekday
+    _bars_on(broker, "CCC", later, [
+        (10, 0, 0.99, 0.99, 0.98, 0.98, 50_000),
+        (10, 5, 0.97, 0.97, 0.90, 0.91, 50_000),
+    ])  # fmt: skip
+    out = _exits(broker, acct, now=datetime(2026, 1, 13, 11, 0, tzinfo=SYD))
+    assert len(out) == 1 and out[0].reason.startswith("STOP")
+    assert out[0].fill_minute.startswith("2026-01-13T10:05")
+
+
+def _legacy(acct, target=0.90):
+    """A position as the 23 Sep code wrote it: a target, and nothing to say it is honoured."""
+    from asxbot.arena.accounts import Position
+
+    acct.positions["CCC"] = Position(
+        ticker="CCC", qty=3000, avg_cost=0.8308, opened_at="2026-01-06T10:29+11:00",
+        stop=0.755, target=target, opened_by="agent", hold="overnight",
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("next_open", [0.93, 0.88])
+def test_a_position_already_past_its_target_exits_at_the_first_open(setup, next_open):
+    """A1M on 23 Sep: target 0.90, last 0.917, opened before targets were honoured. It is
+    not closed at some bar in the past; it exits at the first open after the code sees it -
+    even when that open is back below the target (Rick, 23 Sep)."""
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 29, 0.83, 0.83, 0.83, 0.83, 50_000),
+        (11, 0, 0.85, 0.92, 0.85, 0.91, 50_000),  # passed the target while nothing acted
+        (16, 10, 0.917, 0.917, 0.917, 0.917, 100_000),
+    ])  # fmt: skip
+    _legacy(acct)
+    evening = datetime(2026, 1, 6, 19, 30, tzinfo=SYD)
+    assert _exits(broker, acct, now=evening) == []  # no exit in the past
+    saved = broker.store.open(acct.name, "asx_announcements", "agent", 1, 10_000.0)
+    pos = saved.positions["CCC"]
+    assert pos.target_exit_at_open and pos.target_from.startswith("2026-01-06T19:30")
+
+    _bars_on(broker, "CCC", DAY2, [
+        (10, 0, next_open, next_open + 0.01, next_open - 0.01, next_open, 80_000),
+        (10, 5, 0.95, 0.96, 0.94, 0.95, 10_000),
+    ])  # fmt: skip
+    out = _exits(broker, acct, now=datetime(2026, 1, 7, 10, 30, tzinfo=SYD))
+    assert len(out) == 1 and out[0].reason.startswith("TARGET")
+    assert out[0].fill_minute.startswith("2026-01-07T10:00")
+    assert out[0].avg_price == pytest.approx(next_open)
+    assert "CCC" not in acct.positions
+
+
+def test_a_position_short_of_its_target_is_honoured_from_then_on_not_before(setup):
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 29, 0.83, 0.83, 0.83, 0.83, 50_000),
+        (11, 0, 0.85, 0.92, 0.85, 0.91, 50_000),  # touched the target, then fell back
+        (16, 10, 0.86, 0.86, 0.86, 0.86, 100_000),
+    ])  # fmt: skip
+    _legacy(acct)
+    assert _exits(broker, acct, now=datetime(2026, 1, 6, 19, 30, tzinfo=SYD)) == []
+    assert not acct.positions["CCC"].target_exit_at_open
+    _bars_on(broker, "CCC", DAY2, [
+        (10, 0, 0.86, 0.87, 0.85, 0.86, 80_000),
+        (10, 5, 0.87, 0.90, 0.87, 0.89, 10_000),
+    ])  # fmt: skip
+    out = _exits(broker, acct, now=datetime(2026, 1, 7, 10, 30, tzinfo=SYD))
+    assert len(out) == 1 and out[0].reason.startswith("TARGET")
+    assert out[0].fill_minute.startswith("2026-01-07T10:05")
+    assert out[0].avg_price == pytest.approx(0.90)
+
+
+def test_a_target_on_the_wrong_side_of_the_entry_is_refused(setup):
+    cfg, broker, pb, acct = setup
+    with pytest.raises(ArenaOrderRefused, match="target"):
+        _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20,
+               stop=1.15, target=1.10)  # fmt: skip
+    with pytest.raises(ArenaOrderRefused, match="target"):
+        _place(cfg, broker, acct, pb, ticker="BBB", side="short", qty=500, limit=1.20,
+               stop=1.25, target=1.30)  # fmt: skip
+    o = _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20,
+               stop=1.15, target=1.30)  # fmt: skip
+    assert o.target == 1.30
+
+
+def test_the_decider_is_told_its_target_is_a_real_take_profit(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    _legacy(acct)
+    ctx = {"dossier": {}, "reaction": {}, "text": ""}
+    packet = W.decider_packet(_FakeArena(cfg, broker, acct), pb, acct, _ann(), ctx, "s", _AT)
+    assert "the STOP and the TARGET are both enforced by code" in packet
+    assert "the target is a real take-profit" in packet
+    assert '"target": 0.9' in packet  # the open position shows the target it carries
+
+
+def test_target_hits_are_alerted_as_targets_not_stops(setup, monkeypatch):
+    cfg, broker, pb, acct = setup
+    broker.notifier, sent = _capture(cfg, monkeypatch)
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.99, 1.00, 50_000),
+        (10, 2, 1.01, 1.10, 1.00, 1.08, 20_000),
+    ])  # fmt: skip
+    _open(broker, acct, "buy", stop=0.90, target=1.10)
+    _exits(broker, acct)
+    assert "TARGET HIT" in sent[-1] and "STOP" not in sent[-1]
+
+
+def test_a_book_without_targets_is_written_as_before(setup):
+    """The new position fields are written only when set, so a book this version saves
+    still loads in a process started before they existed."""
+    import json as _json
+
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [(10, 0, 1.00, 1.01, 0.99, 1.00, 50_000)])
+    _open(broker, acct, "buy", stop=0.90, target=None)
+    raw = _json.loads(broker.store.path(acct.name).read_text(encoding="utf-8"))
+    assert "target_from" not in raw["positions"]["CCC"]
+    assert "target_exit_at_open" not in raw["positions"]["CCC"]

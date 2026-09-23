@@ -53,6 +53,7 @@ def gather(arena: Arena, day: date | None = None) -> dict:
                         "last": round(px, 4),
                         "open_pnl": round((px - p.avg_cost) * p.qty, 2),
                         "stop": p.stop,
+                        "target": p.target,
                         "opened_at": p.opened_at,
                         "thesis": p.thesis,
                         "by": p.opened_by,

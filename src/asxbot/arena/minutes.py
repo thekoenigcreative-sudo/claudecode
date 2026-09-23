@@ -171,19 +171,29 @@ class MinuteBars:
                 yield ts.to_pydatetime(), bar, _price_of(bar, self.price_field)
 
     def first_trigger(
-        self, code: str, since: datetime, level: float, direction: str
+        self,
+        code: str,
+        since: datetime,
+        level: float,
+        direction: str,
+        until: date | None = None,
     ) -> tuple[datetime, float] | None:
         """First traded minute at or after `since` whose range touches `level`.
 
         direction 'down': the bar's low reached the level (a long's stop, a short's target).
-        direction 'up':   the bar's high reached it.
+        direction 'up':   the bar's high reached it (a short's stop, a long's target).
 
         Returns (minute, fill price) with the gap rule applied - the level itself, or the
-        bar's open when the bar opened straight through it, whichever is worse for us.
+        bar's open when the bar opened straight through it. For a stop that is the worse of
+        the two; for a target it is the better, as a resting limit order would fill.
         None if the level has not been touched yet.
+
+        `until` is the last day to look at. Without it only five calendar days from `since`
+        are scanned, which is what every caller got until 2026-09-23 - so a stop on a
+        position held longer than that (the yardstick holds ten sessions) went dead.
         """
         target = since.astimezone(SYD).replace(second=0, microsecond=0)
-        for day_offset in range(0, 5):
+        for day_offset in range(0, _days_to_scan(target, until)):
             day = (target + timedelta(days=day_offset)).date()
             df = self.fetch(code, day)
             if df is None or not len(df):
@@ -204,6 +214,34 @@ class MinuteBars:
             return ts.to_pydatetime(), float(price)
         return None
 
+    def first_open(
+        self, code: str, since: datetime, until: date | None = None
+    ) -> tuple[datetime, float] | None:
+        """The first traded minute at or after `since`, and its open. None if none yet."""
+        target = since.astimezone(SYD).replace(second=0, microsecond=0)
+        for day_offset in range(0, _days_to_scan(target, until)):
+            day = (target + timedelta(days=day_offset)).date()
+            df = self.fetch(code, day)
+            if df is None or not len(df):
+                continue
+            window = df[(df.index >= target) & (df["volume"] > 0)]
+            if len(window):
+                return window.index[0].to_pydatetime(), float(window.iloc[0]["open"])
+        return None
+
+    def price_at(self, code: str, when: datetime, days_back: int = 7) -> float | None:
+        """The close of the last traded minute at or before `when`. None if none is known."""
+        at = when.astimezone(SYD)
+        for day_offset in range(0, days_back + 1):
+            day = (at - timedelta(days=day_offset)).date()
+            df = self.fetch(code, day)
+            if df is None or not len(df):
+                continue
+            traded = df[(df.index <= at) & (df["volume"] > 0)]
+            if len(traded):
+                return float(traded["close"].iloc[-1])
+        return None
+
     def last_price(self, code: str, day: date | None = None) -> float | None:
         """Last traded price of a day, for marking positions to market."""
         day = day or date.today()
@@ -214,6 +252,13 @@ class MinuteBars:
         if not len(traded):
             return None
         return float(traded["close"].iloc[-1])
+
+
+def _days_to_scan(start: datetime, until: date | None) -> int:
+    """Calendar days from `start` through `until` inclusive; five when `until` is unset."""
+    if until is None:
+        return 5
+    return max(1, (until - start.date()).days + 1)
 
 
 def _price_of(bar, field: str) -> float:

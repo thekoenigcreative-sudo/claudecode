@@ -107,7 +107,7 @@ def cmd_positions(args) -> int:
                 print(
                     f"  {t} {p.qty:+d} @ {p.avg_cost:.4f}  now {px:.4f}  "
                     f"open P&L {(px - p.avg_cost) * p.qty:+,.2f}  stop {p.stop}  "
-                    f"opened {p.opened_at} by {p.opened_by}"
+                    f"target {p.target}  opened {p.opened_at} by {p.opened_by}"
                 )
             pend = [o for o in acct.orders.values() if o.status == "pending_fill"]
             for o in pend:
@@ -194,8 +194,8 @@ def cmd_resolve(args) -> int:
     for pb in arena.playbooks():
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
-            for r in arena.broker.apply_stops(acct, now):
-                print(f"{acct.name} STOP {r.order_id}: {r.status} - {r.detail}")
+            for r in arena.broker.apply_exits(acct, now):
+                print(f"{acct.name} EXIT {r.order_id}: {r.status} - {r.detail}")
                 any_change = True
             for r in arena.broker.resolve_pending(acct, now):
                 print(f"{acct.name} {r.order_id}: {r.status} - {r.detail}")
@@ -343,8 +343,8 @@ def cmd_fake(args) -> int:
         acct = arena.account(pb, kind)
         for r in arena.broker.resolve_pending(acct, real_now):
             print(f"{acct.name} {r.order_id}: {r.status} - {r.detail}")
-        for r in arena.broker.apply_stops(acct, real_now):
-            print(f"{acct.name} STOP {r.order_id}: {r.status} - {r.detail}")
+        for r in arena.broker.apply_exits(acct, real_now):
+            print(f"{acct.name} EXIT {r.order_id}: {r.status} - {r.detail}")
         acct = arena.account(pb, kind)
         for t, pos in acct.positions.items():
             print(f"{acct.name} holds {t} {pos.qty:+d} @ {pos.avg_cost:.4f} stop {pos.stop}")

@@ -89,6 +89,13 @@ End every reply with a single JSON block and nothing after it:
 
 To pass: `{"action": "pass", "why": "..."}`.
 
+**The stop and the target are both enforced by code**, from the minute after your entry. A
+long is sold when a minute bar's low reaches the stop or its high reaches the target; a
+short is the mirror image. The target fills at the target, or at the bar's open if the price
+gapped through it; if one bar reaches both, the stop is taken. So the target is a real
+take-profit that closes the whole position: set one only if you want to be out there, and
+use `null` if you do not.
+
 If the block is missing or unparseable, code treats it as a **pass**. A malformed answer
 therefore costs a trade and never causes one — but write it properly.
 

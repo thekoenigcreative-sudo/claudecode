@@ -296,6 +296,7 @@ def decider_packet(
             "qty": p.qty,
             "avg_cost": round(p.avg_cost, 4),
             "stop": p.stop,
+            "target": p.target,
             "opened": p.opened_at,
         }
         for t, p in acct.positions.items()
@@ -309,6 +310,7 @@ def decider_packet(
             "qty": o.qty,
             "limit": o.limit,
             "stop": o.stop,
+            "target": o.target,
             "minutes_waiting": _minutes_waiting(o.decision_at, now),
         }
         for o in acct.orders.values()
@@ -363,6 +365,16 @@ WHAT THE CODE WILL ALLOW
   - gross exposure at most {lvl.leverage(pb.market)}x equity
   - long anything in the universe; SHORT only ASX 200 stocks
   - every opening trade needs a stop, and longs need the stop below the entry
+  - the STOP and the TARGET are both enforced by code, from the minute after your entry.
+    A long is sold when a minute bar's low reaches the stop, or when a bar's high reaches
+    the target; a short is covered when a bar's high reaches the stop, or its low reaches
+    the target. The stop fills at the stop (or the bar's open if the price gapped through
+    it), less slippage. The target fills at the target (or the bar's open if the price
+    gapped through it). If one bar reaches both, the stop is taken.
+  - so the target is a real take-profit: the whole position is closed there. Set one only
+    if you want to be out at that price. A long's target must be above the entry, a
+    short's below it. null means no target: the position is held until the stop, the
+    holding period, or your own exit.
   - no adding to a losing position
   - no second opening order in a ticker that already has one waiting to fill
   - holding period for this playbook: {holding}
@@ -387,7 +399,7 @@ Then end your reply with a single JSON block and nothing after it:
   "qty": <whole number of shares>,
   "limit": <your limit price>,
   "stop": <your stop price>,
-  "target": <your target price, or null>,
+  "target": <your take-profit price - code closes the whole position there - or null>,
   "confidence_pct": <0-100>,
   "expected_move_pct": <your expected move>,
   "hold": "intraday" | "overnight",
@@ -657,7 +669,7 @@ def handle_announcement(
         )  # fmt: skip
         out["order"] = {
             "order_id": o.order_id, "status": o.status, "ticker": o.ticker, "qty": o.qty,
-            "limit": o.limit, "stop": o.stop,
+            "limit": o.limit, "stop": o.stop, "target": o.target,
         }  # fmt: skip
         log.info("agent order %s recorded for %s", o.order_id, o.ticker)
         if alert:
@@ -786,10 +798,10 @@ def watch(
         except Exception as e:  # noqa: BLE001
             log.exception("the yardstick's entries failed: %s", e)
 
-        # Fills and stops, every cycle.
+        # Fills, stops and targets, every cycle.
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
-            arena.broker.apply_stops(acct, now)
+            arena.broker.apply_exits(acct, now)
             arena.broker.resolve_pending(acct, now)
 
         # Keep the short universe current. Stale means the arena starts refusing shorts in
@@ -1180,7 +1192,7 @@ the 16:10 auction, and a position is only kept overnight if you write a reason f
 POSITION
   {ticker} {qty:+d} at {avg_cost:.4f}, opened {opened_at}
   current price {price:.4f}   open P&L {open_pnl:+,.2f} ({open_pnl_pct:+.2f}%)
-  stop {stop}   your thesis when you opened it: {thesis}
+  stop {stop}   target {target}   your thesis when you opened it: {thesis}
 
 TODAY
   the stock's move today: {move_pct:+.2f}%
@@ -1247,7 +1259,8 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
             level=pb.level.number, level_name=pb.level.name, ticker=ticker, qty=pos.qty,
             avg_cost=pos.avg_cost, opened_at=pos.opened_at, price=price, open_pnl=open_pnl,
             open_pnl_pct=(price / pos.avg_cost - 1) * 100 * (1 if pos.qty > 0 else -1),
-            stop=pos.stop, thesis=pos.thesis or "(none recorded)", move_pct=move,
+            stop=pos.stop, target=pos.target, thesis=pos.thesis or "(none recorded)",
+            move_pct=move,
             day_pct=arena.broker.day_loss_pct(acct, now),
         )  # fmt: skip
 

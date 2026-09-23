@@ -31,7 +31,7 @@ class Position:
     avg_cost: float
     opened_at: str
     stop: float | None = None
-    target: float | None = None
+    target: float | None = None  # a take-profit, honoured by the broker for agent accounts
     thesis: str = ""
     opened_by: str = ""  # agent | bot
     model: str = ""  # the model that made the call, for the audit trail
@@ -40,13 +40,25 @@ class Position:
     hold: str = "intraday"  # intraday | overnight
     hold_reason: str = ""  # required, in writing, to keep a Level 1 position overnight
     hold_asked_on: str = ""  # the day the pre-close sweep last asked about this position
+    # The minute the take-profit target is honoured from (checked from the minute after it).
+    # A position opened before targets were honoured (2026-09-24) gets this the first time
+    # the broker sees it; if it was already past its target then, it exits at the first open.
+    target_from: str = ""
+    target_exit_at_open: bool = False
 
     @property
     def is_short(self) -> bool:
         return self.qty < 0
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Written only when set, so a book saved by this version still loads in a process
+        # started before these fields existed (as ArenaOrder does with stop_pct).
+        if not d["target_from"]:
+            del d["target_from"]
+        if not d["target_exit_at_open"]:
+            del d["target_exit_at_open"]
+        return d
 
 
 @dataclass

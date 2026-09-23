@@ -4,7 +4,7 @@ Sent the moment it happens, one short message each:
   * a trade DECIDED - by the agent or the yardstick bot - and the order id the broker gave it;
   * a trade the hard limits REFUSED;
   * every FILL, with the fill price and the stop the position now carries;
-  * every STOP that fires, and every position CLOSED, with the result.
+  * every STOP that fires, every TARGET hit, and every position CLOSED, with the result.
 
 Sent as ONE DIGEST PER HOUR, every hour the watcher is up, whether or not anything passed:
   * a counts line - seen, screened (split by test), read, passed, traded;
@@ -186,11 +186,14 @@ class Notifier:
     def filled(self, o, closed: bool, stop_now: float | None) -> None:
         kind = account_kind(o.account) or who(o.placed_by)
         is_stop = o.placed_by == "code" and o.reason.startswith("STOP")
+        is_target = o.placed_by == "code" and o.reason.startswith("TARGET")
         at = o.fill_minute[11:16] if o.fill_minute else "?"
         if o.side in ("sell", "cover"):
             result = f"result {o.realised:+,.2f} before fees (this leg's fee {o.commission:,.2f})"
             if is_stop:
                 head = f"🛑 <b>{kind} STOP FIRED</b> {escape(o.ticker)}"
+            elif is_target:
+                head = f"🎯 <b>{kind} TARGET HIT</b> {escape(o.ticker)}"
             else:
                 head = f"🔵 <b>{kind} {'CLOSED' if closed else 'REDUCED'}</b> {escape(o.ticker)}"
             self.send(

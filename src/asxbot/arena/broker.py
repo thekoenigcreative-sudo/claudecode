@@ -7,7 +7,8 @@ What this broker does:
   * takes an order and records it `pending_fill` with the decision timestamp;
   * later fills it from the minute bar covering that minute (see minutes.py), capped at
     the order's limit - a limit the market never reached rests, then expires at the close;
-  * enforces stops from the minute bars, with the gap rule;
+  * enforces stops from the minute bars, with the gap rule, and - for the agent's accounts -
+    take-profit targets the same way, mirrored;
   * charges IBKR brokerage both ways, adverse slippage (which stands in for the spread),
     and a daily borrow cost on short positions;
   * marks every account to market daily, which is what the daily loss limit and the
@@ -203,6 +204,7 @@ class ArenaBroker:
                     opened_at=minute.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
                     thesis=o.reason, opened_by=o.placed_by, model=o.model,
                     last_borrow_day=minute.date().isoformat(), hold=o.hold,
+                    target_from=_target_from(o, minute),
                 )  # fmt: skip
             else:
                 total = pos.qty + qty
@@ -210,6 +212,7 @@ class ArenaBroker:
                 pos.qty = total
                 if o.stop is not None:
                     pos.stop = o.stop
+                _move_target(pos, o, minute)
         elif o.side == "short":
             acct.cash += value - fee
             if pos is None:
@@ -218,6 +221,7 @@ class ArenaBroker:
                     opened_at=minute.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
                     thesis=o.reason, opened_by=o.placed_by, model=o.model,
                     last_borrow_day=minute.date().isoformat(), hold=o.hold,
+                    target_from=_target_from(o, minute),
                 )  # fmt: skip
             else:
                 total = pos.qty - qty  # more negative
@@ -225,6 +229,7 @@ class ArenaBroker:
                 pos.qty = total
                 if o.stop is not None:
                     pos.stop = o.stop
+                _move_target(pos, o, minute)
         elif o.side == "sell":
             if pos is None or pos.qty < qty:
                 o.status = "rejected"
@@ -270,53 +275,151 @@ class ArenaBroker:
         self._notify("filled", o, after is None, after.stop if after is not None else None)
         return FillOutcome(o.order_id, "filled", basis)
 
-    # -- stops --------------------------------------------------------------
-    def apply_stops(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
-        """Trigger any stop the minute bars have already reached. Always on, never skipped.
+    # -- stops and targets ----------------------------------------------------
+    def apply_exits(self, acct: Account, now: datetime | None = None) -> list[FillOutcome]:
+        """Trigger any stop or take-profit target the minute bars have already reached.
 
-        A stop is checked from the minute AFTER the position opened. The fill is the stop
-        price, or the bar's open when the bar gapped straight through it - whichever is worse.
-
+        Always on, never skipped. Both are checked from the minute AFTER the position opened.
         The entry bar is excluded because the entry filled at that bar's close (the default
         `arena.fill.minute_price`), so its high and low happened before the position existed.
-        Until 2026-09-23 the scan included it: a bar that dipped 8% and recovered to close
-        at the fill price registered as both the entry and the stop, for two lots of
+        Until 2026-09-23 the stop scan included it: a bar that dipped 8% and recovered to
+        close at the fill price registered as both the entry and the stop, for two lots of
         brokerage and an instant loss on a move the position never saw.
+
+        Stop: a long exits when a bar's low reaches it, a short when a bar's high does. The
+        fill is the stop, or the bar's open when the bar gapped straight through it -
+        whichever is worse - then slippage.
+
+        Target, agent accounts only (the yardstick's frozen rule has no target, so a bot
+        position's target is never honoured): the mirror image. A long exits when a bar's
+        high reaches it, a short when a bar's low does. The fill is the target, or the bar's
+        open when the price gapped through it - whichever is better, as a resting limit
+        fills - with no slippage, because a limit never fills past its price. Until
+        2026-09-24 the target was stored and never acted on, though the decider set it
+        believing it was a take-profit.
+
+        One bar reaching both: the stop is taken. A minute bar does not say which came
+        first, so the arena assumes the worse.
+
+        A position opened before targets were honoured has its target honoured from the
+        first time this runs on it; if the price is already past the target then, it exits
+        at the first available open rather than at some bar in the past (_arm_target).
         """
         now = now or datetime.now(SYD)
         out: list[FillOutcome] = []
+        armed = False
         for ticker, pos in list(acct.positions.items()):
-            if pos.stop is None or pos.qty == 0:
+            if pos.qty == 0:
                 continue
-            since = datetime.fromisoformat(pos.opened_at)
-            if since.tzinfo is None:
-                since = since.replace(tzinfo=SYD)
-            since += timedelta(minutes=1)  # opened_at is the entry bar's minute; skip it
-            direction = "down" if pos.qty > 0 else "up"
-            hit = self.minutes.first_trigger(ticker, since, float(pos.stop), direction)
-            if hit is None:
-                continue
-            ts, raw = hit
-            adv = self.adv_lookup(ticker)
-            slip = self.costs.slippage_pct(abs(pos.qty) * raw, adv)
-            side = "sell" if pos.qty > 0 else "cover"
-            px = raw * (1 - slip) if side == "sell" else raw * (1 + slip)
-            oid = self.store.next_order_id()
-            o = ArenaOrder(
-                order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
-                limit=round(px, 4), decision_at=ts.isoformat(timespec="seconds"),
-                reason=f"STOP hit at {pos.stop:.3f}", model="code (stop, not the agent)",
-                placed_by="code",
-            )  # fmt: skip
-            acct.orders[oid] = o
-            basis = (
-                f"stop {pos.stop:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
-                f"filled at {raw:.4f} after the gap rule, then slippage"
-            )
-            out.append(self._apply_fill(acct, o, px, ts, basis))
-        if out:
+            since = _minute_after(pos.opened_at)  # opened_at is the entry bar's minute
+            long = pos.qty > 0
+            stop_hit = None
+            if pos.stop is not None:
+                stop_hit = self.minutes.first_trigger(
+                    ticker, since, float(pos.stop), "down" if long else "up", until=now.date()
+                )
+            target_hit = None
+            if acct.kind == "agent" and pos.target is not None:
+                if not pos.target_from:
+                    self._arm_target(acct, pos, now)
+                    armed = True
+                t_since = max(since, _minute_after(pos.target_from))
+                if pos.target_exit_at_open:
+                    target_hit = self.minutes.first_open(ticker, t_since, until=now.date())
+                else:
+                    target_hit = self.minutes.first_trigger(
+                        ticker, t_since, float(pos.target), "up" if long else "down",
+                        until=now.date(),
+                    )  # fmt: skip
+            if stop_hit is not None and (target_hit is None or stop_hit[0] <= target_hit[0]):
+                out.append(self._exit_at_stop(acct, ticker, pos, *stop_hit))
+            elif target_hit is not None:
+                out.append(self._exit_at_target(acct, ticker, pos, *target_hit))
+        if out or armed:
             self.store.save(acct)
         return out
+
+    def _exit_at_stop(
+        self, acct: Account, ticker: str, pos: Position, ts: datetime, raw: float
+    ) -> FillOutcome:
+        adv = self.adv_lookup(ticker)
+        slip = self.costs.slippage_pct(abs(pos.qty) * raw, adv)
+        side = "sell" if pos.qty > 0 else "cover"
+        px = raw * (1 - slip) if side == "sell" else raw * (1 + slip)
+        oid = self.store.next_order_id()
+        o = ArenaOrder(
+            order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
+            limit=round(px, 4), decision_at=ts.isoformat(timespec="seconds"),
+            reason=f"STOP hit at {pos.stop:.3f}", model="code (stop, not the agent)",
+            placed_by="code",
+        )  # fmt: skip
+        acct.orders[oid] = o
+        basis = (
+            f"stop {pos.stop:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
+            f"filled at {raw:.4f} after the gap rule, then slippage"
+        )
+        return self._apply_fill(acct, o, px, ts, basis)
+
+    def _exit_at_target(
+        self, acct: Account, ticker: str, pos: Position, ts: datetime, px: float
+    ) -> FillOutcome:
+        side = "sell" if pos.qty > 0 else "cover"
+        if pos.target_exit_at_open:
+            reason = (
+                f"TARGET {pos.target:.3f} already passed when targets began to be honoured "
+                f"({pos.target_from}); exit at the first open"
+            )
+            basis = f"the open of the {ts:%Y-%m-%d %H:%M} minute bar, {px:.4f}; no slippage"
+        else:
+            reason = f"TARGET reached at {pos.target:.3f}"
+            basis = (
+                f"target {pos.target:.3f} reached in the {ts:%Y-%m-%d %H:%M} minute bar; "
+                f"filled at {px:.4f} (the target, or the bar's open if it gapped through); "
+                "no slippage on a limit"
+            )
+        oid = self.store.next_order_id()
+        o = ArenaOrder(
+            order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
+            limit=round(px, 4), decision_at=ts.isoformat(timespec="seconds"),
+            reason=reason, model="code (target, not the agent)", placed_by="code",
+        )  # fmt: skip
+        acct.orders[oid] = o
+        return self._apply_fill(acct, o, px, ts, basis)
+
+    def _arm_target(self, acct: Account, pos: Position, now: datetime) -> None:
+        """Start honouring the target of a position opened before targets were honoured.
+
+        From this minute on it is checked like any other. If the last traded price is
+        already past it, the position exits at the first available open: the target was
+        reached while nothing was acting on it, and exiting at an earlier bar would be a
+        trade in the past.
+        """
+        at = now.astimezone(SYD).replace(second=0, microsecond=0)
+        target = float(pos.target)
+        px = self.minutes.price_at(pos.ticker, at)
+        pos.target_from = at.isoformat(timespec="minutes")
+        pos.target_exit_at_open = px is not None and (px >= target if pos.qty > 0 else px <= target)
+        if px is None:
+            log.warning(
+                "arena %s %s: target %.4f honoured from %s; no recent price is known, so "
+                "it is checked from here like any other",
+                acct.name, pos.ticker, target, pos.target_from,
+            )  # fmt: skip
+        else:
+            log.info(
+                "arena %s %s: target %.4f honoured from %s; last price %.4f%s",
+                acct.name, pos.ticker, target, pos.target_from, px,
+                " is already past it, so it exits at the first open"
+                if pos.target_exit_at_open else "",
+            )  # fmt: skip
+        self.events.append(
+            "arena_orders",
+            {
+                "account": acct.name, "ticker": pos.ticker, "event": "target_armed",
+                "target": target, "target_from": pos.target_from, "last_price": px,
+                "exit_at_open": pos.target_exit_at_open,
+            },
+        )  # fmt: skip
 
     # -- carrying costs and marks -------------------------------------------
     def accrue_borrow(self, acct: Account, today: date | None = None) -> float:
@@ -415,6 +518,28 @@ def _stop_rescaled_to_fill(o: ArenaOrder, price: float) -> ArenaOrder:
     ).strip("; ")
     o.stop = round(new_stop, 4)
     return o
+
+
+def _minute_after(iso_minute: str) -> datetime:
+    """The minute after a stored minute: where a stop or target check begins."""
+    t = datetime.fromisoformat(iso_minute)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=SYD)
+    return t + timedelta(minutes=1)
+
+
+def _target_from(o: ArenaOrder, minute: datetime) -> str:
+    """A new position's target is honoured from its entry minute (checked from the next)."""
+    return minute.isoformat(timespec="minutes") if o.target is not None else ""
+
+
+def _move_target(pos: Position, o: ArenaOrder, minute: datetime) -> None:
+    """An add that names a target moves the position's target, as one naming a stop does."""
+    if o.target is None:
+        return
+    pos.target = o.target
+    pos.target_from = minute.isoformat(timespec="minutes")
+    pos.target_exit_at_open = False
 
 
 def _session_over(decided: datetime, now: datetime) -> bool:

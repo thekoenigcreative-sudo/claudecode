@@ -69,7 +69,7 @@ def arena_place_order(
     req = {
         "account": acct.name, "playbook": playbook.key, "level": playbook.level.number,
         "ticker": ticker, "side": side, "qty": qty, "limit": limit, "stop": stop,
-        "placed_by": placed_by, "model": model,
+        "target": target, "placed_by": placed_by, "model": model,
     }  # fmt: skip
 
     def refuse(why: str) -> ArenaOrderRefused:
@@ -196,6 +196,12 @@ def arena_place_order(
             raise refuse(f"a long's stop ({stop}) must be below the entry limit ({limit})")
         if side == "short" and stop <= limit:
             raise refuse(f"a short's stop ({stop}) must be above the entry limit ({limit})")
+        # The target is a take-profit the broker acts on. One on the wrong side of the entry
+        # would be reached in the next minute and close the trade for two lots of brokerage.
+        if target is not None and side == "buy" and target <= limit:
+            raise refuse(f"a long's target ({target}) must be above the entry limit ({limit})")
+        if target is not None and side == "short" and target >= limit:
+            raise refuse(f"a short's target ({target}) must be below the entry limit ({limit})")
 
         prices = broker.prices(acct)
         equity = acct.equity(prices)
