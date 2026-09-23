@@ -62,6 +62,102 @@ backtest:
   small_sample_trades: 30     # flag any result resting on fewer trades than this
   data_label_yfinance: "plumbing test - not a go/no-go"
 
+# ---------------------------------------------------------------------------
+# SHORT-SIDE STRATEGIES S1 and S2. Written and committed 2026-09-23 BEFORE any run, so the
+# history shows the rules came first. Never change them after seeing a result: a change is
+# a new dated variant, and counts as another trial (STRATEGIES.md rule 4).
+#
+# Why shorts: the decider's two strongest ideas on 23 Sep were shorts (NUF, TUA); in A's type
+# split, capital-raising announcements averaged -0.97% at $20,000 and rose afterwards about a
+# third of the time (reports/phase1_20k.md); and short-selling risk predicts lower returns in
+# Australia only outside the top 200, where shares usually cannot be borrowed - so both are
+# tested inside the ASX 200 only, the arena's short universe.
+#
+# Every number below is either A's frozen number reused (so none is chosen here) or stated
+# with its reason. Known limits, stated before the run: the ASX 200 list is today's
+# membership applied to every past year (survivorship), and S2's idea came from slicing the
+# in-sample data, so an in-sample pass is not independent evidence - only the holdout can
+# confirm it.
+# ---------------------------------------------------------------------------
+strategies:
+  shorts_common:
+    frozen_on: "2026-09-23"
+    universe: asx200            # data/universe/asx200_members.csv as of 2026-09-23 (Wikipedia
+                                # constituent list), applied to every past year: survivorship
+    turnover_floor_aud: 250000  # A's floor: median daily dollar turnover over the prior window
+    turnover_window_days: 20
+    starting_aud: 20000         # capital.starting_aud
+    max_positions: 4            # capital.max_positions; each short sized at equity / 4
+    max_gross_short_x_equity: 1.0   # no leverage: no new short if open short value + the new
+                                    # one would exceed equity (Level 1's 1.0x)
+    min_order_aud: 500          # limits.min_order_aud
+    # Costs: A's brokerage and slippage model (costs:), adverse both ways, at 1x and 2x.
+    slippage_multipliers: [1, 2]
+    # Borrow fee. IBKR Australia's rate for ASX 200 shares could not be sourced: its pricing
+    # pages refuse automated reading, and the only figure found is IBKR's illustrative 0.25%
+    # a year for a US large cap. So both runs below are ASSUMPTIONS, not sourced numbers.
+    borrow_pct_annual: [1.0, 5.0]
+    borrow_accrual: "daily, rate x short value at the close x calendar days / 365"
+    short_proceeds_interest_pct: 0.0   # none credited: conservative, and A's engine earns none
+                                       # on idle cash either
+    # Prices are dividend-adjusted (yfinance auto_adjust), so a short pays each dividend
+    # implicitly, as it would pay the manufactured dividend on a real borrow.
+    stop_check: close           # as A: the stop is tested on the close, covered at the next open
+    in_sample_only: true        # stops at the holdout start, the same boundary as Phase 1
+
+  S1_earnings_miss:
+    frozen_on: "2026-09-23"
+    side: short
+    # Trigger: a price-sensitive announcement in the mechanical "results" headline class
+    # (announcements/model.py) - the class A's type split used - reacting on session t: the
+    # release day if released before 10:00 Sydney, else the next session (A's mapping).
+    announcement_type: results
+    price_sensitive_only: true
+    # Day-0 fall: t's close-to-close return minus the ASX 200's, at or below -5%. A measures
+    # its gap at the open; a miss is judged on the whole day's reaction, which is known at
+    # the close, when the rule confirms. 5% and 3x are A's numbers, sign reversed.
+    fall_measure: close_to_close_vs_index
+    fall_pct_vs_index: 5.0
+    volume_multiple: 3.0        # t's volume / mean of the prior 20 sessions
+    volume_window_days: 20
+    entry: next_open            # confirm at t's close, short at t+1's open
+    hold_days: 10               # A's hold: cover at the open 10 sessions after entry. A
+                                # longer drift horizon is plausible; trying one after seeing
+                                # this result would be tuning, so it would be a new variant.
+    stop_pct: 8.0               # A's 8%, mirrored: close above entry fill x 1.08 -> cover
+                                # at the next open
+    priority: highest_volume_multiple   # A's priority when there are more events than slots
+
+  S2_placement_supply:
+    frozen_on: "2026-09-23"
+    side: short
+    # Trigger: a price-sensitive announcement whose headline names a placement. \b keeps out
+    # "replacement" (58 ASX 200 headlines); debt placements add no shares, so headlines
+    # naming debt, notes, bonds, hybrids or a US private placement are excluded. One event
+    # per company per reaction session (A's mapping). Chosen from headline text alone.
+    headline_pattern: '\bplacement\b'
+    headline_exclude: '\b(debt|notes?|bonds?|hybrids?|uspp)\b|us private placement'
+    price_sensitive_only: true
+    # Entry: the first open after the release - the reaction session's open. Nothing from
+    # that session is needed to decide, so there is no look-ahead.
+    entry: reaction_session_open
+    # Cover: the thesis is the supply released when placement shares quote. The archive
+    # has quotation notices (Appendix 2A, "Application for quotation of securities") only
+    # from December 2019, so:
+    #   * quotation found: the first such notice by the same company released on or after
+    #     the placement's reaction session, within 10 sessions of it. Its reaction session
+    #     is the quotation day; cover at the open 5 sessions (a trading week of placees
+    #     selling) after it.
+    #   * none found - every event before 2020, and any later one without a notice: cover
+    #     at the open 10 sessions after entry (A's hold; quotation normally falls inside it).
+    quotation_pattern: 'application for quotation|appendix 2a'
+    quotation_window_sessions: 10
+    cover_after_quotation_sessions: 5
+    fallback_hold_days: 10
+    stop_pct: 8.0               # A's 8%, mirrored, checked on the close
+    priority: highest_prior_turnover    # no volume signal; most liquid first, the cheapest
+                                        # to borrow and to trade
+
 collector:
   user_agent: "asx-bot/0.1 (personal research, low volume)"
   request_pause_s: 3.0
