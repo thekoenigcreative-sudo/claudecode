@@ -47,8 +47,9 @@ These are enforced in plain code and cannot be argued with:
 ## How fills actually work here
 
 The price you are shown is about **20 minutes delayed**. Your fill is taken later, from the
-true 1-minute bar covering the minute you decided. If that minute had no trade, the fill
-walks forward to the next minute that did — never backwards.
+first true 1-minute bar that starts after your order is recorded - that is, after you have
+finished deciding, not when the data you were shown was read. If that minute had no trade,
+the fill walks forward to the next minute that did — never backwards.
 
 Two consequences worth holding on to:
 

@@ -367,6 +367,26 @@ nothing because git was told not to look.
 
 ---
 
+## 15. The decision time was the start of the loop
+
+Found the same day from one order. ARN-000002 was decided at 10:37:41 and filled at the
+close of the 10:29 bar. The watcher read the clock once, at the top of each cycle, and passed
+that `now` down to everything the cycle did, including as the decision time of every order.
+The cycle that began at 10:29:46 worked eight re-looks, each a Sonnet call and an Opus call,
+and A1M came eighth. The fill rule then took the bar containing the stamped minute, so the
+order was priced from eight minutes before it existed. The same happened, by a smaller
+margin, to anything placed after anything slow in the same cycle. The look-ahead only ever
+helps the agent, and it helps most on news that moves.
+
+The first guess was that the stamp was the time of the delayed quote. The log showed it was
+the watcher's restart time. The log settled it and the guess did not.
+
+**Rule taken from it:** a decision time is read from the clock when the order is recorded,
+by the thing that records it, never passed in. The data's time is recorded as well, as a
+separate field, so the gap is visible on every order.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not

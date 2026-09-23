@@ -141,7 +141,7 @@ def _acct_with_pending(decided_at):
     )  # fmt: skip
     acct.orders["ARN-1"] = ArenaOrder(
         order_id="ARN-1", account="t__agent", ticker="AAA", side="buy", qty=100, limit=1.0,
-        decision_at=decided_at.isoformat(timespec="seconds"),
+        decided_at=decided_at.isoformat(timespec="seconds"),
     )  # fmt: skip
     return acct
 

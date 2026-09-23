@@ -113,7 +113,7 @@ def cmd_positions(args) -> int:
             for o in pend:
                 print(
                     f"  PENDING FILL {o.order_id} {o.side} {o.qty} {o.ticker} @ {o.limit} "
-                    f"(decided {o.decision_at})"
+                    f"(decided {o.decided_at})"
                 )
             if not acct.positions and not pend:
                 print("  no positions, no pending orders")

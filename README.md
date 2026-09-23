@@ -124,10 +124,11 @@ asxbot arena reset --yes            # wipe accounts back to their opening balanc
 ### Deferred fills
 
 Free quotes are about 20 minutes delayed, so the true price at the moment of a decision is
-not knowable when the decision is made. Every arena order is therefore recorded pending
-with its decision timestamp and filled later from the 1-minute bar covering that minute. If
-the stock did not trade in that minute, the fill walks **forward** to the next minute that
-did — never back to an earlier one. Stops and exits follow the same rule, and a stop gapped
+not knowable when the decision is made. Every arena order is therefore recorded pending,
+stamped with the time it was recorded (`decided_at`) and the time its data was read
+(`data_as_of`), and filled later from the first 1-minute bar that starts strictly after
+`decided_at`. If the stock did not trade in that minute, the fill walks **forward** to the
+next minute that did — never back to an earlier one. Stops and exits follow the same rule, and a stop gapped
 through fills at the bar's open rather than at the stop price.
 
 ### The two agents

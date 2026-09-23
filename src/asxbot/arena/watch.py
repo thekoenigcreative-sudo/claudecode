@@ -195,7 +195,7 @@ def live_reaction(arena: Arena, ticker: str, now: datetime, quotes=None) -> dict
         "delayed": q.delayed,
         "warning": (
             "This quote is about 20 minutes delayed. It is what you decide on; the fill "
-            "will be taken from the true 1-minute bar covering the moment you decide."
+            "will be taken from the first true 1-minute bar after your order is recorded."
         ),
     }
 
@@ -269,8 +269,8 @@ CAN_SIZE_AND_EXIT line, with nothing after them.
 """
 
 
-def _minutes_waiting(decision_at: str, now: datetime) -> int:
-    decided = datetime.fromisoformat(decision_at)
+def _minutes_waiting(decided_at: str, now: datetime) -> int:
+    decided = datetime.fromisoformat(decided_at)
     if decided.tzinfo is None:
         decided = decided.replace(tzinfo=SYD)
     return max(0, int((now - decided).total_seconds() // 60))
@@ -312,7 +312,7 @@ def decider_packet(
             "limit": o.limit,
             "stop": o.stop,
             "target": o.target,
-            "minutes_waiting": _minutes_waiting(o.decision_at, now),
+            "minutes_waiting": _minutes_waiting(o.decided_at, now),
         }
         for o in acct.orders.values()
         if o.status == "pending_fill"
@@ -379,8 +379,8 @@ WHAT THE CODE WILL ALLOW
   - no adding to a losing position
   - no second opening order in a ticker that already has one waiting to fill
   - holding period for this playbook: {holding}
-  - your fill will be the true 1-minute bar price covering the moment you decide, so a
-    limit far away from the current price simply will not fill
+  - your fill will be the first true 1-minute bar after your order is recorded (after you
+    finish deciding), so a limit far away from the current price simply will not fill
 
 {relook_note}HOW TO DECIDE - work through this and show it:
   1. WHAT IS NEW: what does this change that the market did not already know?
@@ -497,6 +497,7 @@ def handle_announcement(
     if run_bot:
         bot_acct = arena.account(pb, "bot")
         bot = make_bot(arena, pb, quotes)
+        bot_seen_at = arena.broker.clock()  # when the bot's quote is read: its data_as_of
         decision, why = bot.on_announcement(bot_acct, a, now)
         out["bot"] = {"decision": None, "why": why}
         if decision is not None:
@@ -506,7 +507,8 @@ def handle_announcement(
                     ticker=decision.ticker, side=decision.side, qty=decision.qty,
                     limit=decision.limit, stop=decision.stop, stop_pct=decision.stop_pct,
                     reason=decision.reason, model="none (rule-based bot)", placed_by="bot",
-                    universe=arena.universe, short_universe=arena.short_universe, now=now,
+                    universe=arena.universe, short_universe=arena.short_universe,
+                    now=bot_seen_at,
                 )  # fmt: skip
                 out["bot"]["decision"] = {
                     "order_id": o.order_id, "ticker": o.ticker, "qty": o.qty, "limit": o.limit,
@@ -526,6 +528,10 @@ def handle_announcement(
     # The bot above is untouched by this: its rule was frozen with its own floor, and the
     # arena exists to compare the agent against that frozen rule.
     q_provider = quotes or arena.quote_provider()
+    # When the market data the agent decides on is read. The order it may place minutes
+    # later, after two model calls, carries this as data_as_of; its decision time is the
+    # broker's clock when it is recorded.
+    seen_at = arena.broker.clock()
     floor_aud, max_tick_pct = limits_for(cfg, pb)
     verdict = screen(
         a, q_provider.quote(a.code), arena.daily_lookup()(a.code), floor_aud, now, max_tick_pct
@@ -666,7 +672,7 @@ def handle_announcement(
             target=float(d["target"]) if d.get("target") not in (None, "") else None,
             reason=reason, model=decider.model, placed_by="agent",
             hold="overnight" if str(d.get("hold", "")).lower() == "overnight" else "intraday",
-            universe=arena.universe, short_universe=arena.short_universe, now=now,
+            universe=arena.universe, short_universe=arena.short_universe, now=seen_at,
         )  # fmt: skip
         out["order"] = {
             "order_id": o.order_id, "status": o.status, "ticker": o.ticker, "qty": o.qty,
@@ -797,9 +803,17 @@ def watch(
                 _save_handled(cfg.data_dir, now.date(), handled)
                 log.info("working announcement %s %s", a.code, a.headline[:70])
                 try:
-                    handle_announcement(arena, pb, a, now)
+                    # Its own time, not the cycle's: the announcement before it may have
+                    # spent minutes in model calls.
+                    handle_announcement(arena, pb, a, datetime.now(SYD))
                 except Exception as e:  # noqa: BLE001
                     log.exception("handling %s failed: %s", a.code, e)
+
+            # Every stage below reads the clock again. `now` from the top of the cycle can be
+            # minutes old by here - each announcement above may have cost two model calls -
+            # and until 2026-09-23 it was passed on as the decision time of every order
+            # placed later in the cycle (ARN-000002: decided 10:37:41, stamped 10:29:46).
+            now = datetime.now(SYD)
 
             # The yardstick's entries: once a day, before the open.
             try:
@@ -808,6 +822,7 @@ def watch(
                 log.exception("the yardstick's entries failed: %s", e)
 
             # Fills, stops and targets, every cycle.
+            now = datetime.now(SYD)
             for kind in ("agent", "bot"):
                 acct = arena.account(pb, kind)
                 arena.broker.apply_exits(acct, now)
@@ -830,6 +845,7 @@ def watch(
                 log.exception("the horizon exit failed: %s", e)
 
             # One second look each, once the opening auction has settled.
+            now = datetime.now(SYD)
             if now.astimezone(SYD).time() >= relook_time(cfg):
                 try:
                     again = do_relooks(arena, pb, now)
@@ -841,6 +857,7 @@ def watch(
                     log.exception("the re-look failed: %s", e)
 
             # Before the close, settle the day's Level 1 positions.
+            now = datetime.now(SYD)
             sweep_at, deadline = preclose_window(cfg)
             if sweep_at <= now.astimezone(SYD).time() < deadline:
                 for r in sweep_before_close(arena, pb, now):
@@ -1023,8 +1040,9 @@ def do_relooks(arena: Arena, pb: Playbook, now: datetime | None = None) -> list[
         try:
             out.append(
                 handle_announcement(
-                    arena, pb, a, now, run_bot=False, relook=True, prior_why=c["why"]
-                )
+                    arena, pb, a, arena.broker.clock(), run_bot=False, relook=True,
+                    prior_why=c["why"],
+                )  # the re-look before this one may have spent a minute in model calls
             )
         except Exception as e:  # noqa: BLE001
             log.exception("re-look on %s failed: %s", a.code, e)
@@ -1138,6 +1156,19 @@ def yardstick_entries(
 
     alert = notify.get(arena)
     out = []
+    recorded_at = arena.broker.clock().astimezone(SYD)
+    if recorded_at.date() != day or recorded_at.time() >= SESSION_OPEN:
+        # The orders would be stamped now, and fill at the first bar after now: not the open.
+        record["missed"] = (
+            f"confirmed in time but reached the broker at {recorded_at:%H:%M:%S}, after the "
+            f"{SESSION_OPEN:%H:%M} open"
+        )
+        log.error(
+            "the yardstick missed the %s open: %s. Nothing is traded late.",
+            day, record["missed"],
+        )  # fmt: skip
+        save("missed")
+        return []
     for d in decisions:
         try:
             o = arena_place_order(
@@ -1269,6 +1300,7 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
         if pos.hold == "overnight" and pos.hold_reason:
             out.append({"ticker": ticker, "action": "hold", "reason": pos.hold_reason})
             continue  # a multi-day thesis, written when the position was opened
+        asked_at = arena.broker.clock()  # when this position's price is read: data_as_of
         price = arena.broker.minutes.last_price(ticker) or pos.avg_cost
         open_pnl = (price - pos.avg_cost) * pos.qty
         daily = arena.daily_lookup()(ticker)
@@ -1324,7 +1356,7 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
                 cfg, arena.broker, acct, pb, ticker=ticker, side=side, qty=abs(pos.qty),
                 limit=limit, reason=f"pre-close (Level {pb.level.number} is intraday): {reason}",
                 model=model or "code (pre-close sweep)", placed_by="agent",
-                universe=arena.universe, short_universe=arena.short_universe, now=now,
+                universe=arena.universe, short_universe=arena.short_universe, now=asked_at,
             )  # fmt: skip
             log.info("pre-close: closing %s with %s - %s", ticker, o.order_id, reason)
             out.append(
@@ -1407,7 +1439,7 @@ def catch_up(arena: Arena, pb: Playbook, now: datetime | None = None, days_back:
                 a.code, a.headline[:60], a.released_at,
             )  # fmt: skip
             try:
-                results.append(handle_announcement(arena, pb, a, now))
+                results.append(handle_announcement(arena, pb, a, arena.broker.clock()))
             except Exception as e:  # noqa: BLE001
                 log.exception("catch-up on %s failed: %s", a.code, e)
     return results

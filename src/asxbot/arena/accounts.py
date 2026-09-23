@@ -82,7 +82,19 @@ class ArenaOrder:
     side: str  # buy | sell | short | cover
     qty: int
     limit: float
-    decision_at: str
+    # The wall clock when the order was recorded - never the time of the data it was decided
+    # on. It fills at the first traded bar that starts strictly after this. Until 2026-09-23
+    # (then called decision_at) it was the start of the watcher's cycle, which could be
+    # minutes earlier than the decision: ARN-000002 was decided at 10:37:41 after eight
+    # minutes of model calls, stamped 10:29:46, and filled at the 10:29 bar.
+    decided_at: str
+    # When the market data the decision was made on was read. The gap between the two is
+    # how stale the decision's picture was; the free feed is itself ~20 minutes behind this.
+    data_as_of: str = ""
+    # A resting exit (a stop or a take-profit target) fills in the bar that reached its level,
+    # which can be before the code notices and records it. What must be strictly before that
+    # bar is the moment the level began resting, recorded here. Empty for every other order.
+    rests_from: str = ""
     status: str = "pending_fill"  # pending_fill | filled | rejected | expired
     filled_qty: int = 0
     avg_price: float | None = None
@@ -108,7 +120,18 @@ class ArenaOrder:
         # started before stop_pct existed (the running watcher, on the day it was added).
         if d["stop_pct"] is None:
             del d["stop_pct"]
+        if not d["rests_from"]:
+            del d["rests_from"]
         return d
+
+
+def _order(raw: dict) -> ArenaOrder:
+    """An order from a saved book. A book written before 2026-09-24 calls decided_at
+    decision_at and has no data_as_of; it still loads, with the old time kept as it was."""
+    raw = dict(raw)
+    if "decision_at" in raw:
+        raw.setdefault("decided_at", raw.pop("decision_at"))
+    return ArenaOrder(**raw)
 
 
 @dataclass
@@ -200,7 +223,7 @@ class AccountStore:
                 starting_cash=float(raw["starting_cash"]),
                 cash=float(raw["cash"]),
                 positions={k: _position(v) for k, v in raw.get("positions", {}).items()},
-                orders={k: ArenaOrder(**v) for k, v in raw.get("orders", {}).items()},
+                orders={k: _order(v) for k, v in raw.get("orders", {}).items()},
                 next_id=int(raw.get("next_id", 1)),
                 realised_pnl=float(raw.get("realised_pnl", 0.0)),
                 fees_paid=float(raw.get("fees_paid", 0.0)),

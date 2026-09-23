@@ -28,6 +28,22 @@ SYD = ZoneInfo("Australia/Sydney")
 DAY = date(2026, 1, 6)  # a Tuesday
 
 
+class Clock:
+    """The broker's clock, set by the test. In the arena it is the wall clock."""
+
+    def __init__(self, t: datetime):
+        self.t = t
+
+    def __call__(self) -> datetime:
+        return self.t
+
+
+def _submit(broker, acct, *, at: datetime, **kw):
+    """Record an order with the broker's clock at `at`, on data read at the same moment."""
+    broker.clock = Clock(at)
+    return broker.submit(acct, data_as_of=at, **kw)
+
+
 def minute_frame(rows):
     """rows: list of (HH, MM, open, high, low, close, volume)"""
     idx = [datetime(DAY.year, DAY.month, DAY.day, h, m, tzinfo=SYD) for h, m, *_ in rows]
@@ -68,19 +84,33 @@ def bars(cfg):
 
 
 # -- the fill rule ---------------------------------------------------------
-def test_fill_uses_the_decision_minute(bars):
-    f = bars.fill_at("AAA", datetime(2026, 1, 6, 10, 1, 30, tzinfo=SYD))
-    assert f.minute.hour == 10 and f.minute.minute == 1
+def test_the_fill_is_the_first_bar_that_starts_after_the_decision(bars):
+    f = bars.fill_at("AAA", datetime(2026, 1, 6, 10, 0, 30, tzinfo=SYD))
+    assert (f.minute.hour, f.minute.minute) == (10, 1)
     assert f.price == pytest.approx(1.05)  # the close of that minute
     assert f.minutes_waited == 0
 
 
+def test_a_decision_never_fills_in_the_minute_it_was_made(bars):
+    """ARN-000002, 23 Sep: decided at 10:37:41, filled at the close of the 10:29 bar. Even
+    the bar a decision is made in is not allowed: most of it happened before the decision.
+    Fails on the rule before 2026-09-23, which took the bar containing the decision."""
+    f = bars.fill_at("AAA", datetime(2026, 1, 6, 10, 1, 30, tzinfo=SYD))
+    assert (f.minute.hour, f.minute.minute) != (10, 1)
+    assert (f.minute.hour, f.minute.minute) == (10, 4)  # 10:02 and 10:03 did not trade
+
+
+def test_a_bar_starting_at_the_instant_of_the_decision_is_not_after_it(bars):
+    f = bars.fill_at("AAA", datetime(2026, 1, 6, 10, 0, 0, tzinfo=SYD))
+    assert (f.minute.hour, f.minute.minute) == (10, 1)
+
+
 def test_a_minute_with_no_trade_walks_forward_never_back(bars):
     f = bars.fill_at("AAA", datetime(2026, 1, 6, 10, 2, 10, tzinfo=SYD))
-    # 10:02 and 10:03 had no trade, so the fill is 10:04 - not 10:01.
+    # 10:03 had no trade, so the fill is 10:04 - not 10:01.
     assert (f.minute.hour, f.minute.minute) == (10, 4)
     assert f.price == pytest.approx(1.11)
-    assert f.minutes_waited == 2
+    assert f.minutes_waited == 1
 
 
 def test_a_decision_before_the_open_fills_at_the_open(bars):
@@ -117,7 +147,7 @@ def test_a_gap_through_the_stop_fills_at_the_open_not_the_stop(bars):
 def setup(cfg, bars):
     broker = ArenaBroker(
         cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
-        resolve_after_minutes=0,
+        resolve_after_minutes=0, clock=Clock(datetime(2026, 1, 6, 12, 0, tzinfo=SYD)),
     )  # fmt: skip
     pb = load_playbook(cfg, "asx_announcements")
     acct = broker.store.open("t__agent", "asx_announcements", "agent", 1, 10_000.0)
@@ -126,9 +156,9 @@ def setup(cfg, bars):
 
 def test_an_order_is_pending_until_it_is_resolved(setup):
     cfg, broker, pb, acct = setup
-    o = broker.submit(
-        acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
-        decision_at=datetime(2026, 1, 6, 10, 1, 30, tzinfo=SYD), stop=1.00,
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
+        at=datetime(2026, 1, 6, 10, 1, 30, tzinfo=SYD), stop=1.00,
     )  # fmt: skip
     assert o.status == "pending_fill"
     assert o.avg_price is None  # nothing may claim a fill before one exists
@@ -136,16 +166,17 @@ def test_an_order_is_pending_until_it_is_resolved(setup):
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     done = acct.orders[o.order_id]
     assert done.status == "filled"
-    assert done.avg_price == pytest.approx(1.05 * 1.001, rel=1e-3)  # close + slippage
+    # Decided at 10:01:30: the 10:01 bar is out, 10:02 and 10:03 did not trade.
+    assert done.avg_price == pytest.approx(1.11 * 1.001, rel=1e-3)  # close + slippage
     assert acct.positions["AAA"].qty == 1000
-    assert "10:01" in done.fill_basis
+    assert "10:04" in done.fill_basis
 
 
 def test_a_limit_the_market_never_reached_expires(setup):
     cfg, broker, pb, acct = setup
-    o = broker.submit(
-        acct, ticker="AAA", side="buy", qty=100, limit=0.50,  # far below the market
-        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=0.40,
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=100, limit=0.50,  # far below the market
+        at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=0.40,
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 7, 11, 0, tzinfo=SYD))
     assert acct.orders[o.order_id].status == "expired"
@@ -154,9 +185,9 @@ def test_a_limit_the_market_never_reached_expires(setup):
 
 def test_the_stop_is_enforced_by_code(setup):
     cfg, broker, pb, acct = setup
-    o = broker.submit(
-        acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
-        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98,
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
+        at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98,
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     assert acct.orders[o.order_id].status == "filled"
@@ -170,6 +201,7 @@ def _place(cfg, broker, acct, pb, **kw):
     kw.setdefault("universe", {"AAA", "BBB"})
     kw.setdefault("short_universe", {"BBB"})
     kw.setdefault("now", datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    broker.clock = Clock(kw["now"])  # the order is decided at the moment it is placed
     return arena_place_order(cfg, broker, acct, pb, **kw)
 
 
@@ -432,9 +464,9 @@ def test_a_stop_on_the_wrong_side_of_the_fill_is_re_derived(setup):
     cfg, broker, pb, acct = setup
     # Limit 1.20 with a stop at 1.10 is an 8.33% stop. The real 10:01 bar closes at 1.05,
     # so the fill lands BELOW the stop.
-    o = broker.submit(
-        acct, ticker="AAA", side="buy", qty=100, limit=1.20,
-        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.10,
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=100, limit=1.20,
+        at=datetime(2026, 1, 6, 10, 0, 30, tzinfo=SYD), stop=1.10,
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     filled = acct.orders[o.order_id]
@@ -460,9 +492,9 @@ def test_a_stop_cannot_fire_in_the_bar_the_position_opened(setup):
         (16, 10, 0.86, 0.86, 0.86, 0.86, 100_000),
     ]
     write_parquet_atomic(minute_frame(rows), broker.minutes._path("CCC", DAY))
-    o = broker.submit(
-        acct, ticker="CCC", side="buy", qty=1000, limit=1.20, stop_pct=8.0,
-        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD),
+    o = _submit(
+        broker, acct, ticker="CCC", side="buy", qty=1000, limit=1.20, stop_pct=8.0,
+        at=datetime(2026, 1, 6, 9, 59, 30, tzinfo=SYD),  # before the open: fills at 10:00
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:00")
@@ -716,15 +748,15 @@ def test_order_ids_are_unique_across_accounts(cfg, bars):
     order exists, so it cannot be ambiguous."""
     broker = ArenaBroker(
         cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
-        resolve_after_minutes=0,
+        resolve_after_minutes=0, clock=Clock(datetime(2026, 1, 6, 12, 0, tzinfo=SYD)),
     )  # fmt: skip
     agent = broker.store.open("p__agent", "p", "agent", 1, 10_000.0)
     bot = broker.store.open("p__bot", "p", "bot", 1, 10_000.0)
     ids = []
     for acct in (agent, bot, agent, bot):
-        o = broker.submit(
-            acct, ticker="AAA", side="buy", qty=10, limit=1.20,
-            decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+        o = _submit(
+            broker, acct, ticker="AAA", side="buy", qty=10, limit=1.20,
+            at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
         )  # fmt: skip
         ids.append(o.order_id)
     assert len(set(ids)) == len(ids), f"order ids collided: {ids}"
@@ -733,20 +765,20 @@ def test_order_ids_are_unique_across_accounts(cfg, bars):
 def test_the_id_counter_never_reuses_an_id_if_its_file_is_lost(cfg, bars):
     broker = ArenaBroker(
         cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
-        resolve_after_minutes=0,
+        resolve_after_minutes=0, clock=Clock(datetime(2026, 1, 6, 12, 0, tzinfo=SYD)),
     )  # fmt: skip
     acct = broker.store.open("q__agent", "q", "agent", 1, 10_000.0)
     first = [
-        broker.submit(
-            acct, ticker="AAA", side="buy", qty=10, limit=1.20,
-            decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+        _submit(
+            broker, acct, ticker="AAA", side="buy", qty=10, limit=1.20,
+            at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
         ).order_id  # fmt: skip
         for _ in range(3)
     ]
     (broker.store.root / "next_order_id.json").unlink()  # lose the counter
-    again = broker.submit(
-        acct, ticker="AAA", side="buy", qty=10, limit=1.20,
-        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+    again = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=10, limit=1.20,
+        at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
     ).order_id  # fmt: skip
     assert again not in first
 
@@ -764,9 +796,9 @@ def _capture(cfg, monkeypatch):
 def test_fills_and_stops_are_alerted_as_they_happen(setup, monkeypatch):
     cfg, broker, pb, acct = setup
     broker.notifier, sent = _capture(cfg, monkeypatch)
-    broker.submit(
-        acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
-        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98, placed_by="agent",
+    _submit(
+        broker, acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
+        at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), stop=0.98, placed_by="agent",
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     assert len(sent) == 1 and "FILLED" in sent[0] and "BUY AAA" in sent[0]
@@ -786,9 +818,9 @@ def test_a_telegram_failure_never_stops_a_fill(setup, monkeypatch):
         raise tg.TelegramError("offline")
 
     monkeypatch.setattr(tg, "load_bot", down)
-    o = broker.submit(
-        acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
-        decision_at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=1000, limit=1.20,
+        at=datetime(2026, 1, 6, 10, 1, tzinfo=SYD), stop=1.00,
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     assert acct.orders[o.order_id].status == "filled"
@@ -1062,13 +1094,13 @@ def test_the_decider_packet_shows_its_orders_waiting_to_fill(setup, monkeypatch)
 
     cfg, broker, pb, acct = setup
     _offline_price(monkeypatch)
-    broker.submit(
-        acct, ticker="AAA", side="buy", qty=3000, limit=0.83,
-        decision_at=_AT - timedelta(minutes=25), stop=0.755, target=0.95,
+    _submit(
+        broker, acct, ticker="AAA", side="buy", qty=3000, limit=0.83,
+        at=_AT - timedelta(minutes=25), stop=0.755, target=0.95,
     )  # fmt: skip
-    done = broker.submit(
-        acct, ticker="BBB", side="buy", qty=100, limit=1.00,
-        decision_at=_AT - timedelta(minutes=90), stop=0.90,
+    done = _submit(
+        broker, acct, ticker="BBB", side="buy", qty=100, limit=1.00,
+        at=_AT - timedelta(minutes=90), stop=0.90,
     )  # fmt: skip
     done.status = "filled"  # a filled order is a position, not something waiting
 
@@ -1180,9 +1212,13 @@ def test_the_yardstick_enters_at_the_next_open_once_and_never_late(setup, monkey
     monkeypatch.setattr(W, "make_bot", lambda arena, pb, quotes=None: bot)
     fake = _FakeArena(cfg, broker, acct)
 
-    placed = W.yardstick_entries(fake, pb, datetime(2026, 1, 6, 7, 45, tzinfo=SYD))
+    def at(t):
+        broker.clock = Clock(t)
+        return t
+
+    placed = W.yardstick_entries(fake, pb, at(datetime(2026, 1, 6, 7, 45, tzinfo=SYD)))
     assert [p["ticker"] for p in placed] == ["AAA"]
-    assert W.yardstick_entries(fake, pb, datetime(2026, 1, 6, 8, 0, tzinfo=SYD)) == []  # once
+    assert W.yardstick_entries(fake, pb, at(datetime(2026, 1, 6, 8, 0, tzinfo=SYD))) == []
 
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
     o = acct.orders[placed[0]["order_id"]]
@@ -1192,10 +1228,10 @@ def test_the_yardstick_enters_at_the_next_open_once_and_never_late(setup, monkey
 
     # The next morning the 6th's bar never arrives: it waits, then records the miss and why,
     # rather than trading late.
-    assert W.yardstick_entries(fake, pb, datetime(2026, 1, 7, 7, 45, tzinfo=SYD)) == []
+    assert W.yardstick_entries(fake, pb, at(datetime(2026, 1, 7, 7, 45, tzinfo=SYD))) == []
     state = W._yardstick_path(cfg.data_dir, date(2026, 1, 7))
     assert json.loads(state.read_text())["status"] == "waiting"
-    assert W.yardstick_entries(fake, pb, datetime(2026, 1, 7, 10, 30, tzinfo=SYD)) == []
+    assert W.yardstick_entries(fake, pb, at(datetime(2026, 1, 7, 10, 30, tzinfo=SYD))) == []
     missed = json.loads(state.read_text())
     assert missed["status"] == "missed" and "2026-01-06" in missed["missed"]
 
@@ -1219,6 +1255,7 @@ def test_the_yardstick_sizes_within_the_per_order_guard(setup, monkeypatch):
     acct.cash = 50_000.0  # 40% of equity is $20,000, well past the $8,000 guard
 
     guard = float(cfg.get("arena.guards.max_order_value_aud"))
+    broker.clock = Clock(datetime(2026, 1, 6, 7, 45, tzinfo=SYD))
     placed = W.yardstick_entries(_FakeArena(cfg, broker, acct), pb,
                                  datetime(2026, 1, 6, 7, 45, tzinfo=SYD))  # fmt: skip
     assert [p["ticker"] for p in placed] == ["AAA"]
@@ -1244,11 +1281,11 @@ def _bars_on(broker, ticker, day, rows):
 
 
 def _open(broker, acct, side, stop, target, qty=1000):
-    """Open a CCC position whose entry fills in the 10:00 bar."""
+    """Open a CCC position whose entry fills in the 10:00 bar: decided before the open."""
     limit = 2.00 if side == "buy" else 0.50
-    o = broker.submit(
-        acct, ticker="CCC", side=side, qty=qty, limit=limit, stop=stop, target=target,
-        decision_at=datetime(2026, 1, 6, 10, 0, tzinfo=SYD), placed_by=acct.kind,
+    o = _submit(
+        broker, acct, ticker="CCC", side=side, qty=qty, limit=limit, stop=stop, target=target,
+        at=datetime(2026, 1, 6, 9, 59, 30, tzinfo=SYD), placed_by=acct.kind,
     )  # fmt: skip
     broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 0, tzinfo=SYD))
     assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:00")
@@ -1564,3 +1601,256 @@ def test_a_book_without_targets_is_written_as_before(setup):
     raw = _json.loads(broker.store.path(acct.name).read_text(encoding="utf-8"))
     assert "target_from" not in raw["positions"]["CCC"]
     assert "target_past_when_armed" not in raw["positions"]["CCC"]
+
+
+# -- the decision time is the moment the order is recorded (found 23 Sep, ARN-000002) -----
+# ARN-000002 was decided at 10:37:41, after eight re-looks' worth of model calls, but was
+# stamped 10:29:46 - the start of the watcher's cycle - and filled at the close of the 10:29
+# bar. Every test here fails on the code before the fix.
+def _a1m_minutes(broker, ticker="AAA"):
+    """A1M's real bars on 23 Sep around the decision, moved to DAY."""
+    _bars_on(broker, ticker, DAY, [
+        (10, 29, 0.840, 0.840, 0.830, 0.830, 37_518),
+        (10, 30, 0.825, 0.830, 0.825, 0.830, 39_780),
+        (10, 37, 0.830, 0.835, 0.830, 0.835, 21_736),  # the minute the decision was made in
+        (10, 41, 0.835, 0.837, 0.835, 0.835, 36_051),  # no trades 10:38-10:40
+        (10, 42, 0.840, 0.840, 0.840, 0.840, 38_335),
+        (16, 10, 0.917, 0.917, 0.917, 0.917, 100_000),
+    ])  # fmt: skip
+
+
+CYCLE_START = datetime(2026, 1, 6, 10, 29, 46, tzinfo=SYD)
+DECIDED = datetime(2026, 1, 6, 10, 37, 41, tzinfo=SYD)
+
+
+def test_an_order_is_stamped_with_the_clock_not_the_callers_now(setup):
+    """The caller's `now` is when its data was read; the decision is when the order lands."""
+    cfg, broker, pb, acct = setup
+    _a1m_minutes(broker)
+    broker.clock = Clock(DECIDED)
+    o = arena_place_order(
+        cfg, broker, acct, pb, ticker="AAA", side="buy", qty=3000, limit=0.84, stop=0.755,
+        universe={"AAA"}, now=CYCLE_START,
+    )  # fmt: skip
+    assert o.decided_at == DECIDED.isoformat(timespec="seconds")
+    assert o.data_as_of == CYCLE_START.isoformat(timespec="seconds")
+
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 5, tzinfo=SYD))
+    done = acct.orders[o.order_id]
+    assert done.fill_minute.startswith("2026-01-06T10:41")  # first bar after 10:37:41
+    slip = broker.costs.slippage_pct(3000 * 0.84, 2_000_000.0)
+    assert done.avg_price == pytest.approx(0.835 * (1 + slip), abs=1e-4)
+    assert datetime.fromisoformat(done.fill_minute) > datetime.fromisoformat(done.decided_at)
+
+
+def test_the_agents_order_is_decided_after_its_model_calls_not_before(setup, monkeypatch):
+    """The agent path end to end: the decider takes eight minutes; the order is stamped when
+    it returns, carries the time its data was read, and fills after it was decided."""
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _a1m_minutes(broker)
+    broker.clock = Clock(CYCLE_START)
+    decision = (
+        '{"action": "trade", "ticker": "AAA", "side": "buy", "qty": 3000, "limit": 0.84, '
+        '"stop": 0.755, "target": 0.90, "why": "drift", "hold": "overnight"}'
+    )
+
+    def fake_call(agent, message, **kw):
+        if agent == W.READER:
+            broker.clock = Clock(CYCLE_START + timedelta(seconds=40))
+            text = "WHAT IT SAYS: a deal\nTRADE_WORTHY: YES\nCAN_SIZE_AND_EXIT: YES"
+            return type("R", (), {"text": text, "model": W.READER_MODEL, "model_matches": True})()
+        broker.clock = Clock(DECIDED)  # the decider returns eight minutes later
+        return type("R", (), {"text": decision, "model": W.DECIDER_MODEL, "model_matches": True})()
+
+    monkeypatch.setattr(W, "call_agent", fake_call)
+    monkeypatch.setattr(W, "dossier", lambda arena, t: {"ticker": t})
+    monkeypatch.setattr(W, "live_reaction", lambda *a, **k: {"available": False})
+    monkeypatch.setattr(W, "pdf_text", lambda *a, **k: "text")
+    monkeypatch.setattr(
+        W, "screen",
+        lambda *a, **k: type(
+            "S", (), {"ok": True, "why": "tradeable", "test": "", "turnover": 1e6, "tick_pct": 0.5}
+        )(),
+    )  # fmt: skip
+    fake = _FakeArena(cfg, broker, acct)
+    fake.universe = {"AAA"}
+    fake.quote_provider = lambda: _StaticQuote()
+    out = W.handle_announcement(
+        fake, pb, _ann(), now=CYCLE_START, run_bot=False, ignore_warmup=True
+    )
+    o = acct.orders[out["order"]["order_id"]]
+    assert o.decided_at == DECIDED.isoformat(timespec="seconds")
+    assert o.data_as_of == CYCLE_START.isoformat(timespec="seconds")  # when the quote was read
+
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 5, tzinfo=SYD))
+    assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:41")
+
+
+def test_a_fill_stays_pending_until_the_feed_holds_a_bar_after_the_decision(setup):
+    """Delayed data: the bars after the decision are not there yet. Nothing earlier will do."""
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "AAA", DAY, [
+        (10, 29, 0.840, 0.840, 0.830, 0.830, 37_518),
+        (10, 37, 0.830, 0.835, 0.830, 0.835, 21_736),
+    ])  # fmt: skip
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=3000, limit=0.84, stop=0.755,
+        at=DECIDED,
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 10, 59, tzinfo=SYD))
+    assert acct.orders[o.order_id].status == "pending_fill"
+
+    _a1m_minutes(broker)  # the feed catches up
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 5, tzinfo=SYD))
+    assert acct.orders[o.order_id].fill_minute.startswith("2026-01-06T10:41")
+
+
+def test_a_resting_limit_does_not_expire_before_the_feed_reaches_the_close(cfg, bars):
+    """At 16:15 the delayed feed is still twenty minutes short of the 16:10 close."""
+    broker = ArenaBroker(
+        cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
+        resolve_after_minutes=22,
+    )  # fmt: skip
+    acct = broker.store.open("t__agent", "asx_announcements", "agent", 1, 10_000.0)
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=100, limit=0.50, stop=0.40,
+        at=datetime(2026, 1, 6, 15, 0, tzinfo=SYD),
+    )  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 16, 15, tzinfo=SYD))
+    assert acct.orders[o.order_id].status == "pending_fill"
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 16, 33, tzinfo=SYD))
+    assert acct.orders[o.order_id].status == "expired"
+
+
+def test_a_stop_exit_records_when_it_rested_from_and_which_bar_hit_it(setup):
+    """A resting stop fills in the bar that reached it, before the code notices. What must
+    come before that bar is the moment the stop began resting, and it is recorded."""
+    cfg, broker, pb, acct = setup
+    _bars_on(broker, "CCC", DAY, [
+        (10, 0, 1.00, 1.01, 0.99, 1.00, 50_000),
+        (10, 5, 0.99, 0.99, 0.85, 0.86, 50_000),
+    ])  # fmt: skip
+    _open(broker, acct, "buy", stop=0.90, target=None)
+    broker.clock = Clock(datetime(2026, 1, 6, 10, 30, 12, tzinfo=SYD))  # noticed at 10:30
+    (stop,) = _exits(broker, acct)
+    assert stop.reason.startswith("STOP")
+    assert stop.rests_from == "2026-01-06T10:00+11:00"  # the entry minute
+    assert stop.data_as_of == "2026-01-06T10:05:00+11:00"  # the bar that reached it
+    assert stop.decided_at == "2026-01-06T10:30:12+11:00"  # when the code recorded it
+    assert datetime.fromisoformat(stop.fill_minute) > datetime.fromisoformat(stop.rests_from)
+
+
+def test_a_target_exit_rests_from_when_it_was_armed(setup):
+    cfg, broker, pb, acct = setup
+    (t,) = _a1m(broker, acct, [(10, 0, 0.93, 0.94, 0.92, 0.93, 50_000)])
+    assert t.reason.startswith("TARGET")
+    assert t.rests_from == "2026-01-07T07:30+11:00"  # armed when the watcher first saw it
+    assert datetime.fromisoformat(t.fill_minute) > datetime.fromisoformat(t.rests_from)
+
+
+def test_the_yardstick_does_not_trade_late_when_its_orders_reach_the_broker_after_the_open(
+    setup, monkeypatch
+):
+    """`now` said 09:59:50, but by the time the orders are recorded it is 10:00:05. They
+    would fill at the first bar after 10:00:05, not at the open: a late entry."""
+    import dataclasses
+    import json
+
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    pb = dataclasses.replace(pb, raw={**pb.raw, "warmup_start": None})
+    live = cfg.data_dir / "announcements" / "live"
+    live.mkdir(parents=True, exist_ok=True)
+    _ann_frame(("AAA", "2026-01-05 08:30", True)).to_parquet(live / "2026-01-05.parquet")
+    frames = {"^AXJO": _index_daily(), "AAA": _stock_daily(6, 4)}
+    monkeypatch.setattr(W, "make_bot", lambda arena, pb, quotes=None: _yardstick(
+        cfg, broker, pb, frames))  # fmt: skip
+    broker.clock = Clock(datetime(2026, 1, 6, 10, 0, 5, tzinfo=SYD))
+    placed = W.yardstick_entries(
+        _FakeArena(cfg, broker, acct), pb, datetime(2026, 1, 6, 9, 59, 50, tzinfo=SYD)
+    )
+    assert placed == [] and not acct.orders
+    state = json.loads(W._yardstick_path(cfg.data_dir, DAY).read_text())
+    assert state["status"] == "missed" and "10:00:05" in state["missed"]
+
+
+def test_each_re_look_is_worked_at_its_own_time(setup, monkeypatch):
+    """Eight re-looks ran on the cycle's 10:29:46 on 23 Sep; A1M was the eighth."""
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    broker.clock = Clock(CYCLE_START)
+    monkeypatch.setattr(W, "relook_candidates", lambda cfg, now: [
+        {"ids_id": "1", "ticker": "AAA", "why": "pre-open"},
+        {"ids_id": "2", "ticker": "AAA", "why": "pre-open"},
+    ])  # fmt: skip
+    monkeypatch.setattr(W, "announcement_by_id", lambda cfg, day, ids: _ann())
+    seen = []
+
+    def fake_handle(arena, pb, a, now=None, **kw):
+        seen.append(now)
+        broker.clock = Clock(broker.clock() + timedelta(minutes=1))  # a minute of model calls
+        return {}
+
+    monkeypatch.setattr(W, "handle_announcement", fake_handle)
+    W.do_relooks(_FakeArena(cfg, broker, acct), pb, now=CYCLE_START)
+    assert seen == [CYCLE_START, CYCLE_START + timedelta(minutes=1)]
+
+
+def test_the_pre_close_exit_is_decided_when_the_decider_answers(setup, monkeypatch):
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    _hold_position(acct)
+    asked = datetime(2026, 1, 6, 15, 50, 0, tzinfo=SYD)
+    answered = datetime(2026, 1, 6, 15, 51, 10, tzinfo=SYD)
+    broker.clock = Clock(asked)
+
+    def slow_reply(*a, **k):
+        broker.clock = Clock(answered)
+        return type("R", (), {"text": '{"action": "close", "reason": "done"}', "model": "m"})()
+
+    monkeypatch.setattr(W, "call_agent", slow_reply)
+    W.sweep_before_close(_FakeArena(cfg, broker, acct), _intraday(pb), now=asked)
+    (o,) = [o for o in acct.orders.values() if o.side == "sell"]
+    assert o.decided_at == answered.isoformat(timespec="seconds")
+    assert o.data_as_of == asked.isoformat(timespec="seconds")
+
+
+def test_a_book_written_before_decided_at_existed_still_loads(setup):
+    """Tonight's books were written with decision_at; the evening routine must read them."""
+    import json as _json
+
+    cfg, broker, pb, acct = setup
+    o = _submit(
+        broker, acct, ticker="AAA", side="buy", qty=100, limit=1.20, stop=1.00, at=DECIDED
+    )
+    path = broker.store.path(acct.name)
+    raw = _json.loads(path.read_text(encoding="utf-8"))
+    order = raw["orders"][o.order_id]
+    order["decision_at"] = order.pop("decided_at")
+    del order["data_as_of"]
+    path.write_text(_json.dumps(raw), encoding="utf-8")
+    again = broker.store.open(acct.name, "asx_announcements", "agent", 1, 10_000.0)
+    assert again.orders[o.order_id].decided_at == DECIDED.isoformat(timespec="seconds")
+    assert again.orders[o.order_id].data_as_of == ""
+
+
+def test_a_fill_from_before_its_order_is_shouted_by_the_self_checks(setup):
+    from asxbot.arena import selfcheck as S
+
+    cfg, broker, pb, acct = setup
+    _a1m_minutes(broker)
+    o = _submit(broker, acct, ticker="AAA", side="buy", qty=3000, limit=0.84, stop=0.755,
+                at=DECIDED)  # fmt: skip
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 5, tzinfo=SYD))
+    fake = _FakeArena(cfg, broker, acct)
+    assert S.check_fills_after_orders(fake, pb).ok
+
+    acct.orders[o.order_id].fill_minute = "2026-01-06T10:29+11:00"  # what the old rule did
+    bad = S.check_fills_after_orders(fake, pb)
+    assert not bad.ok and o.order_id in bad.detail

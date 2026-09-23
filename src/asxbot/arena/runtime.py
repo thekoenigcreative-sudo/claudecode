@@ -91,8 +91,22 @@ class Arena:
 
 
 def build_arena(cfg: Config, quotes=None) -> Arena:
-    from asxbot.data.factory import get_store
     from asxbot.data.universe import asx200_codes, build_universes
+
+    broker = arena_broker(cfg)
+    from asxbot.arena.notify import build_notifier
+
+    broker.notifier = build_notifier(cfg)
+    a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
+    universe = set(a.codes) | set(b.codes)
+    shorts = asx200_codes(cfg.data_dir, cfg.get("collector.user_agent"))
+    return Arena(cfg, broker, broker.store, universe, shorts)
+
+
+def arena_broker(cfg: Config) -> ArenaBroker:
+    """The arena's broker as the watcher builds it - costs, minute bars, turnover lookup -
+    with no notifier, universes or quotes. scripts/correct_fill_arn000002.py prices with it."""
+    from asxbot.data.factory import get_store
 
     if cfg.broker != "sim":
         raise RuntimeError(
@@ -122,13 +136,7 @@ def build_arena(cfg: Config, quotes=None) -> Arena:
         resolve_after_minutes=int(fill.get("resolve_after_minutes", 22)),
         max_wait_minutes=int(fill.get("max_wait_minutes", 390)),
     )
-    from asxbot.arena.notify import build_notifier
-
-    broker.notifier = build_notifier(cfg)
-    a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
-    universe = set(a.codes) | set(b.codes)
-    shorts = asx200_codes(cfg.data_dir, cfg.get("collector.user_agent"))
-    return Arena(cfg, broker, broker.store, universe, shorts)
+    return broker
 
 
 def make_bot(arena: Arena, pb: Playbook, quotes=None):

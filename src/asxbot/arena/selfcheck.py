@@ -12,6 +12,8 @@ All arithmetic and file checks. No judgement, no model, nothing that needs inter
   screen_dominated   one screen test rejecting more than 80% of the day's announcements
   agent_mismatch     an agent call whose model or thinking level was not what config asks
   stuck_pending      a pending_fill order older than the resolve window plus an hour
+  fill_before_order  a filled order whose fill bar does not start strictly after the order
+                     was recorded (or, for a stop or target, after it began resting)
   errors_logged      an ERROR line in the last hour
   short_universe     the ASX 200 list is short, stale, or not a constituent list at all
 
@@ -235,7 +237,7 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
         for o in acct.orders.values():
             if o.status != "pending_fill":
                 continue
-            decided = datetime.fromisoformat(o.decision_at)
+            decided = datetime.fromisoformat(o.decided_at)
             if decided.tzinfo is None:
                 decided = decided.replace(tzinfo=SYD)
             age = now - _could_first_fill(decided)
@@ -253,6 +255,39 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
         + "; ".join(stuck[:4]),
         count=len(stuck),
         items=stuck,
+    )
+
+
+def check_fills_after_orders(arena, pb) -> Check:
+    """Every fill must come from a bar that starts strictly after its order existed.
+
+    ARN-000002 on 23 Sep was decided at 10:37:41 and filled at the 10:29 bar, and nothing
+    noticed for hours. This reads the books and says so the next cycle. Orders written before
+    decided_at and data_as_of existed carry neither honestly, so only orders with data_as_of
+    are checked; a legacy order corrected by a script gets it and is checked from then on.
+    """
+    bad = []
+    for kind in ("agent", "bot"):
+        acct = arena.account(pb, kind)
+        for o in acct.orders.values():
+            if o.status != "filled" or not o.data_as_of or not o.fill_minute:
+                continue
+            fill = datetime.fromisoformat(o.fill_minute)
+            floor = datetime.fromisoformat(o.rests_from or o.decided_at)
+            if fill <= floor:
+                what = "began resting" if o.rests_from else "was recorded"
+                bad.append(
+                    f"{o.order_id} {o.side} {o.ticker} filled at the {fill:%d %b %H:%M} bar; "
+                    f"the order {what} at {floor:%d %b %H:%M:%S}"
+                )
+    if not bad:
+        return Check("fill_before_order", True, "every fill is from a bar after its order")
+    return Check(
+        "fill_before_order",
+        False,
+        f"{len(bad)} fill(s) priced from before the order existed: " + "; ".join(bad[:4]),
+        count=len(bad),
+        items=bad,
     )
 
 
@@ -353,6 +388,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("screen_dominated", lambda: check_screen_not_dominated(cfg, now)),
         ("agent_mismatch", lambda: check_agent_calls(cfg, now, expected)),
         ("stuck_pending", lambda: check_pending_orders(arena, pb, now)),
+        ("fill_before_order", lambda: check_fills_after_orders(arena, pb)),
         ("errors_logged", lambda: check_errors_logged(cfg, now)),
         ("short_universe", lambda: check_short_universe(cfg)),
     ]

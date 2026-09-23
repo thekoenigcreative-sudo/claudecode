@@ -1,16 +1,21 @@
 """1-minute bars, and the rule that turns a decision time into a fill price.
 
 Why this exists: the free feed is ~20 minutes delayed, so at the moment the agent decides,
-the true market price is not knowable. Every arena order is recorded pending with its
-decision timestamp, and filled later from the minute bar covering that minute.
+the true market price is not knowable. Every arena order is recorded pending with the wall
+clock time it was recorded (`decided_at`), and filled later from the minute bars after it.
 
-The rule (fixed 2026-09-22 with Rick):
-  * take the 1-minute bar whose minute contains the decision timestamp;
+The rule (fixed 2026-09-22 with Rick; tightened 2026-09-23):
+  * take the first 1-minute bar that STARTS strictly after `decided_at` - a decision at
+    10:37:41 fills in the 10:38 bar at the earliest, never the 10:37 bar it was made in;
   * a minute counts as traded only if its volume is above zero;
   * if that minute did not trade, walk FORWARD to the next minute that did - never back
     to an earlier one;
-  * the fill price within the chosen bar is `arena.fill.minute_price` (default `close`:
-    the last price of that minute, so never earlier than the decision itself).
+  * the fill price within the chosen bar is `arena.fill.minute_price` (default `close`);
+  * if the delayed feed does not hold that bar yet, the order stays pending until it does.
+
+Until 2026-09-23 the rule took the bar containing the decision minute, and `decided_at` was
+the start of the watcher's cycle rather than the moment the order was recorded - so an order
+decided after minutes of model calls filled at a price from before it existed (ARN-000002).
 
 Bars are cached to data/arena/minutes/<code>/<date>.parquet so a day is fetched once.
 A finished day (one that already holds the 16:10 closing auction print) is never refetched.
@@ -112,12 +117,13 @@ class MinuteBars:
         return df
 
     # -- the fill rule ------------------------------------------------------
-    def fill_at(self, code: str, decision_at: datetime, max_wait_minutes: int = 390) -> MinuteFill:
-        """The price for a decision made at `decision_at`.
+    def fill_at(self, code: str, decided_at: datetime, max_wait_minutes: int = 390) -> MinuteFill:
+        """The price for an order recorded at `decided_at`: the first traded bar that starts
+        strictly after it.
 
-        Raises NoTradeYet if the feed has no traded minute at or after that minute yet.
+        Raises NoTradeYet if the feed has no such bar yet.
         """
-        target = decision_at.astimezone(SYD).replace(second=0, microsecond=0)
+        target = first_minute_after(decided_at)
         # A decision can be made before the open or after the close, so walk forward across
         # days until a session actually traded.
         for day_offset in range(0, 5):
@@ -133,15 +139,17 @@ class MinuteBars:
             if waited > max_wait_minutes:
                 raise NoTradeYet(
                     f"{code}: first traded minute {ts:%Y-%m-%d %H:%M} is {waited} minutes after "
-                    f"the decision, beyond the {max_wait_minutes}-minute limit"
+                    f"the first minute after the decision, beyond the {max_wait_minutes}-minute "
+                    "limit"
                 )
             bar = after.iloc[0]
             return MinuteFill(
                 minute=ts.to_pydatetime(),
                 price=float(_price_of(bar, self.price_field)),
                 basis=(
-                    f"{self.price_field} of the {ts:%Y-%m-%d %H:%M} minute bar "
-                    f"(+{waited} min after the decision); volume {float(bar['volume']):,.0f}"
+                    f"{self.price_field} of the {ts:%Y-%m-%d %H:%M} minute bar, the first "
+                    f"traded bar after the decision (+{waited} min); "
+                    f"volume {float(bar['volume']):,.0f}"
                 ),
                 bar_open=float(bar["open"]),
                 bar_high=float(bar["high"]),
@@ -151,7 +159,8 @@ class MinuteBars:
                 minutes_waited=waited,
             )
         raise NoTradeYet(
-            f"{code}: no traded minute at or after {target:%Y-%m-%d %H:%M} is available yet"
+            f"{code}: no traded minute at or after {target:%Y-%m-%d %H:%M} (the first minute "
+            f"after the decision at {decided_at.astimezone(SYD):%H:%M:%S}) is available yet"
         )
 
     def traded_minutes(self, code: str, since: datetime, days: int = 5):
@@ -237,6 +246,17 @@ class MinuteBars:
         if not len(traded):
             return None
         return float(traded["close"].iloc[-1])
+
+
+def first_minute_after(t: datetime) -> datetime:
+    """The start of the first whole minute strictly after `t`, in Sydney time.
+
+    Bars are stamped with the minute they start, so "the first bar strictly after t" is the
+    first bar at or after this. 10:37:41 -> 10:38:00, and 10:38:00 -> 10:39:00: a bar that
+    starts at the very instant of the decision already has its open in the past.
+    """
+    t = t.astimezone(SYD)
+    return t.replace(second=0, microsecond=0) + timedelta(minutes=1)
 
 
 def _days_to_scan(start: datetime, until: date | None) -> int:

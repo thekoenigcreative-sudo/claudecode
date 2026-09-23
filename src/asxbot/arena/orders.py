@@ -19,6 +19,12 @@ Limits enforced here:
 
 Exits are never blocked. A daily loss limit that stopped you closing a losing position
 would be a risk control that increases risk.
+
+Time: every check here, and the order itself, uses the broker's clock at the moment of the
+call - the decision time. The caller's `now` is only the time its picture of the market was
+taken, and is recorded as the order's `data_as_of`. Until 2026-09-23 the caller's `now` was
+the decision time, and the watcher passed the start of its cycle: an order decided after
+eight minutes of model calls was stamped, and filled, eight minutes before it existed.
 """
 
 from __future__ import annotations
@@ -62,7 +68,8 @@ def arena_place_order(
     short_universe: set[str] | None = None,
     now: datetime | None = None,
 ):
-    now = now or datetime.now(SYD)
+    decided = broker.clock()
+    data_as_of = now or decided
     ticker = ticker.upper().strip()
     side = side.lower().strip()
     events = EventLog(cfg.data_dir)
@@ -95,10 +102,10 @@ def arena_place_order(
         raise refuse("limit must be positive")
 
     guards = cfg.get("arena.guards") or {}
-    local = now.astimezone(SYD)
+    local = decided.astimezone(SYD)
 
     orders_today = sum(
-        1 for o in acct.orders.values() if o.decision_at[:10] == local.date().isoformat()
+        1 for o in acct.orders.values() if o.decided_at[:10] == local.date().isoformat()
     )
     if orders_today >= int(guards.get("max_orders_per_day", 40)):
         raise refuse(f"runaway guard: already {orders_today} orders today on {acct.name}")
@@ -161,7 +168,7 @@ def arena_place_order(
             w = waiting[0]
             raise refuse(
                 f"{ticker} already has an opening order waiting to fill ({w.order_id}: "
-                f"{w.side} {w.qty} @ {w.limit}, decided {w.decision_at}). One opening order "
+                f"{w.side} {w.qty} @ {w.limit}, decided {w.decided_at}). One opening order "
                 "per ticker until it fills or expires; exits are unaffected."
             )
         if pos is not None and (pos.qty > 0) != (side == "buy"):
@@ -233,7 +240,7 @@ def arena_place_order(
                 + (f", counting {waiting_value:,.2f} waiting to fill" if waiting_value else "")
             )
 
-        loss_pct = broker.day_loss_pct(acct, now)
+        loss_pct = broker.day_loss_pct(acct, decided)
         if loss_pct <= -lvl.daily_loss_limit_pct:
             raise refuse(
                 f"daily loss limit hit: {loss_pct:+.2f}% today against the level "
@@ -248,7 +255,7 @@ def arena_place_order(
         side=side,
         qty=qty,
         limit=limit,
-        decision_at=now,
+        data_as_of=data_as_of,
         stop=stop,
         stop_pct=stop_pct,
         target=target,

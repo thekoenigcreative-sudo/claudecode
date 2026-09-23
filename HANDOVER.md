@@ -47,8 +47,10 @@ on it, so nothing is pinned.
 Free quotes are ~20 minutes delayed, so the true price at the moment of a decision is not
 knowable when the decision is made. So:
 
-- every order is recorded `pending_fill` with its decision timestamp;
-- it fills from the 1-minute bar covering that minute (`close` of that minute);
+- every order is recorded `pending_fill`, stamped `decided_at` (the clock when it is
+  recorded) and `data_as_of` (when the data it was decided on was read);
+- it fills from the first 1-minute bar that starts strictly after `decided_at` (`close` of
+  that minute) - until 2026-09-23 it was the bar containing a stale decision time;
 - a minute with no trade walks **forward** to the next minute that did trade, never back;
 - the same walk applies to stops and exits;
 - a stop that is gapped through fills at the bar's open, not at the stop price;

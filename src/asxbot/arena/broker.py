@@ -4,9 +4,11 @@ This is NOT the real-money path. `asxbot.broker.orders.place_order` (human appro
 every call) is untouched and remains the only route to a real broker.
 
 What this broker does:
-  * takes an order and records it `pending_fill` with the decision timestamp;
-  * later fills it from the minute bar covering that minute (see minutes.py), capped at
-    the order's limit - a limit the market never reached rests, then expires at the close;
+  * takes an order and records it `pending_fill`, stamped with its own clock at that moment
+    (`decided_at`) and with the time of the data the decision was made on (`data_as_of`);
+  * later fills it from the first traded minute bar that starts strictly after `decided_at`
+    (see minutes.py), capped at the order's limit - a limit the market never reached rests,
+    then expires once the delayed feed has caught up with the close;
   * enforces stops from the minute bars, with the gap rule, and - for the agent's accounts -
     take-profit targets the same way, mirrored, as resting limits;
   * charges IBKR brokerage both ways, adverse slippage on every fill (it stands in for the
@@ -26,7 +28,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from asxbot.arena.accounts import Account, AccountStore, ArenaOrder, Mark, Position
-from asxbot.arena.minutes import MinuteBars, NoTradeYet
+from asxbot.arena.minutes import MinuteBars, NoTradeYet, first_minute_after
 from asxbot.backtest.costs import CostModel
 from asxbot.log import EventLog, get_logger
 
@@ -55,6 +57,7 @@ class ArenaBroker:
         short_borrow_pct_annual: float = 3.0,
         resolve_after_minutes: int = 22,
         max_wait_minutes: int = 390,
+        clock=None,  # callable() -> aware datetime; the wall clock unless a test sets one
     ):
         self.store = AccountStore(data_dir)
         self.costs = costs
@@ -63,6 +66,7 @@ class ArenaBroker:
         self.short_borrow_pct_annual = float(short_borrow_pct_annual)
         self.resolve_after_minutes = int(resolve_after_minutes)
         self.max_wait_minutes = int(max_wait_minutes)
+        self.clock = clock or (lambda: datetime.now(SYD))
         self.events = EventLog(data_dir)
         self.notifier = None  # set by build_arena; alerts are best effort (notify.py)
 
@@ -79,7 +83,7 @@ class ArenaBroker:
         side: str,
         qty: int,
         limit: float,
-        decision_at: datetime,
+        data_as_of: datetime | None = None,
         stop: float | None = None,
         target: float | None = None,
         reason: str = "",
@@ -88,7 +92,15 @@ class ArenaBroker:
         hold: str = "intraday",
         stop_pct: float | None = None,
     ) -> ArenaOrder:
-        """Record an order. It is NOT filled here - fills happen in resolve_pending()."""
+        """Record an order. It is NOT filled here - fills happen in resolve_pending().
+
+        The decision time is this broker's clock now, as the order is recorded. No caller
+        can supply it: a caller's `now` is the time its picture of the market was taken,
+        which may be minutes old by the time an agent has finished deciding, and it is kept
+        as `data_as_of` so the gap is visible.
+        """
+        decided = self.clock().astimezone(SYD)
+        as_of = (data_as_of or decided).astimezone(SYD)
         oid = self.store.next_order_id()
         o = ArenaOrder(
             order_id=oid,
@@ -97,7 +109,8 @@ class ArenaBroker:
             side=side,
             qty=int(qty),
             limit=float(limit),
-            decision_at=decision_at.astimezone(SYD).isoformat(timespec="seconds"),
+            decided_at=decided.isoformat(timespec="seconds"),
+            data_as_of=as_of.isoformat(timespec="seconds"),
             stop=stop,
             stop_pct=stop_pct,
             target=target,
@@ -105,21 +118,17 @@ class ArenaBroker:
             model=model,
             placed_by=placed_by,
             hold=hold,
-            message="recorded; waiting for the true minute price at the decision time",
+            message="recorded; waiting for the first traded minute after the decision",
         )
         acct.orders[oid] = o
         self.store.save(acct)
         self.events.append("arena_orders", {**o.to_dict(), "event": "submitted"})
         log.info(
-            "arena %s %s %s %s %d @ %.3f (decision %s) -> pending fill",
-            acct.name,
-            oid,
-            side,
-            o.ticker,
-            o.qty,
-            o.limit,
-            o.decision_at,
-        )
+            "arena %s %s %s %s %d @ %.3f (decided %s, on data read at %s, %s earlier) "
+            "-> pending fill",
+            acct.name, oid, side, o.ticker, o.qty, o.limit, o.decided_at, o.data_as_of,
+            _gap(as_of, decided),
+        )  # fmt: skip
         return o
 
     # -- filling ------------------------------------------------------------
@@ -130,7 +139,7 @@ class ArenaBroker:
         for o in list(acct.orders.values()):
             if o.status != "pending_fill":
                 continue
-            decided = datetime.fromisoformat(o.decision_at)
+            decided = _aware(o.decided_at)
             if (now - decided) < timedelta(minutes=self.resolve_after_minutes):
                 continue  # the delayed feed has not caught up with that minute yet
             out.append(self._resolve_one(acct, o, now))
@@ -138,31 +147,17 @@ class ArenaBroker:
         return out
 
     def _resolve_one(self, acct: Account, o: ArenaOrder, now: datetime) -> FillOutcome:
-        decided = datetime.fromisoformat(o.decision_at)
+        decided = _aware(o.decided_at)
         try:
             first = self.minutes.fill_at(o.ticker, decided, self.max_wait_minutes)
         except NoTradeYet as e:
             return FillOutcome(o.order_id, "pending_fill", str(e))
-        adv = self.adv_lookup(o.ticker)
-        slip = self.costs.slippage_pct(abs(o.qty) * o.limit, adv)
-
-        # Walk traded minutes from the decision minute. The first one whose price meets the
-        # order's limit is the fill. A limit the market never reached rests, then expires.
-        chosen = None
-        for ts, _bar, raw in self.minutes.traded_minutes(o.ticker, decided):
-            px = raw * (1 + slip) if o.side in ("buy", "cover") else raw * (1 - slip)
-            if o.side in ("buy", "cover") and px <= o.limit + 1e-9:
-                chosen = (ts, px, raw)
-                break
-            if o.side in ("sell", "short") and px >= o.limit - 1e-9:
-                chosen = (ts, px, raw)
-                break
-            if ts.date() > decided.date() or (ts.time() >= SESSION_CLOSE):
-                break
+        chosen, slip = self.find_fill(o, decided)
 
         if chosen is None:
-            # Did the session it was decided in already finish? Then it can never fill.
-            if _session_over(decided, now):
+            # Did the session it was decided in already finish, and has the delayed feed
+            # caught up with its close? Then it can never fill.
+            if _session_over(decided, now, self.resolve_after_minutes):
                 o.status = "expired"
                 o.message = (
                     f"limit {o.limit:.3f} was never met between {decided:%H:%M} and the close; "
@@ -175,13 +170,39 @@ class ArenaBroker:
             return FillOutcome(o.order_id, "pending_fill", "limit not met yet; still resting")
 
         ts, px, raw = chosen
-        waited = int((ts - decided.replace(second=0, microsecond=0)).total_seconds() // 60)
-        basis = (
-            f"{self.minutes.price_field} of the {ts:%Y-%m-%d %H:%M} minute bar "
-            f"(+{waited} min after the decision) at {raw:.4f}, "
-            f"{'plus' if o.side in ('buy', 'cover') else 'less'} {slip * 100:.3f}% slippage"
+        return self._apply_fill(acct, o, px, ts, self.fill_basis(o, decided, ts, raw, slip))
+
+    def find_fill(
+        self, o: ArenaOrder, decided: datetime
+    ) -> tuple[tuple[datetime, float, float] | None, float]:
+        """((bar minute, fill price, raw bar price) or None, slippage fraction).
+
+        Walks traded minutes from the first one that starts strictly after the decision. The
+        first whose price, after slippage, meets the order's limit is the fill; the walk
+        stops at the decision session's close. None means the limit has not been met in the
+        bars the feed holds so far.
+        """
+        adv = self.adv_lookup(o.ticker)
+        slip = self.costs.slippage_pct(abs(o.qty) * o.limit, adv)
+        for ts, _bar, raw in self.minutes.traded_minutes(o.ticker, first_minute_after(decided)):
+            px = raw * (1 + slip) if o.side in ("buy", "cover") else raw * (1 - slip)
+            if o.side in ("buy", "cover") and px <= o.limit + 1e-9:
+                return (ts, px, raw), slip
+            if o.side in ("sell", "short") and px >= o.limit - 1e-9:
+                return (ts, px, raw), slip
+            if ts.date() > decided.date() or (ts.time() >= SESSION_CLOSE):
+                break
+        return None, slip
+
+    def fill_basis(
+        self, o: ArenaOrder, decided: datetime, ts: datetime, raw: float, slip: float
+    ) -> str:
+        return (
+            f"{self.minutes.price_field} of the {ts:%Y-%m-%d %H:%M} minute bar, the first "
+            f"traded bar after the decision at {decided:%H:%M:%S} that met the limit, at "
+            f"{raw:.4f}, {'plus' if o.side in ('buy', 'cover') else 'less'} "
+            f"{slip * 100:.3f}% slippage"
         )
-        return self._apply_fill(acct, o, px, ts, basis)
 
     def _apply_fill(
         self, acct: Account, o: ArenaOrder, price: float, minute: datetime, basis: str
@@ -328,6 +349,8 @@ class ArenaBroker:
             target_hit = None
             if acct.kind == "agent" and pos.target is not None:
                 if not pos.target_from:
+                    # Armed at `now`, so `now` must be fresh: the watcher reads the clock
+                    # again just before calling this, never reusing its cycle's start time.
                     self._arm_target(acct, pos, now)
                     armed = True
                 t_since = max(since, _minute_after(pos.target_from))
@@ -353,7 +376,7 @@ class ArenaBroker:
         oid = self.store.next_order_id()
         o = ArenaOrder(
             order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
-            limit=round(px, 4), decision_at=ts.isoformat(timespec="seconds"),
+            limit=round(px, 4), **self._resting_times(ts, pos.opened_at),
             reason=f"STOP hit at {pos.stop:.3f}", model="code (stop, not the agent)",
             placed_by="code",
         )  # fmt: skip
@@ -385,11 +408,22 @@ class ArenaBroker:
         oid = self.store.next_order_id()
         o = ArenaOrder(
             order_id=oid, account=acct.name, ticker=ticker, side=side, qty=abs(pos.qty),
-            limit=round(px, 4), decision_at=ts.isoformat(timespec="seconds"),
+            limit=round(px, 4),
+            **self._resting_times(ts, _later(pos.opened_at, pos.target_from)),
             reason=reason, model="code (target, not the agent)", placed_by="code",
         )  # fmt: skip
         acct.orders[oid] = o
         return self._apply_fill(acct, o, px, ts, basis)
+
+    def _resting_times(self, trigger: datetime, rests_from: str) -> dict:
+        """The three times on a stop or target exit. The level had been resting since
+        `rests_from` (the entry minute, or the minute the target was armed) and the bar that
+        reached it starts after that; the code records the exit when it notices it."""
+        return {
+            "decided_at": self.clock().astimezone(SYD).isoformat(timespec="seconds"),
+            "data_as_of": trigger.astimezone(SYD).isoformat(timespec="seconds"),
+            "rests_from": _aware(rests_from).isoformat(timespec="minutes"),
+        }
 
     def _arm_target(self, acct: Account, pos: Position, now: datetime) -> None:
         """Start honouring the target of a position opened before targets were honoured.
@@ -549,8 +583,31 @@ def _move_target(pos: Position, o: ArenaOrder, minute: datetime) -> None:
     pos.target_past_when_armed = False
 
 
-def _session_over(decided: datetime, now: datetime) -> bool:
-    """True once the ASX session the order was decided in has finished."""
+def _session_over(decided: datetime, now: datetime, feed_delay_minutes: int = 0) -> bool:
+    """True once the ASX session the order was decided in has finished AND the delayed feed
+    has had time to show its last minutes. Until 2026-09-23 this ignored the delay, so a
+    resting limit could expire at 16:11 with the feed still twenty minutes short of the
+    close - bars that might have filled it not yet visible."""
     if now.date() > decided.date():
         return True
-    return now.date() == decided.date() and now.time() > SESSION_CLOSE
+    close = datetime.combine(decided.date(), SESSION_CLOSE, tzinfo=SYD)
+    return now >= close + timedelta(minutes=feed_delay_minutes)
+
+
+def _aware(iso: str) -> datetime:
+    t = datetime.fromisoformat(iso)
+    return t if t.tzinfo is not None else t.replace(tzinfo=SYD)
+
+
+def _later(a: str, b: str) -> str:
+    """The later of two stored minutes; an empty one is ignored."""
+    if not b:
+        return a
+    return a if _aware(a) >= _aware(b) else b
+
+
+def _gap(earlier: datetime, later: datetime) -> str:
+    secs = int((later - earlier).total_seconds())
+    sign = "-" if secs < 0 else ""
+    secs = abs(secs)
+    return f"{sign}{secs // 60}m{secs % 60:02d}s"

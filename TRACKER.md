@@ -4,7 +4,7 @@ Living plan. Reviewed and updated by Claude every time a Claude Code output come
 before the next prompt is handed over. Every line here is either verified against a file,
 a log or a command output, or labelled as unverified.
 
-**Last reviewed:** 2026-09-23 15:50 AEST (Claude Code, watcher and target job)
+**Last reviewed:** 2026-09-23 17:00 AEST (Claude Code, fill-timing job)
 **Visual version:** https://claude.ai/artifact/Pg5TsxMqKkbbwz2aFF3UqZ — republished to the
 same link whenever this file changes.
 
@@ -20,7 +20,7 @@ same link whenever this file changes.
 | Broker, orders, fills, stops | Sound — read in full | `broker.py`, `orders.py`, `minutes.py` |
 | Self-checks | 7 checks every cycle, loud on failure | `selfcheck.py`, live log |
 | ASX 200 short universe | Real constituent list, 200 codes, dated | `asxbot universe asx200` |
-| Arena position | A1M 3,000 @ 0.8308, stop 0.755 | account file |
+| Arena position | None open. A1M closed 15:57 by its 0.90 target (ARN-000003, 0.9161, realised 255.72). Its entry is to be re-priced tonight, 0.8308 -> 0.8358 (#24) | account file, 16:45 |
 | Strategy with an edge | **None** | reports/phase1.md |
 | Trustworthy data | **No** — survivorship-biased | yfinance, current listings only |
 
@@ -87,6 +87,10 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 21 | ~~`.gitignore`'s `data/` also hid `src/asxbot/data` — 8 modules never committed, a clone would not import~~ | — | **Fixed `76c2036`** — pattern is now `/data/` |
 | 22 | The 22 Sep marks are in `events/arena_marks.jsonl` but `data/arena/marks/` is empty. Not a bug: `arena reset --yes` at 21:40 22 Sep (the deliberate cleanup in HANDOVER.md) deleted the marks files for test accounts that no longer exist; the event log is append-only and keeps them. No real account ever had a 22 Sep mark. `reset` writes nothing to the event log, so the log reads as if those marks still apply | Low | Optional: have `reset` log an event |
 | 23 | The evening task (19:30/20:30: settle, mark, report) also ran in a visible console window; closing it would lose the day's settlement and the report. The watcher's hidden launcher did not flush printed output, so a killed run lost it | High | **Fixed and applied 23 Sep 16:01** - `scripts/arena_evening.pyw`; `scripts/schedule_evening_hidden.ps1` re-pointed the task (read back: only the action changed; backup in `data/task_backups/`). Both launchers now run unbuffered. First real run 19:30 23 Sep, **not yet verified** |
+| 24 | **Fills priced from before the decision.** The watcher took one `now` at the top of each cycle and passed it to every order placed in that cycle, as the decision time; the fill rule then took the bar containing that minute. On 23 Sep the cycle that began at 10:29:46 (the watcher's restart) worked eight re-looks, a Sonnet and an Opus call each; A1M's decider replied at 10:37:41 and ARN-000002 was recorded then, stamped 10:29:46, and filled at the close of the 10:29 bar (0.8308) - eight minutes before it existed. Not the data time, as first suspected: the log shows 10:29:46 is the cycle start. Affected every order placed after anything slow in the same cycle (agent, re-looks, pre-close, yardstick after an announcement), and every fill (the decision minute's own bar) | High | **Fixed, this job** - the broker stamps `decided_at` from its own clock when it records the order; the caller's time is kept as `data_as_of`; fills take the first traded bar starting strictly after `decided_at`, pending until the feed holds it; the watcher reads the clock afresh per stage and per announcement; stop/target exits record `rests_from`; a resting limit no longer expires before the delayed feed reaches the close; the yardstick records a miss if its orders reach the broker after 10:00; new self-check `fill_before_order`. 15 tests fail on the old code. Loads at the 07:30 24 Sep start. ARN-000002 re-priced by `scripts/correct_fill_arn000002.py` (written, dry-run only, **not run**): 10:41 bar, 0.8358; cash and realised -15.02 (255.72 -> 240.71). Backtests checked: no equivalent look-ahead (review log) |
+| 25 | ARN-000003, A1M's target exit, sold 3,000 shares in the 15:57 bar, whose volume was **1 share** (cached minute bars). Fills take no account of the bar's volume, so a thin bar can fill any size | Medium | **Not yet queued** |
+| 26 | Possible: the last bar in the delayed feed may still be forming when a resting limit walks onto it. Unverified | Low | **Not yet queued**; check what yfinance returns for the newest minute |
+| 27 | Yahoo's `^AXJO` daily open equals the prior close on most days in 2012-20 and 2024-26 (0.98 of days in 2015, 0.93 in 2026), so the backtest's gap vs the index is in effect a raw gap in those years. Not a look-ahead; a data fault in A's trigger | Medium | **Not yet queued**; frozen results untouched |
 
 ---
 
@@ -108,6 +112,7 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 
 ## Review log
 
+- **23 Sep 17:00** - Fill-timing look-ahead (#24) found from ARN-000002 and fixed for every order path; 251 tests pass, 15 of the new or changed ones fail on the old code. `correct_fill_arn000002.py` written and dry-run against the live books (read-only, hashes unchanged): it would set the 10:41 bar, 0.8358, cash and realised -15.02. **Not run** - it refuses while the watcher is up. Tonight, in this order: watcher stops 19:25 -> evening routine -> correction -> `arena_add_capital.py` (tested to work after it). Tonight's evening report and Telegram will show the uncorrected 255.72; the correction restates the day's mark. Backtests checked for the same flaw (read-only, sub-agent, key lines re-read by hand): none. A, B, S1 enter at the next open after the signal is complete (`engine.py:84`, entry_lag=1); announcements at or after 10:00 go to the next session (`signals.py:115`); momentum ranks on closes to t-22 and trades the open. Labelled upper bounds (A same-day, S2 entry_lag=0) rely on release times: releases with no time are parsed as 00:00 (`parser.py:41`), which would put them pre-open - reported as 2,863 archive rows from 2002-03 and no trade using one (sub-agent's count, not re-verified). Also found, and checked by hand on `data/prices/yfinance/^AXJO.parquet`: the index's open equals the prior close on 45-98% of days in 2012-20 and 89-93% in 2024-26, so A's gap "vs index" is mostly a raw gap in those years (#27). New: #25 (fill size ignores bar volume - A1M's target filled 3,000 on a 1-share bar), #26, #27.
 - **23 Sep 15:50** — Watcher death at 13:32 diagnosed (#19): closed console window,
   0xC000013A. Built a windowless launcher, a heartbeat inside the watcher and a watchdog
   outside it (#20); both scheduled-task changes are written as scripts and **not run**,

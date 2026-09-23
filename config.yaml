@@ -266,9 +266,11 @@ arena:
   # that minute. If the stock did not trade in that minute, the fill walks FORWARD to the
   # next minute that did trade - never to an earlier one. Same rule for stops and exits.
   fill:
-    minute_price: close      # close | typical | open. `close` is the last price of the
-                             # decision minute: never earlier than the decision, and
-                             # conservative for momentum entries.
+    minute_price: close      # close | typical | open, of the first traded minute bar that
+                             # STARTS strictly after the order was recorded (decided_at).
+                             # Until 2026-09-23 it was the bar containing the decision
+                             # minute, and the decision time was stale (TRACKER #24). A
+                             # comment change only; the value is unchanged.
     max_wait_minutes: 390    # give up if no traded minute is found within one session
     resolve_after_minutes: 22  # don't try to resolve a fill until the free feed has caught up
     stop_gap_rule: worse_of  # a stop fills at the stop price, or at the bar open if the
