@@ -142,7 +142,7 @@ intraday fetch). The full rule is in `ArenaBroker.work` (`arena/broker.py`).
 ### The two agents
 
 `trader-reader` (Sonnet 5) reads each announcement and writes a quotable summary ending in
-a TRADE_WORTHY verdict. Code hands that summary to `trader-decider` (Opus 5), which works a
+a TRADE_WORTHY verdict. Code hands that summary to `trader-decider` (Opus 5.5), which works a
 fixed checklist and returns a DECISION block. Code then calls `arena_place_order`, which
 enforces every limit — risk per trade, open positions, leverage, the daily loss limit,
 ASX-200-only shorts — and the broker's returned order id is the only proof an order exists.

@@ -9,10 +9,11 @@ and the model recorded here is the one OpenClaw reports it actually ran
 (`meta.executionTrace.winnerModel`) - not the one we asked for, and never the agent's own
 claim about itself.
 
-The effort level is set the same way, on the agent (`thinkingDefault`: reader low, decider
-high, set 2026-09-23). Every call records what OpenClaw says it shaped the request with
-(`meta.requestShaping.thinking`), so a level that quietly stops applying is visible in the
-event log rather than being assumed.
+The effort level is set the same way, on the agent (`thinkingDefault`). Set 2026-09-23 to
+reader low, decider high; changed by Rick the evening of 2026-09-23 to reader medium,
+decider high, with the decider moved from Opus 5 to Opus 5.5. Every call records what
+OpenClaw says it shaped the request with (`meta.requestShaping.thinking`), so a level that
+quietly stops applying is visible in the event log rather than being assumed.
 
 Code hands the reader's summary to the decider. The agents never call each other.
 """
@@ -54,9 +55,17 @@ class AgentReply:
 
     @property
     def model_matches(self) -> bool:
-        return bool(self.model) and self.model.replace("anthropic/", "") == (
-            self.requested_model.replace("anthropic/", "")
-        )
+        return same_model(self.model, self.requested_model)
+
+
+def same_model(ran: str, want: str) -> bool:
+    """Exactly the same model, once the `anthropic/` provider prefix is dropped from each.
+
+    Exact on purpose: `claude-opus-5` and `claude-opus-5-5` share a prefix, and a
+    prefix or substring match would pass either one for the other.
+    """
+    ran, want = ran.strip(), want.strip()
+    return bool(ran) and ran.removeprefix("anthropic/") == want.removeprefix("anthropic/")
 
 
 def _openclaw_bin() -> str:

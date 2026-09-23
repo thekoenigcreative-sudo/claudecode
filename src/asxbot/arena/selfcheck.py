@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from asxbot.arena.agents import same_model
 from asxbot.io import write_text_atomic
 from asxbot.log import EventLog, get_logger
 
@@ -192,6 +193,8 @@ def check_agent_calls(cfg, now: datetime, expected: dict[str, tuple[str, str]]) 
 
     `expected` maps agent -> (model, thinking). A silently downgraded model or a thinking
     level that stopped applying is invisible in the output but changes every decision.
+    Only calls from the last hour are judged, so a call logged under an earlier, since
+    changed setting stops counting an hour later and the event log is never edited.
     """
     calls = recent_events(cfg.data_dir, "arena_agent_calls", now - timedelta(hours=1))
     bad = []
@@ -199,9 +202,7 @@ def check_agent_calls(cfg, now: datetime, expected: dict[str, tuple[str, str]]) 
         agent = str(c.get("agent", "?"))
         want_model, want_think = expected.get(agent, ("", ""))
         ran, think = str(c.get("model_ran", "")), str(c.get("thinking", ""))
-        if want_model and ran and ran.replace("anthropic/", "") != want_model.replace(
-            "anthropic/", ""
-        ):
+        if want_model and ran and not same_model(ran, want_model):
             bad.append(f"{agent} ran {ran}, config says {want_model}")
         elif want_think and think and think != want_think:
             bad.append(f"{agent} ran at {think} effort, config says {want_think}")
@@ -390,17 +391,27 @@ def check_errors_logged(cfg, now: datetime) -> Check:
 
 
 # -- running them -----------------------------------------------------------
-def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
-    """Every check, in one pass. Never raises: a check that breaks is itself a failure."""
+def expected_agents(cfg) -> dict[str, tuple[str, str]]:
+    """agent -> (model, effort) that the agent_mismatch check holds every call to.
+
+    Models come from watch.py (the same constants every call passes as `expect_model`),
+    effort levels from `arena.agents.effort` in config.yaml. The fallbacks are the levels
+    set on the agents on 2026-09-23 (reader medium, decider high); config normally has both.
+    """
     from asxbot.arena.watch import DECIDER_MODEL, READER_MODEL
 
-    now = (now or datetime.now(SYD)).astimezone(SYD)
-    cfg = arena.cfg
     effort = cfg.get("arena.agents.effort") or {}
-    expected = {
-        "trader-reader": (READER_MODEL, str(effort.get("reader", "low"))),
+    return {
+        "trader-reader": (READER_MODEL, str(effort.get("reader", "medium"))),
         "trader-decider": (DECIDER_MODEL, str(effort.get("decider", "high"))),
     }
+
+
+def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
+    """Every check, in one pass. Never raises: a check that breaks is itself a failure."""
+    now = (now or datetime.now(SYD)).astimezone(SYD)
+    cfg = arena.cfg
+    expected = expected_agents(cfg)
     runners = [
         ("pdf_not_pdf", lambda: check_pdfs_are_pdfs(cfg)),
         ("pdf_fetch_failed", lambda: check_pdf_fetches(cfg, now)),

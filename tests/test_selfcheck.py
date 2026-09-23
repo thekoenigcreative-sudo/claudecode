@@ -100,17 +100,74 @@ def test_a_spread_of_screen_rejections_is_fine(cfg):
 
 
 # -- 4. an agent call that did not match config ----------------------------
-EXPECT = {"trader-reader": ("anthropic/claude-sonnet-5", "low")}
+EXPECT = {"trader-reader": ("anthropic/claude-sonnet-5", "medium")}
+
+
+def test_the_expected_agents_are_what_rick_set_on_23_sep_evening(cfg):
+    # Set on the OpenClaw agents by Rick on the evening of 2026-09-23 and confirmed on a
+    # live call to each. The self-check must hold calls to exactly this, from config.
+    from asxbot.arena.watch import DECIDER_MODEL, READER_MODEL
+
+    assert READER_MODEL == "anthropic/claude-sonnet-5"
+    assert DECIDER_MODEL == "anthropic/claude-opus-5-5"
+    assert cfg.get("arena.agents.effort") == {"reader": "medium", "decider": "high"}
+    assert S.expected_agents(cfg) == {
+        "trader-reader": ("anthropic/claude-sonnet-5", "medium"),
+        "trader-decider": ("anthropic/claude-opus-5-5", "high"),
+    }
+
+
+def test_opus_5_and_opus_5_5_are_different_models(cfg):
+    want = {"trader-decider": ("anthropic/claude-opus-5-5", "high")}
+    _event(cfg, "arena_agent_calls",
+           {"agent": "trader-decider", "model_ran": "claude-opus-5", "thinking": "high"},
+           NOW - timedelta(minutes=2))  # fmt: skip
+    c = S.check_agent_calls(cfg, NOW, want)
+    assert not c.ok and "claude-opus-5," in c.detail
+    # and the other way round: a call on 5.5 does not pass a check that wants 5
+    _event(cfg, "arena_agent_calls",
+           {"agent": "trader-decider", "model_ran": "claude-opus-5-5", "thinking": "high"},
+           NOW - timedelta(minutes=1))  # fmt: skip
+    c = S.check_agent_calls(cfg, NOW, {"trader-decider": ("anthropic/claude-opus-5", "high")})
+    assert not c.ok and c.count == 1 and "ran claude-opus-5-5" in c.detail
+
+
+def test_a_reply_matches_its_model_exactly_not_by_prefix():
+    from asxbot.arena.agents import AgentReply
+
+    def reply(ran, asked):
+        return AgentReply("trader-decider", "", ran, asked, "high", "", 0, True, {})
+
+    assert reply("claude-opus-5-5", "anthropic/claude-opus-5-5").model_matches
+    assert reply("anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5").model_matches
+    assert not reply("claude-opus-5", "anthropic/claude-opus-5-5").model_matches
+    assert not reply("claude-opus-5-5", "anthropic/claude-opus-5").model_matches
+    assert not reply("", "anthropic/claude-opus-5-5").model_matches
+    # the provider prefix is dropped only as a prefix, never from the middle of a name
+    assert not reply("x-anthropic/claude-opus-5-5", "claude-opus-5-5").model_matches
+
+
+def test_calls_made_yesterday_under_the_old_settings_do_not_fail_today(cfg):
+    # 23 Sep 19:30: the evening report, the last call on Opus 5 / reader low
+    _event(cfg, "arena_agent_calls",
+           {"agent": "trader-decider", "model_ran": "claude-opus-5", "thinking": "high"},
+           datetime(2026, 9, 23, 19, 30, tzinfo=SYD))  # fmt: skip
+    _event(cfg, "arena_agent_calls",
+           {"agent": "trader-reader", "model_ran": "claude-sonnet-5", "thinking": "low"},
+           datetime(2026, 9, 23, 19, 29, tzinfo=SYD))  # fmt: skip
+    morning = datetime(2026, 9, 24, 7, 30, tzinfo=SYD)
+    c = S.check_agent_calls(cfg, morning, S.expected_agents(cfg))
+    assert c.ok and c.detail.startswith("0 agent call(s)")
 
 
 def test_a_downgraded_model_or_effort_level_is_caught(cfg):
     _event(cfg, "arena_agent_calls",
-           {"agent": "trader-reader", "model_ran": "claude-sonnet-5", "thinking": "low"},
+           {"agent": "trader-reader", "model_ran": "claude-sonnet-5", "thinking": "medium"},
            NOW - timedelta(minutes=2))  # fmt: skip
     assert S.check_agent_calls(cfg, NOW, EXPECT).ok
 
     _event(cfg, "arena_agent_calls",
-           {"agent": "trader-reader", "model_ran": "claude-haiku-4-5", "thinking": "low"},
+           {"agent": "trader-reader", "model_ran": "claude-haiku-4-5", "thinking": "medium"},
            NOW - timedelta(minutes=1))  # fmt: skip
     c = S.check_agent_calls(cfg, NOW, EXPECT)
     assert not c.ok and "claude-haiku-4-5" in c.detail
@@ -119,6 +176,11 @@ def test_a_downgraded_model_or_effort_level_is_caught(cfg):
            {"agent": "trader-reader", "model_ran": "claude-sonnet-5", "thinking": "off"},
            NOW - timedelta(minutes=1))  # fmt: skip
     assert "off effort" in S.check_agent_calls(cfg, NOW, EXPECT).detail
+
+    _event(cfg, "arena_agent_calls",
+           {"agent": "trader-reader", "model_ran": "claude-sonnet-5", "thinking": "low"},
+           NOW - timedelta(minutes=1))  # fmt: skip
+    assert "low effort, config says medium" in S.check_agent_calls(cfg, NOW, EXPECT).detail
 
 
 # -- 5. an order stuck pending ---------------------------------------------

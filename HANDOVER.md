@@ -75,15 +75,21 @@ still the default, still Sonnet 5, still on its own bot.
 | Agent | Model | Effort | Workspace | Telegram |
 |---|---|---|---|---|
 | `main` (JARVIS) | `anthropic/claude-sonnet-5` | (default) | `~\.openclaw\workspace` | `@JARVIS_Z2G9_bot` (`default`) |
-| `trader-reader` | `anthropic/claude-sonnet-5` | `low` | `~\.openclaw\workspace-trader-reader` | none |
-| `trader-decider` | `anthropic/claude-opus-5` | `high` | `~\.openclaw\workspace-trader-decider` | `@rick_asx_trader_bot` (`trader`) |
+| `trader-reader` | `anthropic/claude-sonnet-5` | `medium` | `~\.openclaw\workspace-trader-reader` | none |
+| `trader-decider` | `anthropic/claude-opus-5-5` | `high` | `~\.openclaw\workspace-trader-decider` | `@rick_asx_trader_bot` (`trader`) |
 
 Effort is set per agent, 23 Sep, and needed no gateway restart:
 
 ```
-openclaw config set agents.list.1.thinkingDefault low     # trader-reader
+openclaw config set agents.list.1.thinkingDefault medium  # trader-reader
 openclaw config set agents.list.2.thinkingDefault high    # trader-decider
 ```
+
+**Changed the evening of 23 Sep, by Rick:** the reader's effort `low` -> `medium`, and the
+decider's model `anthropic/claude-opus-5` -> `anthropic/claude-opus-5-5` (effort still
+`high`). Confirmed on a live call to each (`winnerModel`, `requestShaping.thinking`). The
+repo matches: `DECIDER_MODEL` in `arena/watch.py`, `arena.agents.effort` in config.yaml.
+Every arena call before that evening ran on Sonnet 5 low / Opus 5 high.
 
 Confirmed in effect on a live call each: `meta.requestShaping.thinking` came back `low`
 for the reader and `high` for the decider. Every arena call now records that value in

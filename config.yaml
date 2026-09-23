@@ -199,8 +199,14 @@ arena:
   # Added 2026-09-23. What the self-checks expect to be true (arena/selfcheck.py); they
   # run every watcher cycle and shout on Telegram when they are not.
   agents:
+    # reader low -> medium on 2026-09-23 (evening), a DELIBERATE CHANGE by Rick, made on the
+    # OpenClaw agent itself; the decider's model moved from claude-opus-5 to claude-opus-5-5
+    # at the same time (watch.py DECIDER_MODEL), its effort unchanged at high. A model/effort
+    # setting, not a tuned parameter and not a finding: no result prompted it. Both confirmed
+    # on a live call that evening (winnerModel, requestShaping.thinking). Calls before it ran
+    # on Sonnet 5 low / Opus 5 high.
     effort:                    # set on the OpenClaw agents themselves; checked, not applied
-      reader: low
+      reader: medium
       decider: high
   selfcheck:
     repeat_minutes: 60         # a standing failure is re-alerted at most this often

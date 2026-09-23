@@ -5,7 +5,7 @@ The chain for one price-sensitive announcement:
     collector -> alert -> [yardstick bot notes it; it confirms at the reaction session's
                            close and enters at the next open - see yardstick_entries]
                        -> trader-reader (Sonnet 5) reads the PDF and researches
-                       -> code hands the summary to trader-decider (Opus)
+                       -> code hands the summary to trader-decider (Opus 5.5)
                        -> decider returns a DECISION block
                        -> arena_place_order checks the hard limits, in code
                        -> the broker returns an order id; the fill comes later
@@ -61,7 +61,7 @@ SYD = ZoneInfo("Australia/Sydney")
 
 
 READER_MODEL = "anthropic/claude-sonnet-5"
-DECIDER_MODEL = "anthropic/claude-opus-5"
+DECIDER_MODEL = "anthropic/claude-opus-5-5"
 MAX_PDF_CHARS = 24000
 SESSION_OPEN = time_cls(10, 0)  # the ASX opening auction; before it, no reaction exists
 

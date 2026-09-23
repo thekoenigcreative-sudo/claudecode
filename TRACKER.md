@@ -16,7 +16,7 @@ same link whenever this file changes.
 |---|---|---|
 | Announcement collector | Working. Real PDFs since 09:12 | `%PDF` magic on disk |
 | Screen | Working; `max_tick_pct` 3.0, turnover floor $250k | config.yaml |
-| Reader / decider | Sonnet 5 low / Opus 5 high, confirmed per call | `agent_mismatch` self-check |
+| Reader / decider | Sonnet 5 medium / Opus 5.5 high (from the evening of 23 Sep; Sonnet 5 low / Opus 5 high before), confirmed per call | `agent_mismatch` self-check |
 | Broker, orders, fills, stops | Fills volume-aware since 24 Sep (20% of a bar); bars used only once final | `broker.work`, `minutes.final_bars`, tests/test_fill_volume.py |
 | Self-checks | 7 checks every cycle, loud on failure | `selfcheck.py`, live log |
 | ASX 200 short universe | Real constituent list, 200 codes, dated | `asxbot universe asx200` |
