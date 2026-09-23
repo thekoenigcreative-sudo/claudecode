@@ -13,7 +13,9 @@ Limits enforced here:
     max open positions, the level's risk-per-trade cap (so every opening trade needs a
     stop), the level's leverage cap, the level's daily loss limit, shorts only in the
     ASX 200, the allowed universe, one opening order per ticker while one is waiting to
-    fill, and the runaway guards (orders per day, order value).
+    fill, and the runaway guards (orders per day, order value). An opening order waiting to
+    fill counts as the position it becomes: toward max open positions, and at its limit
+    value toward the leverage cap.
 
 Exits are never blocked. A daily loss limit that stopped you closing a losing position
 would be a risk control that increases risk.
@@ -50,6 +52,7 @@ def arena_place_order(
     qty: int,
     limit: float,
     stop: float | None = None,
+    stop_pct: float | None = None,
     target: float | None = None,
     reason: str = "",
     model: str = "",
@@ -114,6 +117,12 @@ def arena_place_order(
 
     pos = acct.positions.get(ticker)
     lvl = playbook.level
+    # Opening orders still waiting to fill. acct.positions holds only FILLED positions, so
+    # without counting these, orders in flight could together fill past every limit below.
+    in_flight = [
+        o for o in acct.orders.values()
+        if o.status == "pending_fill" and o.side in OPENING_SIDES
+    ]  # fmt: skip
 
     # --- closing trades: checked for sanity, never blocked by risk limits ----
     # The hours check below is deliberately NOT applied to exits. Blocking an exit is a
@@ -145,13 +154,9 @@ def arena_place_order(
                     )
             elif bool(cfg.get("arena.shorts.crypto_requires_futures", True)):
                 raise refuse("crypto shorts need a futures market; not built yet")
-        # acct.positions holds only FILLED positions. Without this, a second opening order
-        # in a ticker whose first is still pending_fill passes every limit here, and both
-        # can fill into a double-sized position.
-        waiting = [
-            o for o in acct.orders.values()
-            if o.status == "pending_fill" and o.ticker == ticker and o.side in OPENING_SIDES
-        ]  # fmt: skip
+        # A second opening order in a ticker whose first is still waiting could fill into a
+        # double-sized position.
+        waiting = [o for o in in_flight if o.ticker == ticker]
         if waiting:
             w = waiting[0]
             raise refuse(
@@ -174,11 +179,16 @@ def arena_place_order(
                     f"{ticker} is currently a loss ({px:.3f} against {pos.avg_cost:.3f}); "
                     "adding to a losing position is not allowed"
                 )
-        elif len(acct.positions) >= lvl.max_open_positions:
-            raise refuse(
-                f"already at the level {lvl.number} limit of {lvl.max_open_positions} "
-                f"open positions"
-            )
+        else:
+            # An opening order in a ticker already held adds to that position; one in a new
+            # ticker becomes a position of its own when it fills.
+            becoming = {o.ticker for o in in_flight if o.ticker not in acct.positions}
+            if len(acct.positions) + len(becoming) >= lvl.max_open_positions:
+                raise refuse(
+                    f"already at the level {lvl.number} limit of {lvl.max_open_positions} "
+                    f"open positions ({len(acct.positions)} held, {len(becoming)} more "
+                    "waiting to fill)"
+                )
 
         if stop is None:
             raise refuse("an opening trade needs a stop: risk per trade cannot be measured")
@@ -208,11 +218,13 @@ def arena_place_order(
             )
 
         leverage = lvl.leverage(playbook.market)
-        exposure = acct.gross_exposure(prices) + value
+        waiting_value = sum(o.qty * o.limit for o in in_flight)
+        exposure = acct.gross_exposure(prices) + waiting_value + value
         if exposure > equity * leverage + 1e-6:
             raise refuse(
                 f"gross exposure {exposure:,.2f} would exceed {leverage}x equity "
                 f"({equity * leverage:,.2f}) at level {lvl.number}"
+                + (f", counting {waiting_value:,.2f} waiting to fill" if waiting_value else "")
             )
 
         loss_pct = broker.day_loss_pct(acct, now)
@@ -232,6 +244,7 @@ def arena_place_order(
         limit=limit,
         decision_at=now,
         stop=stop,
+        stop_pct=stop_pct,
         target=target,
         reason=reason,
         model=model,

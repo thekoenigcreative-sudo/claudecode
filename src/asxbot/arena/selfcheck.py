@@ -205,8 +205,29 @@ def check_agent_calls(cfg, now: datetime, expected: dict[str, tuple[str, str]]) 
     )
 
 
+def _could_first_fill(decided: datetime) -> datetime:
+    """When an order could first fill: at its decision, or at the next session's open if it
+    was decided outside one. An order placed at 07:30 cannot fill before 10:00, and is not
+    late at 09:00 - the yardstick places every entry that way."""
+    from datetime import time
+
+    from asxbot.announcements.live import is_trading_day
+
+    local = decided.astimezone(SYD)
+    d = local.date()
+    if is_trading_day(d) and local.time() < time(10, 0):
+        return datetime.combine(d, time(10, 0), tzinfo=SYD)
+    if is_trading_day(d) and local.time() <= time(16, 10):
+        return decided
+    d += timedelta(days=1)
+    while not is_trading_day(d):
+        d += timedelta(days=1)
+    return datetime.combine(d, time(10, 0), tzinfo=SYD)
+
+
 def check_pending_orders(arena, pb, now: datetime) -> Check:
-    """A pending_fill order older than the resolve window plus an hour is stuck."""
+    """A pending_fill order still waiting the resolve window plus an hour after it could
+    first have filled is stuck."""
     limit = timedelta(minutes=arena.broker.resolve_after_minutes) + timedelta(hours=1)
     stuck = []
     for kind in ("agent", "bot"):
@@ -217,11 +238,11 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
             decided = datetime.fromisoformat(o.decision_at)
             if decided.tzinfo is None:
                 decided = decided.replace(tzinfo=SYD)
-            age = now - decided
+            age = now - _could_first_fill(decided)
             if age > limit:
                 stuck.append(
                     f"{o.order_id} {o.side} {o.ticker} decided {decided:%d %b %H:%M}, "
-                    f"{age.total_seconds() / 3600:.1f}h ago"
+                    f"{age.total_seconds() / 3600:.1f}h after it could first fill"
                 )
     if not stuck:
         return Check("stuck_pending", True, "no pending order is past its resolve window")

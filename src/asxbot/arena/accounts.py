@@ -67,6 +67,10 @@ class ArenaOrder:
     fill_minute: str | None = None
     fill_basis: str | None = None
     stop: float | None = None
+    # For a rule that defines its stop as a distance from the entry ("8% below"): the stop is
+    # set at this distance from the price actually filled, replacing `stop`, which is then
+    # only the worst case the risk limit was checked against.
+    stop_pct: float | None = None
     target: float | None = None
     reason: str = ""
     model: str = ""
@@ -76,7 +80,12 @@ class ArenaOrder:
     hold: str = "intraday"  # the holding period the decision intended
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Written only when set, so a book saved by this version still loads in a process
+        # started before stop_pct existed (the running watcher, on the day it was added).
+        if d["stop_pct"] is None:
+            del d["stop_pct"]
+        return d
 
 
 @dataclass

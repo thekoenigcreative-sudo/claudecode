@@ -2,7 +2,8 @@
 
 The chain for one price-sensitive announcement:
 
-    collector -> alert -> [yardstick bot decides on the plain rule, no model]
+    collector -> alert -> [yardstick bot notes it; it confirms at the reaction session's
+                           close and enters at the next open - see yardstick_entries]
                        -> trader-reader (Sonnet 5) reads the PDF and researches
                        -> code hands the summary to trader-decider (Opus)
                        -> decider returns a DECISION block
@@ -42,7 +43,7 @@ from asxbot.arena.agents import (
     parse_decision,
     parse_verdict,
 )
-from asxbot.arena.hours import announcement_window, watcher_stop_time
+from asxbot.arena.hours import announcement_window, order_window, watcher_stop_time
 from asxbot.arena.levels import Playbook
 from asxbot.arena.notify import one_line
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
@@ -490,8 +491,8 @@ def handle_announcement(
                 o = arena_place_order(
                     cfg, arena.broker, bot_acct, pb,
                     ticker=decision.ticker, side=decision.side, qty=decision.qty,
-                    limit=decision.limit, stop=decision.stop, reason=decision.reason,
-                    model="none (rule-based bot)", placed_by="bot",
+                    limit=decision.limit, stop=decision.stop, stop_pct=decision.stop_pct,
+                    reason=decision.reason, model="none (rule-based bot)", placed_by="bot",
                     universe=arena.universe, short_universe=arena.short_universe, now=now,
                 )  # fmt: skip
                 out["bot"]["decision"] = {
@@ -779,6 +780,12 @@ def watch(
             except Exception as e:  # noqa: BLE001
                 log.exception("handling %s failed: %s", a.code, e)
 
+        # The yardstick's entries: once a day, before the open.
+        try:
+            yardstick_entries(arena, pb, now)
+        except Exception as e:  # noqa: BLE001
+            log.exception("the yardstick's entries failed: %s", e)
+
         # Fills and stops, every cycle.
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
@@ -988,6 +995,136 @@ def do_relooks(arena: Arena, pb: Playbook, now: datetime | None = None) -> list[
             )
         except Exception as e:  # noqa: BLE001
             log.exception("re-look on %s failed: %s", a.code, e)
+    return out
+
+
+# --------------------------------------------------------------------------
+# the yardstick's entries: confirm at the reaction session's close, enter at the next open
+# --------------------------------------------------------------------------
+def _yardstick_path(data_dir: Path, day: date) -> Path:
+    return data_dir / "arena" / "yardstick" / f"{day.isoformat()}.json"
+
+
+def previous_session(day: date) -> date:
+    """The last ASX session before `day`."""
+    from asxbot.announcements.live import is_trading_day
+
+    d = day - timedelta(days=1)
+    while not is_trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def seen_announcements(cfg, pb: Playbook, since: date, until: date):
+    """The announcements the live collector saw between two days, shaped like the backtest's
+    archive. Only those released after the warm-up started: the bot and the agent are
+    judged on the same alerts."""
+    import pandas as pd
+
+    frames = []
+    d = since
+    while d <= until:
+        p = cfg.data_dir / "announcements" / "live" / f"{d.isoformat()}.parquet"
+        if p.exists():
+            frames.append(pd.read_parquet(p))
+        d += timedelta(days=1)
+    if not frames:
+        return pd.DataFrame(
+            columns=["code", "released_at", "headline", "type", "price_sensitive", "ids_id",
+                     "pre_open"]
+        )  # fmt: skip
+    ann = pd.concat(frames, ignore_index=True).drop_duplicates("ids_id")
+    ann = ann[~ann["ids_id"].astype(str).map(is_test_id)]
+    start = warmup_start(pb)
+    if start is not None:
+        ann = ann[ann["released_at"] >= start.astimezone(SYD).replace(tzinfo=None)]
+    return ann.reset_index(drop=True)
+
+
+def yardstick_entries(
+    arena: Arena, pb: Playbook, now: datetime | None = None, quotes=None
+) -> list[dict]:
+    """Strategy A's entries, as frozen: placed once a trading day, before the open.
+
+    The rule confirms an event at the close of its reaction session and enters at the next
+    open. So each morning the bot confirms the previous session on its completed daily bar
+    and places its orders; decided before the open, they fill at the opening minute. A
+    morning first reached after the open is recorded as missed, not traded late: a late
+    entry is a different strategy.
+    """
+    from asxbot.arena.bots.announcement_drift import NotReady
+
+    now = now or datetime.now(SYD)
+    local = now.astimezone(SYD)
+    day = local.date()
+    cfg = arena.cfg
+    path = _yardstick_path(cfg.data_dir, day)
+    prior = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if prior.get("status") in ("done", "missed"):
+        return []
+    start = warmup_start(pb)
+    if start is not None and now < start:
+        return []
+    if local.time() < order_window(cfg, day)[0]:
+        return []
+    session = previous_session(day)
+    record: dict = {"day": day.isoformat(), "session_confirmed": session.isoformat()}
+
+    def save(status: str) -> None:
+        from asxbot.io import write_text_atomic
+
+        write_text_atomic(json.dumps({**record, "status": status}, indent=2), path)
+
+    if local.time() >= SESSION_OPEN:
+        # Missing a day is a fault in the yardstick's record: logged as an error, so the
+        # self-checks say so rather than the comparison quietly losing a session.
+        record["missed"] = prior.get("waiting_for") or (
+            f"first reached at {local:%H:%M}, after the {SESSION_OPEN:%H:%M} open"
+        )
+        log.error(
+            "the yardstick missed the %s open (session %s confirmed on nothing): %s. The rule "
+            "enters at the open only, so nothing is traded late.",
+            day, session, record["missed"],
+        )  # fmt: skip
+        save("missed")
+        return []
+
+    acct = arena.account(pb, "bot")
+    bot = make_bot(arena, pb, quotes)
+    ann = seen_announcements(cfg, pb, session - timedelta(days=10), day)
+    try:
+        decisions, why = bot.entries(acct, ann, session, now)
+    except NotReady as e:
+        if prior.get("waiting_for") != str(e):
+            log.warning("yardstick entries: %s; trying again each cycle until the open", e)
+        record["waiting_for"] = str(e)
+        save("waiting")
+        return []
+    record["why"] = why
+    log.info("yardstick entries for %s: %s", session, why)
+
+    alert = notify.get(arena)
+    out = []
+    for d in decisions:
+        try:
+            o = arena_place_order(
+                cfg, arena.broker, acct, pb,
+                ticker=d.ticker, side=d.side, qty=d.qty, limit=d.limit, stop=d.stop,
+                stop_pct=d.stop_pct, reason=d.reason, model="none (rule-based bot)",
+                placed_by="bot", universe=arena.universe,
+                short_universe=arena.short_universe, now=now,
+            )  # fmt: skip
+            out.append({"ticker": o.ticker, "order_id": o.order_id, "qty": o.qty,
+                        "limit": o.limit})  # fmt: skip
+            log.info("yardstick bot placed %s for %s at the open", o.order_id, o.ticker)
+            if alert:
+                alert.decided(o)
+        except ArenaOrderRefused as e:
+            out.append({"ticker": d.ticker, "refused": str(e)})
+            if alert:
+                alert.refused("bot", d.ticker, d.side, d.qty, str(e))
+    record["orders"] = out
+    save("done")
     return out
 
 

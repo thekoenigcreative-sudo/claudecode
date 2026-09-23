@@ -260,6 +260,44 @@ def test_a_second_opening_order_is_refused_while_the_first_waits_to_fill(setup):
     assert o.status == "pending_fill"
 
 
+def test_orders_waiting_to_fill_count_toward_positions_and_leverage(setup, monkeypatch):
+    """With three held and one waiting, a fifth could fill: pending orders were invisible to
+    max_open_positions and to the leverage cap alike."""
+    import dataclasses
+
+    from asxbot.arena.accounts import Position
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch, 1.00)
+    pb = dataclasses.replace(
+        pb, level=dataclasses.replace(pb.level, max_open_positions=4, leverage_asx=1.0)
+    )
+    uni = {"BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH"}
+    kw = dict(side="buy", qty=500, limit=1.20, stop=1.15, universe=uni)
+
+    # Positions: three held, one waiting to fill. The next new ticker would be a fifth.
+    for t in ("BBB", "CCC", "DDD"):
+        acct.positions[t] = Position(ticker=t, qty=1000, avg_cost=1.00, opened_at="2026-01-06")
+    acct.cash = 7_000.0  # equity 10,000
+    _place(cfg, broker, acct, pb, ticker="EEE", **kw)
+    with pytest.raises(ArenaOrderRefused, match="open positions"):
+        _place(cfg, broker, acct, pb, ticker="FFF", **kw)
+    # Exits are never blocked.
+    exit_ = dict(side="sell", qty=1000, limit=0.90, universe=uni)
+    assert _place(cfg, broker, acct, pb, ticker="BBB", **exit_).status == "pending_fill"
+
+    # Leverage: nothing held, two orders worth 4,000 waiting. A third would take the
+    # account to 12,000 of exposure on 10,000 of equity at 1x.
+    acct.positions.clear()
+    acct.orders.clear()
+    acct.cash = 10_000.0
+    big = dict(kw, qty=3333)
+    _place(cfg, broker, acct, pb, ticker="EEE", **big)
+    _place(cfg, broker, acct, pb, ticker="FFF", **big)
+    with pytest.raises(ArenaOrderRefused, match="gross exposure .* waiting to fill"):
+        _place(cfg, broker, acct, pb, ticker="GGG", **big)
+
+
 def test_the_arena_refuses_to_run_outside_sim(setup, config_file, tmp_path):
     cfg, broker, pb, acct = setup
     paper = load_config(
@@ -985,3 +1023,121 @@ def test_the_decider_packet_shows_its_orders_waiting_to_fill(setup, monkeypatch)
         {"ticker": "AAA", "side": "buy", "qty": 3000, "limit": 0.83, "stop": 0.755,
          "minutes_waiting": 25}
     ]  # fmt: skip
+
+
+# -- the yardstick: strategy A as frozen - confirm at the close, enter at the next open --
+T0 = date(2026, 1, 5)  # the reaction session (a Monday); DAY, the 6th, is the entry open
+
+
+def _index_daily() -> pd.DataFrame:
+    idx = pd.bdate_range(end=pd.Timestamp(T0), periods=60, name="date")
+    return pd.DataFrame(
+        {"open": 1000.0, "high": 1000.0, "low": 1000.0, "close": 1000.0, "volume": 0.0}, index=idx
+    )
+
+
+def _stock_daily(gap_pct: float, vol_x: float) -> pd.DataFrame:
+    """60 quiet sessions at 0.95 on 1m shares, then T0 opens gap_pct above the prior close on
+    vol_x the usual volume and closes at 1.00. The index is flat, so the gap is all relative."""
+    df = _index_daily().assign(open=0.95, high=0.95, low=0.95, close=0.95, volume=1_000_000.0)
+    o = 0.95 * (1 + gap_pct / 100)
+    df.loc[pd.Timestamp(T0)] = [o, max(o, 1.0), min(o, 1.0), 1.00, 1_000_000.0 * vol_x]
+    return df
+
+
+def _ann_frame(*rows) -> pd.DataFrame:
+    """rows: (code, released_at 'YYYY-MM-DD HH:MM' Sydney, price_sensitive)"""
+    return pd.DataFrame(
+        [
+            {"code": c, "released_at": pd.Timestamp(ts), "headline": f"{c} news", "type": "other",
+             "price_sensitive": ps, "ids_id": f"{i:08d}", "pre_open": False}
+            for i, (c, ts, ps) in enumerate(rows)
+        ]
+    )  # fmt: skip
+
+
+def _yardstick(cfg, broker, pb, frames):
+    from asxbot.arena.bots.announcement_drift import AnnouncementDriftBot
+
+    def fetch(tickers, start):
+        return {t: frames[t] for t in tickers if t in frames}
+
+    return AnnouncementDriftBot(cfg, pb, broker, set(frames) - {"^AXJO"}, fetch)
+
+
+def test_the_yardstick_confirms_the_frozen_rule_on_the_completed_session(setup):
+    """Gap >= 5% vs the index at the open, >= 3x volume, a price-sensitive announcement
+    reacting that session - and nothing is decided when the announcement lands."""
+    from asxbot.arena.bots.announcement_drift import NotReady
+
+    cfg, broker, pb, acct = setup
+    frames = {
+        "^AXJO": _index_daily(),
+        "AAA": _stock_daily(6, 4),
+        "BBB": _stock_daily(4, 4),  # gap below 5%
+        "CCC": _stock_daily(6, 2),  # volume below 3x
+        "DDD": _stock_daily(6, 4),  # released after 10:00, so it reacts the next session
+        "EEE": _stock_daily(6, 4),  # not price sensitive
+        "FFF": _stock_daily(6, 5),  # released on the Sunday; reacts Monday
+    }
+    ann = _ann_frame(
+        ("AAA", "2026-01-05 08:30", True), ("BBB", "2026-01-05 08:30", True),
+        ("CCC", "2026-01-05 08:30", True), ("DDD", "2026-01-05 11:00", True),
+        ("EEE", "2026-01-05 08:30", False), ("FFF", "2026-01-04 15:00", True),
+    )  # fmt: skip
+    bot = _yardstick(cfg, broker, pb, frames)
+
+    decision, why = bot.on_announcement(acct, _ann(code="AAA"), _AT)
+    assert decision is None and "next open" in why
+
+    out, why = bot.entries(acct, ann, T0, datetime(2026, 1, 6, 7, 45, tzinfo=SYD))
+    assert [d.ticker for d in out] == ["FFF", "AAA"]  # highest volume multiple first
+    aaa = out[1]
+    assert (aaa.side, aaa.limit, aaa.stop, aaa.stop_pct) == ("buy", 1.10, 1.01, 8.0)
+
+    # Before the session's bar is published there is nothing to confirm on.
+    at = datetime(2026, 1, 6, 7, 45, tzinfo=SYD)
+    late = _yardstick(cfg, broker, pb, {**frames, "^AXJO": _index_daily().iloc[:-1]})
+    with pytest.raises(NotReady):
+        late.entries(acct, ann, T0, at)
+    # Nor when the index has dropped the session before it, which the gap is measured from:
+    # the backtest's code would find no event at all, silently.
+    gappy = _index_daily().drop(pd.Timestamp(date(2026, 1, 2)))
+    with pytest.raises(NotReady, match="missing 2026-01-02"):
+        _yardstick(cfg, broker, pb, {**frames, "^AXJO": gappy}).entries(acct, ann, T0, at)
+
+
+def test_the_yardstick_enters_at_the_next_open_once_and_never_late(setup, monkeypatch):
+    import dataclasses
+    import json
+
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    pb = dataclasses.replace(pb, raw={**pb.raw, "warmup_start": None})
+    live = cfg.data_dir / "announcements" / "live"
+    live.mkdir(parents=True, exist_ok=True)
+    _ann_frame(("AAA", "2026-01-05 08:30", True)).to_parquet(live / "2026-01-05.parquet")
+    frames = {"^AXJO": _index_daily(), "AAA": _stock_daily(6, 4)}
+    bot = _yardstick(cfg, broker, pb, frames)
+    monkeypatch.setattr(W, "make_bot", lambda arena, pb, quotes=None: bot)
+    fake = _FakeArena(cfg, broker, acct)
+
+    placed = W.yardstick_entries(fake, pb, datetime(2026, 1, 6, 7, 45, tzinfo=SYD))
+    assert [p["ticker"] for p in placed] == ["AAA"]
+    assert W.yardstick_entries(fake, pb, datetime(2026, 1, 6, 8, 0, tzinfo=SYD)) == []  # once
+
+    broker.resolve_pending(acct, now=datetime(2026, 1, 6, 11, 0, tzinfo=SYD))
+    o = acct.orders[placed[0]["order_id"]]
+    assert o.status == "filled" and o.fill_minute.startswith("2026-01-06T10:00")  # the open
+    pos = acct.positions["AAA"]
+    assert pos.stop == pytest.approx(o.avg_price * 0.92, abs=1e-4)  # 8% below the fill
+
+    # The next morning the 6th's bar never arrives: it waits, then records the miss and why,
+    # rather than trading late.
+    assert W.yardstick_entries(fake, pb, datetime(2026, 1, 7, 7, 45, tzinfo=SYD)) == []
+    state = W._yardstick_path(cfg.data_dir, date(2026, 1, 7))
+    assert json.loads(state.read_text())["status"] == "waiting"
+    assert W.yardstick_entries(fake, pb, datetime(2026, 1, 7, 10, 30, tzinfo=SYD)) == []
+    missed = json.loads(state.read_text())
+    assert missed["status"] == "missed" and "2026-01-06" in missed["missed"]

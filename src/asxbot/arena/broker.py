@@ -85,6 +85,7 @@ class ArenaBroker:
         model: str = "",
         placed_by: str = "",
         hold: str = "intraday",
+        stop_pct: float | None = None,
     ) -> ArenaOrder:
         """Record an order. It is NOT filled here - fills happen in resolve_pending()."""
         oid = self.store.next_order_id()
@@ -97,6 +98,7 @@ class ArenaBroker:
             limit=float(limit),
             decision_at=decision_at.astimezone(SYD).isoformat(timespec="seconds"),
             stop=stop,
+            stop_pct=stop_pct,
             target=target,
             reason=reason,
             model=model,
@@ -188,6 +190,9 @@ class ArenaBroker:
         fee = self.costs.brokerage(value)
         pos = acct.positions.get(o.ticker)
         realised = 0.0
+        if o.stop_pct is not None and o.side in OPENING_SIDES:
+            d = float(o.stop_pct) / 100.0
+            o.stop = round(price * (1 - d) if o.side == "buy" else price * (1 + d), 4)
         o = _stop_rescaled_to_fill(o, price)
 
         if o.side == "buy":

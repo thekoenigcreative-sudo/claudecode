@@ -63,6 +63,29 @@ class Arena:
 
         return daily
 
+    def daily_fresh(self):
+        """Daily bars straight from the provider, never from or into the cache.
+
+        The yardstick confirms on the session that has only just closed, so a cached copy
+        up to three days old will not do, and the backtest's cached history must not change
+        underneath it either.
+        """
+        from asxbot.data.base import COLUMNS, normalise
+        from asxbot.data.factory import get_provider
+
+        provider = get_provider(self.cfg)
+
+        def fetch(tickers: list[str], start) -> dict:
+            import pandas as pd
+
+            raw = provider.daily_many(tickers, start)
+            return {
+                t: normalise(df) if df is not None and len(df) else pd.DataFrame(columns=COLUMNS)
+                for t, df in raw.items()
+            }
+
+        return fetch
+
     def now(self) -> datetime:
         return datetime.now(SYD)
 
@@ -114,11 +137,6 @@ def make_bot(arena: Arena, pb: Playbook, quotes=None):
         from asxbot.arena.bots.announcement_drift import AnnouncementDriftBot
 
         return AnnouncementDriftBot(
-            arena.cfg,
-            pb,
-            arena.broker,
-            quotes or arena.quote_provider(),
-            arena.daily_lookup(),
-            arena.universe,
+            arena.cfg, pb, arena.broker, arena.universe, arena.daily_fresh()
         )
     raise KeyError(f"no yardstick bot built for playbook {pb.key!r} yet")

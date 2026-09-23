@@ -25,6 +25,7 @@ class BotDecision:
     limit: float
     stop: float
     reason: str
+    stop_pct: float | None = None  # a stop defined from the fill, not from the limit
 
 
 class Bot(ABC):

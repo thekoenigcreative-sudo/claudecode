@@ -150,9 +150,19 @@ def test_an_order_stuck_past_its_resolve_window_is_caught(cfg):
     fresh = _FakeArena(cfg, _acct_with_pending(NOW - timedelta(minutes=30)))
     assert S.check_pending_orders(fresh, None, NOW).ok  # 22 min window + an hour of slack
 
-    stuck = _FakeArena(cfg, _acct_with_pending(NOW - timedelta(hours=3)))
+    # Decided in yesterday's session. (NOW - 3h is 08:00, before today's open: not stuck.)
+    stuck = _FakeArena(cfg, _acct_with_pending(datetime(2026, 9, 22, 14, 0, tzinfo=SYD)))
     c = S.check_pending_orders(stuck, None, NOW)
     assert not c.ok and "ARN-1" in c.detail
+
+
+def test_a_pre_open_order_is_timed_from_the_open_not_from_its_decision(cfg):
+    """The yardstick places its entries before 10:00; they cannot fill until the open, and
+    an alarm every such morning would be an alarm nobody reads."""
+    pre_open = _FakeArena(cfg, _acct_with_pending(datetime(2026, 9, 23, 7, 35, tzinfo=SYD)))
+    assert S.check_pending_orders(pre_open, None, NOW).ok  # 3h25m old, 1h after the open
+    late = datetime(2026, 9, 23, 11, 30, tzinfo=SYD)  # 90 min after the open: past 82
+    assert not S.check_pending_orders(pre_open, None, late).ok
 
 
 # -- 6. an ERROR in the log ------------------------------------------------
