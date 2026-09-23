@@ -236,6 +236,30 @@ def test_adding_to_a_losing_position_is_refused(setup, monkeypatch):
         _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.00, stop=0.90)
 
 
+def test_a_second_opening_order_is_refused_while_the_first_waits_to_fill(setup):
+    """acct.positions holds only filled positions, so a pending order used to be invisible
+    to every limit: a second buy passed, and both could fill into a double-sized position."""
+    cfg, broker, pb, acct = setup
+    from asxbot.arena.accounts import Position
+
+    first = _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20, stop=1.15)
+    assert first.status == "pending_fill"
+    n = len(acct.orders)
+    with pytest.raises(ArenaOrderRefused, match="waiting to fill"):
+        _place(cfg, broker, acct, pb, ticker="AAA", side="buy", qty=500, limit=1.20, stop=1.15)
+    assert len(acct.orders) == n  # nothing reached the broker
+
+    # Another ticker is unaffected.
+    _place(cfg, broker, acct, pb, ticker="BBB", side="buy", qty=500, limit=1.20, stop=1.15)
+
+    # Exits are never blocked, even with an opening order pending in the same ticker.
+    acct.positions["AAA"] = Position(
+        ticker="AAA", qty=500, avg_cost=1.10, opened_at="2026-01-06T10:00"
+    )
+    o = _place(cfg, broker, acct, pb, ticker="AAA", side="sell", qty=500, limit=1.00)
+    assert o.status == "pending_fill"
+
+
 def test_the_arena_refuses_to_run_outside_sim(setup, config_file, tmp_path):
     cfg, broker, pb, acct = setup
     paper = load_config(
@@ -932,3 +956,32 @@ def test_the_decider_packet_carries_the_re_look_note(setup, monkeypatch):
     packet = W.decider_packet(fake, pb, acct, _ann(), ctx, "summary", _AT, note)
     assert "THIS IS A RE-LOOK" in packet and "HOW TO DECIDE" in packet
     assert "THIS IS A RE-LOOK" not in W.decider_packet(fake, pb, acct, _ann(), ctx, "s", _AT)
+
+
+def test_the_decider_packet_shows_its_orders_waiting_to_fill(setup, monkeypatch):
+    """On 23 Sep the decider passed on a second A1M announcement saying "I cannot see whether
+    the first order filled": the packet carried held positions only."""
+    import json as _json
+
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    broker.submit(
+        acct, ticker="AAA", side="buy", qty=3000, limit=0.83,
+        decision_at=_AT - timedelta(minutes=25), stop=0.755,
+    )  # fmt: skip
+    done = broker.submit(
+        acct, ticker="BBB", side="buy", qty=100, limit=1.00,
+        decision_at=_AT - timedelta(minutes=90), stop=0.90,
+    )  # fmt: skip
+    done.status = "filled"  # a filled order is a position, not something waiting
+
+    ctx = {"dossier": {}, "reaction": {}, "text": ""}
+    packet = W.decider_packet(_FakeArena(cfg, broker, acct), pb, acct, _ann(), ctx, "s", _AT)
+    line = next(ln for ln in packet.splitlines() if "orders waiting to fill:" in ln)
+    shown = _json.loads(line.split("orders waiting to fill:")[1].split("   (")[0])
+    assert shown == [
+        {"ticker": "AAA", "side": "buy", "qty": 3000, "limit": 0.83, "stop": 0.755,
+         "minutes_waiting": 25}
+    ]  # fmt: skip

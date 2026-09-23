@@ -12,7 +12,8 @@ Limits enforced here:
     fake money only, playbook enabled, limit orders only, allowed hours, the level's
     max open positions, the level's risk-per-trade cap (so every opening trade needs a
     stop), the level's leverage cap, the level's daily loss limit, shorts only in the
-    ASX 200, the allowed universe, and the runaway guards (orders per day, order value).
+    ASX 200, the allowed universe, one opening order per ticker while one is waiting to
+    fill, and the runaway guards (orders per day, order value).
 
 Exits are never blocked. A daily loss limit that stopped you closing a losing position
 would be a risk control that increases risk.
@@ -144,6 +145,20 @@ def arena_place_order(
                     )
             elif bool(cfg.get("arena.shorts.crypto_requires_futures", True)):
                 raise refuse("crypto shorts need a futures market; not built yet")
+        # acct.positions holds only FILLED positions. Without this, a second opening order
+        # in a ticker whose first is still pending_fill passes every limit here, and both
+        # can fill into a double-sized position.
+        waiting = [
+            o for o in acct.orders.values()
+            if o.status == "pending_fill" and o.ticker == ticker and o.side in OPENING_SIDES
+        ]  # fmt: skip
+        if waiting:
+            w = waiting[0]
+            raise refuse(
+                f"{ticker} already has an opening order waiting to fill ({w.order_id}: "
+                f"{w.side} {w.qty} @ {w.limit}, decided {w.decision_at}). One opening order "
+                "per ticker until it fills or expires; exits are unaffected."
+            )
         if pos is not None and (pos.qty > 0) != (side == "buy"):
             raise refuse(
                 f"already {'long' if pos.qty > 0 else 'short'} {ticker}; "

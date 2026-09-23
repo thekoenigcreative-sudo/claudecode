@@ -267,6 +267,13 @@ CAN_SIZE_AND_EXIT line, with nothing after them.
 """
 
 
+def _minutes_waiting(decision_at: str, now: datetime) -> int:
+    decided = datetime.fromisoformat(decision_at)
+    if decided.tzinfo is None:
+        decided = decided.replace(tzinfo=SYD)
+    return max(0, int((now - decided).total_seconds() // 60))
+
+
 def decider_packet(
     arena: Arena,
     pb: Playbook,
@@ -291,6 +298,20 @@ def decider_packet(
             "opened": p.opened_at,
         }
         for t, p in acct.positions.items()
+    ]
+    # An order waiting to fill is not a position yet, but it becomes one if it fills. Without
+    # this the decider could not tell whether its own earlier order in a ticker was live.
+    pending = [
+        {
+            "ticker": o.ticker,
+            "side": o.side,
+            "qty": o.qty,
+            "limit": o.limit,
+            "stop": o.stop,
+            "minutes_waiting": _minutes_waiting(o.decision_at, now),
+        }
+        for o in acct.orders.values()
+        if o.status == "pending_fill"
     ]
     holding = (
         f"{pb.holding}"
@@ -331,6 +352,8 @@ YOUR ACCOUNT  ({acct.name}, playbook "{pb.title}", level {lvl.number} - {lvl.nam
   equity: {equity:,.2f}      cash: {acct.cash:,.2f}
   today so far: {loss_today:+.2f}%   (no new positions once it reaches -{lvl.daily_loss_limit_pct}%)
   open positions: {json.dumps(positions, default=str)}   (limit {lvl.max_open_positions})
+  orders waiting to fill: {json.dumps(pending, default=str)}   (not positions yet; each
+    becomes one if it fills)
 
 WHAT THE CODE WILL ALLOW
   - risk per trade, measured as |entry - stop| x quantity, at most
@@ -340,6 +363,7 @@ WHAT THE CODE WILL ALLOW
   - long anything in the universe; SHORT only ASX 200 stocks
   - every opening trade needs a stop, and longs need the stop below the entry
   - no adding to a losing position
+  - no second opening order in a ticker that already has one waiting to fill
   - holding period for this playbook: {holding}
   - your fill will be the true 1-minute bar price covering the moment you decide, so a
     limit far away from the current price simply will not fill
