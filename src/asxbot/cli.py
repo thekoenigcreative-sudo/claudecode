@@ -168,6 +168,31 @@ def cmd_alerts_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_asx200(args: argparse.Namespace) -> int:
+    """Show the ASX 200 short universe and where it came from; --refresh rebuilds it."""
+    from asxbot.data.universe import asx200_status, refresh_asx200
+
+    cfg = load_config()
+    log = setup_logging(cfg.data_dir)
+    ua = cfg.get("collector.user_agent")
+    if args.refresh:
+        try:
+            refresh_asx200(cfg.data_dir, ua)
+        except Exception as e:  # noqa: BLE001
+            print(f"refresh FAILED: {e}")
+            log.error("ASX 200 refresh failed: %s", e)
+            return 3
+    u = asx200_status(cfg.data_dir, ua)
+    print(f"ASX 200 short universe: {len(u.codes)} codes")
+    print(f"  source:    {u.source}")
+    print(f"  as of:     {u.as_of} ({u.age_days} day(s) old)")
+    print(f"  index list: {u.is_index_list}   stale: {u.stale}   too small: {u.too_small}")
+    if args.check:
+        for code in sorted(args.check.upper().split(",")):
+            print(f"  {code}: {'IN' if code in u.codes else 'NOT IN'} the short universe")
+    return 0
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     from asxbot.backtest.run import run_phase1
 
@@ -494,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="load config, print settings, verify broker guard").set_defaults(
         fn=cmd_check
     )
-    sub.add_parser("universe", help="build and print the two universes").set_defaults(
+    sub.add_parser("universes", help="build and print the two universes").set_defaults(
         fn=cmd_universe
     )
     f = sub.add_parser("fetch", help="download/refresh daily prices into data/prices")
@@ -522,6 +547,13 @@ def build_parser() -> argparse.ArgumentParser:
         fn=cmd_ann_status
     )
     bt = sub.add_parser("backtest", help="run the Phase 1 backtest and write reports/phase1.md")
+    uni = sub.add_parser("universe", help="the ASX 200 short universe and its provenance")
+    us = uni.add_subparsers(dest="what", required=True)
+    u2 = us.add_parser("asx200", help="show it; --refresh rebuilds the constituent list")
+    u2.add_argument("--refresh", action="store_true")
+    u2.add_argument("--check", help="comma-separated codes to test for membership")
+    u2.set_defaults(fn=cmd_asx200)
+
     bt.add_argument("--universe", nargs="*", choices=["asx300", "small"])
     bt.add_argument(
         "--in-sample-only", action="store_true",

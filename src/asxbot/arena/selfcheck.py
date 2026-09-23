@@ -13,6 +13,7 @@ All arithmetic and file checks. No judgement, no model, nothing that needs inter
   agent_mismatch     an agent call whose model or thinking level was not what config asks
   stuck_pending      a pending_fill order older than the resolve window plus an hour
   errors_logged      an ERROR line in the last hour
+  short_universe     the ASX 200 list is short, stale, or not a constituent list at all
 
 A failure is loud: CRITICAL in the log, an `arena_selfcheck` event, an alerts flag file,
 and a Telegram message. The same failure is not repeated more often than
@@ -47,6 +48,7 @@ class Check:
     detail: str
     count: int = 0
     facts: dict = field(default_factory=dict)
+    items: list = field(default_factory=list)  # the individual findings, for deduping
 
     def __bool__(self) -> bool:
         return self.ok
@@ -107,6 +109,7 @@ def check_pdfs_are_pdfs(cfg) -> Check:
         + (" ..." if len(bad) > 5 else ""),
         count=len(bad),
         facts={"files": bad[:20]},
+        items=bad,
     )
 
 
@@ -122,6 +125,7 @@ def check_pdf_fetches(cfg, now: datetime) -> Check:
         f"{len(fails)} PDF fetch(es) failed in the last hour ({codes}); those agents are "
         f"judging headlines with no document",
         count=len(fails),
+        items=[f"{f.get('code')} {f.get('ids_id')}" for f in fails],
     )
 
 
@@ -197,6 +201,7 @@ def check_agent_calls(cfg, now: datetime, expected: dict[str, tuple[str, str]]) 
         False,
         f"{len(bad)} agent call(s) did not match config: {'; '.join(sorted(set(bad))[:4])}",
         count=len(bad),
+        items=sorted(set(bad)),
     )
 
 
@@ -226,7 +231,50 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
         f"{len(stuck)} order(s) still pending long after the fill should have resolved: "
         + "; ".join(stuck[:4]),
         count=len(stuck),
+        items=stuck,
     )
+
+
+def check_short_universe(cfg) -> Check:
+    """The set the arena allows shorts in: is it the index, is it full, is it current?
+
+    This is the fault class the other checks miss. A short universe that silently shrinks
+    refuses trades and never errors: on 23 September the "ASX 200" was the top 200 by
+    market cap, which held 175 of the 200 real constituents, and the decider was refused a
+    short in TUA - a genuine member - twice in one minute.
+    """
+    from asxbot.data.universe import ASX200_MAX_AGE_DAYS, ASX200_MIN, asx200_status
+
+    u = asx200_status(cfg.data_dir, cfg.get("collector.user_agent"))
+    facts = {"codes": len(u.codes), "source": u.source, "age_days": u.age_days}
+    if not u.is_index_list:
+        return Check(
+            "short_universe", False,
+            f"the short universe is not a constituent list: {u.source}, {len(u.codes)} codes. "
+            "Shorts in real index members are being refused. "
+            "Run: asxbot universe asx200 --refresh",
+            count=len(u.codes), facts=facts,
+        )  # fmt: skip
+    if u.too_small:
+        return Check(
+            "short_universe", False,
+            f"the ASX 200 list has only {len(u.codes)} codes (fewer than {ASX200_MIN}); "
+            f"source {u.source}. Every missing member is a short refused without an error",
+            count=len(u.codes), facts=facts,
+        )  # fmt: skip
+    if u.stale:
+        age = "never dated" if u.age_days is None else f"{u.age_days} days old"
+        return Check(
+            "short_universe", False,
+            f"the ASX 200 list is {age} (limit {ASX200_MAX_AGE_DAYS} days) and has not "
+            f"refreshed; source {u.source}",
+            count=len(u.codes), facts=facts,
+        )  # fmt: skip
+    return Check(
+        "short_universe", True,
+        f"{len(u.codes)} ASX 200 codes, {u.age_days} day(s) old, from {u.source}",
+        facts=facts,
+    )  # fmt: skip
 
 
 ERROR_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ (ERROR|CRITICAL) (\S+): (.*)")
@@ -262,6 +310,7 @@ def check_errors_logged(cfg, now: datetime) -> Check:
         False,
         f"{len(hits)} ERROR line(s) in the last hour: " + " | ".join(hits[-3:]),
         count=len(hits),
+        items=hits,
     )
 
 
@@ -284,6 +333,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("agent_mismatch", lambda: check_agent_calls(cfg, now, expected)),
         ("stuck_pending", lambda: check_pending_orders(arena, pb, now)),
         ("errors_logged", lambda: check_errors_logged(cfg, now)),
+        ("short_universe", lambda: check_short_universe(cfg)),
     ]
     out = []
     for key, fn in runners:
@@ -329,11 +379,24 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
                 alerts.clear(c.key)
                 log.info("self-check %s is clear again: %s", c.key, c.detail)
             continue
-        last = state.get(c.key)
-        due = force or last is None or (now - datetime.fromisoformat(last)) >= repeat
+        prior = state.get(c.key) or {}
+        if isinstance(prior, str):  # the pre-23-Sep shape: a bare timestamp
+            prior = {"at": prior, "items": []}
+        last, seen = prior.get("at"), list(prior.get("items", []))
+
+        # Two reasons to speak: the repeat window has passed, or something NEW has
+        # appeared. Tracking only "is it failing" meant a genuinely new error arriving
+        # inside the hour was silent, hidden behind a fault already reported.
+        new_items = [i for i in c.items if i not in seen]
+        overdue = last is None or (now - datetime.fromisoformat(last)) >= repeat
+        due = force or overdue or bool(new_items)
+
         events.append(
             "arena_selfcheck",
-            {"check": c.key, "ok": False, "detail": c.detail, "count": c.count, **c.facts},
+            {
+                "check": c.key, "ok": False, "detail": c.detail, "count": c.count,
+                "new_items": new_items[:20], **c.facts,
+            },  # fmt: skip
         )
         if due:
             # Only shout when it is due. The watcher runs every minute, and a standing
@@ -343,9 +406,17 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
         else:
             log.info("self-check %s still failing (already reported): %s", c.key, c.detail)
         if due and alert:
-            alert.send(f"🚨 <b>SELF-CHECK: {c.key}</b>\n{notify.escape_text(c.detail)}")
-            state[c.key] = now.isoformat(timespec="seconds")
-        elif due:
-            state[c.key] = now.isoformat(timespec="seconds")
+            body = notify.escape_text(c.detail)
+            if new_items and not overdue:
+                lines = "\n".join(notify.escape_text(i) for i in new_items[:5])
+                body = f"{len(new_items)} NEW since the last report:\n{lines}"
+            alert.send(f"🚨 <b>SELF-CHECK: {c.key}</b>\n{body}")
+        if due:
+            state[c.key] = {
+                "at": now.isoformat(timespec="seconds"),
+                "items": (seen + new_items)[-200:],
+            }
+        elif new_items:  # nothing to say, but do not forget what was seen
+            state[c.key] = {"at": last, "items": (seen + new_items)[-200:]}
     write_text_atomic(json.dumps(state, indent=2), _state_path(cfg))
     return failures

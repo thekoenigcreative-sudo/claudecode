@@ -95,3 +95,120 @@ def test_norgate_unavailable_without_library():
 
     with pytest.raises(ProviderUnavailable, match="Norgate"):
         NorgateProvider().daily("BHP", "2020-01-01")
+
+
+# -- the ASX 200 short universe (23 Sep) -----------------------------------
+# It was "the 200 largest by market cap", which is not the index: 175 of 200 genuine
+# constituents, and 25 non-members admitted. The arena refuses shorts outside this set, so
+# a wrong list refuses trades and never errors.
+def _codes(n, start=0):
+    from itertools import product
+    from string import ascii_uppercase
+
+    return ["".join(c) for c in product(ascii_uppercase, repeat=3)][start : start + n]
+
+
+def _directory(tmp_path, n=400):
+    import pandas as pd
+
+    udir = tmp_path / "universe"
+    udir.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"code": c, "name": f"Company {c}", "industry": "x",
+         "listing_date": "", "market_cap": float(10_000 - i)}
+        for i, c in enumerate(_codes(n))
+    ]  # fmt: skip
+    pd.DataFrame(rows).to_csv(udir / "asx_directory.csv", index=False)
+    return udir
+
+
+def test_without_a_constituent_list_the_proxy_is_labelled_as_a_proxy(tmp_path):
+    from asxbot.data.universe import asx200_status
+
+    _directory(tmp_path)
+    u = asx200_status(tmp_path, "test-agent")
+    assert len(u.codes) == 200
+    assert u.is_index_list is False and "NOT the index" in u.source
+
+
+def test_a_constituent_list_is_used_and_dated(tmp_path):
+    import pandas as pd
+
+    from asxbot.data.universe import asx200_status
+
+    udir = _directory(tmp_path)
+    # deliberately NOT the 200 largest: a real index holds mid-caps and drops big risers
+    codes = _codes(200, start=100)
+    pd.DataFrame({"code": codes, "name": codes, "as_of": "2026-09-23",
+                  "source": "a constituent list"}).to_csv(
+        udir / "asx200_members.csv", index=False
+    )  # fmt: skip
+    u = asx200_status(tmp_path, "test-agent")
+    assert u.is_index_list and len(u.codes) == 200 and not u.too_small
+    assert codes[-1] in u.codes  # a mid-cap the market-cap proxy would have excluded
+    assert u.as_of.isoformat() == "2026-09-23"
+
+
+def test_a_short_or_stale_list_says_so(tmp_path):
+    import pandas as pd
+
+    from asxbot.data.universe import asx200_status
+
+    udir = _directory(tmp_path)
+    pd.DataFrame({"code": _codes(150), "as_of": "2026-09-23", "source": "s"}).to_csv(
+        udir / "asx200_members.csv", index=False
+    )
+    u = asx200_status(tmp_path, "test-agent")
+    assert u.too_small and len(u.codes) == 150  # 150 < 190: a silently shrinking universe
+
+    pd.DataFrame({"code": _codes(200), "as_of": "2020-01-01", "source": "s"}).to_csv(
+        udir / "asx200_members.csv", index=False
+    )
+    assert asx200_status(tmp_path, "test-agent").stale
+
+
+def _table(codes):
+    rows = "".join(f"<tr><td>{c}</td><td>Company {c}</td></tr>" for c in codes)
+    return f"<table><tr><th>Code</th><th>Company</th></tr>{rows}</table>"
+
+
+class _Reply:
+    status_code = 200
+
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+def test_a_bad_refresh_is_refused_rather_than_saved(tmp_path, monkeypatch):
+    import pytest as _pytest
+
+    from asxbot.data import universe as U
+
+    _directory(tmp_path)
+    monkeypatch.setattr(U.requests, "get", lambda *a, **k: _Reply(_table(_codes(20))))
+    with _pytest.raises(RuntimeError, match="only 20 codes"):
+        U.refresh_asx200(tmp_path, "test-agent")
+
+    # enough codes, but none of them are in the ASX directory
+    monkeypatch.setattr(
+        U.requests, "get", lambda *a, **k: _Reply(_table(_codes(200, start=5000)))
+    )
+    with _pytest.raises(RuntimeError, match="ASX directory"):
+        U.refresh_asx200(tmp_path, "test-agent")
+
+    assert not (tmp_path / "universe" / "asx200_members.csv").exists()  # nothing was saved
+
+
+def test_a_good_refresh_is_saved_and_dated(tmp_path, monkeypatch):
+    from datetime import date
+
+    from asxbot.data import universe as U
+
+    _directory(tmp_path)
+    monkeypatch.setattr(U.requests, "get", lambda *a, **k: _Reply(_table(_codes(200, start=50))))
+    u = U.refresh_asx200(tmp_path, "test-agent")
+    assert u.is_index_list and len(u.codes) == 200 and u.as_of == date.today()
+    assert not u.stale and not u.too_small

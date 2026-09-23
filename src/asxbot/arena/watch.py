@@ -761,6 +761,10 @@ def watch(
             arena.broker.apply_stops(acct, now)
             arena.broker.resolve_pending(acct, now)
 
+        # Keep the short universe current. Stale means the arena starts refusing shorts in
+        # real index members, silently, which is how TUA was refused twice on 23 September.
+        _refresh_short_universe(arena, now)
+
         # The system checks itself, every cycle. A fault here is shouted, not logged.
         try:
             selfcheck.report(arena, pb, now)
@@ -802,6 +806,35 @@ def watch(
         if once:
             return
         time.sleep(interval_s)
+
+
+_LAST_UNIVERSE_TRY: list = [None]
+
+
+def _refresh_short_universe(arena: Arena, now: datetime, every_minutes: int = 60) -> bool:
+    """Refresh the ASX 200 constituent list when it is stale. Best effort, at most hourly.
+
+    A failure here is logged as an error and left to the self-check to shout about; it must
+    never stop the watcher, and a stale list is still better than no list.
+    """
+    from asxbot.data.universe import asx200_status, refresh_asx200
+
+    last = _LAST_UNIVERSE_TRY[0]
+    if last is not None and (now - last) < timedelta(minutes=every_minutes):
+        return False
+    _LAST_UNIVERSE_TRY[0] = now
+    cfg = arena.cfg
+    ua = cfg.get("collector.user_agent")
+    try:
+        if not asx200_status(cfg.data_dir, ua).stale:
+            return False
+        u = refresh_asx200(cfg.data_dir, ua)
+        arena.short_universe = u.codes
+        log.info("short universe refreshed: %d codes from %s", len(u.codes), u.source)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.error("could not refresh the ASX 200 list (%s); the self-check will report it", e)
+        return False
 
 
 def _handled_path(data_dir: Path, day: date) -> Path:

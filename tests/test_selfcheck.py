@@ -248,3 +248,80 @@ def test_a_standing_failure_is_not_logged_every_cycle(cfg, monkeypatch, caplog):
         if r.levelno >= logging.CRITICAL and r.name == "asxbot.arena.selfcheck"
     ]
     assert len(criticals) == 1  # shouted once, not once a minute
+
+
+# -- 7. the short universe that shrinks without erroring -------------------
+def _universe(cfg, codes, as_of="2026-09-23", members=True):
+    import pandas as pd
+
+    udir = cfg.data_dir / "universe"
+    udir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"code": list(codes), "as_of": as_of, "source": "a constituent list"}
+    ).to_csv(udir / "asx200_members.csv", index=False)
+
+
+def _letters(n, start=0):
+    from itertools import product
+    from string import ascii_uppercase
+
+    return ["".join(c) for c in product(ascii_uppercase, repeat=3)][start : start + n]
+
+
+def test_a_full_current_short_universe_passes(cfg):
+    _universe(cfg, _letters(200), as_of=datetime.now(SYD).date().isoformat())
+    c = S.check_short_universe(cfg)
+    assert c.ok and "200 ASX 200 codes" in c.detail
+
+
+def test_a_shrunken_short_universe_is_caught(cfg):
+    _universe(cfg, _letters(150), as_of=datetime.now(SYD).date().isoformat())
+    c = S.check_short_universe(cfg)
+    assert not c.ok and "only 150 codes" in c.detail
+    assert "refused without an error" in c.detail
+
+
+def test_a_short_universe_that_stopped_refreshing_is_caught(cfg):
+    _universe(cfg, _letters(200), as_of="2026-01-01")
+    c = S.check_short_universe(cfg)
+    assert not c.ok and "has not refreshed" in c.detail
+
+
+def test_a_market_cap_proxy_is_reported_as_not_the_index(cfg):
+    """The 23 September fault itself: 'ASX 200' that was really the 200 largest."""
+    import pandas as pd
+
+    udir = cfg.data_dir / "universe"
+    udir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"code": _letters(400), "name": "x", "industry": "y", "listing_date": "",
+         "market_cap": [float(10_000 - i) for i in range(400)]}
+    ).to_csv(udir / "asx_directory.csv", index=False)  # fmt: skip
+    c = S.check_short_universe(cfg)
+    assert not c.ok and "not a constituent list" in c.detail
+
+
+# -- alerting on new findings, not just on state ---------------------------
+def test_a_new_error_inside_the_same_hour_is_still_reported(cfg, monkeypatch):
+    """The gap: the state said 'already failing', so a genuinely new error was silent."""
+    arena = _Alerting(cfg, _acct_with_pending(NOW))
+    first = S.Check("errors_logged", False, "1 ERROR", items=["10:22 boom"])
+    monkeypatch.setattr(S, "run_checks", lambda a, p, n: [first])
+    S.report(arena, None, NOW)
+    assert len(arena.sent) == 1
+
+    # same finding, five minutes later: silence, as before
+    S.report(arena, None, NOW + timedelta(minutes=5))
+    assert len(arena.sent) == 1
+
+    # a DIFFERENT error, still inside the hour: this must speak
+    second = S.Check("errors_logged", False, "2 ERRORs", items=["10:22 boom", "10:40 a new one"])
+    monkeypatch.setattr(S, "run_checks", lambda a, p, n: [second])
+    S.report(arena, None, NOW + timedelta(minutes=10))
+    assert len(arena.sent) == 2
+    assert "NEW since the last report" in arena.sent[1] and "10:40 a new one" in arena.sent[1]
+    assert "10:22 boom" not in arena.sent[1]  # the message carries only what is new
+
+    # and it is not repeated either
+    S.report(arena, None, NOW + timedelta(minutes=12))
+    assert len(arena.sent) == 2

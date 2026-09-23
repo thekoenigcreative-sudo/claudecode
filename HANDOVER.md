@@ -262,6 +262,27 @@ test that made it, scored on what the stock did over the next 10 sessions agains
 **It reports and nothing else.** Today everything is "not yet measurable" - the rejections
 are hours old and the horizon is 10 sessions - which is the honest answer, not a null result.
 
+## The short universe was never the ASX 200 (23 Sep)
+
+`asx200_codes` returned "the 200 largest by market cap in today's ASX directory". That is
+not the index. Measured against the current constituent list it held **175 of the 200**
+genuine members, missed 25 (TUA, ORA, LLC, PMV, ARB, QUB and 19 others), and admitted 25
+non-members - foreign listings like DPM and XYZ, LICs like AUI and WAM, and recent risers.
+The arena refuses shorts outside this set, so every wrong entry refused a trade and never
+errored. The decider hit it on TUA twice at 10:33.
+
+Fixed: `asx200_members.csv`, a dated constituent list, is now the source, with
+`asx200_manual.csv` as a human override; the market-cap proxy remains only as a labelled
+last resort that logs an ERROR when used. `asxbot universe asx200 [--refresh] [--check
+CODES]` shows and rebuilds it; the watcher refreshes a stale list hourly; a refresh that
+returns too few codes, or codes that are not in the ASX directory, is refused rather than
+saved. Source is Wikipedia's constituent table until Norgate - a stopgap, dated in the file.
+
+NOTE: NUF is NOT in that list. Nufarm sits at rank 257 by market cap (A$1.23bn) and does
+not appear in the current ASX 200 constituent table, so the refusal on NUF at 10:32 looks
+correct, and the decider's belief that it is "a long-standing index member" is not
+supported. The TUA refusals were the real loss.
+
 ## Open items
 
 1. Let the ASX 300 archive finish, then `asxbot backtest` and commit the refreshed
