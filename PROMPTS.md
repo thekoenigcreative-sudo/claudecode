@@ -20,6 +20,15 @@ Mark each DONE with the commit hash when its output comes back.
   against a 5% cap. Seven re-looks reached the decider, six passed. Note for the
   record: A1M is an acquisition, the worst category in the type split (20 trades,
   −3.21% average, 10% win rate) — written down before the outcome is known.
+- **CLAUDE.md verification rules** (`a395856`), **LEARNINGS.md and PROMPTS.md
+  tracked** (`0a3ad3d`).
+- **Self-checks and filter cost** (`a9f2602`, `677952a`). Six checks every cycle; the
+  error check fed on its own alerts within a minute and was fixed.
+- **ASX 200 short universe** (`5155aab`). It was never the index — top 200 by market
+  cap, 175 of 200 real members, 25 non-members admitted. Now a dated constituent list
+  (Wikipedia, stopgap until Norgate) with a `short_universe` self-check. New errors
+  inside an alert window are no longer hidden. NUF was correctly refused — S&P removed
+  it in September 2025. TUA was a genuine loss.
 
 
 ---

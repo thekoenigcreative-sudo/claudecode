@@ -1,5 +1,5 @@
 # Strategy testing plan
-*22 Sep 2026. Extends SPEC.md. Every strategy below gets tested under the rules in this file.*
+*22 Sep 2026; register rewritten 23 Sep 2026. Extends SPEC.md. Every strategy below gets tested under the rules in this file.*
 
 ## Owner decisions
 - Test several strategies, not one. Keep what survives, drop the rest.
@@ -14,26 +14,65 @@
 4. Report every strategy tried, including the losers, and how many variants were tested.
 5. yfinance results are labelled "plumbing test — not a go/no-go". The real verdict needs Norgate full history.
 
-## Strategies
-| ID | Strategy | Rule idea | Data needed | Status |
+## Strategy register
+
+**Planning note.** Published cross-sectional return predictors earn about 26% less out-of-sample and 58% less after publication, and the decline is biggest for the strongest in-sample results (McLean & Pontiff, 97 predictors). Treat any figure from a paper as an upper bound.
+
+Every figure carries its source in brackets. Figures from `reports/phase1.md` are a plumbing test under rule 5: yfinance, ASX 300 proxy universe, in-sample only, 1× slippage unless stated.
+
+| ID | Strategy | Verdict | Data needed | Next step |
 |---|---|---|---|---|
-| A | Announcement drift | Price-sensitive announcement + gap ≥5% vs ASX 200 on ≥3× 20-day volume; confirm at close, enter next open; 10-day exit, 8% stop | Archive + prices | Built; rerun once the archive is complete |
-| B | Volume-confirmed surprise | Same as A without the announcement filter | Prices | Built; loses after costs (plumbing test) |
-| C | Announcement drift by type | A split by the headline classifier: results, guidance upgrades, contract wins, drilling/assay results, takeover-related | Archive + prices | To build |
-| D | Trading-halt resumptions | Stock reinstated after a halt that opens up strongly on heavy volume | Archive + prices | To build |
-| E | Directors buying | Appendix 3Y notices showing a director's on-market purchase (fetch and parse those PDFs only) | Archive + PDFs + prices | To build |
-| F | 52-week-high breakouts | New 52-week high on heavy volume, fixed holding period | Prices | To build; can run now |
-| G | Pullbacks in strong stocks | Sharp short-term drop in a stock above its 200-day average; sell on the bounce or after a few days | Prices | To build; can run now |
-| Baseline | Momentum | 12-1 month return, top 4, monthly rebalance, 200-day regime filter | Prices | Built; inflated by survivorship on yfinance |
+| A | Announcement gap | **Dropped** | Archive + prices | Keep running live only as a machinery test |
+| B | Volume surprise | **Dropped** | Prices | None |
+| C | Earnings drift | **Keep, rebuild** | Archive + prices | Measure surprise against the company's own prior guidance; 30–60 session hold |
+| D | Trading-halt resumptions | Keep, low | Archive + prices | Check whether the tradability screen still rejects reinstatements |
+| E | Directors buying | **Upgraded** | Archive + 3Y PDFs + prices | Reader classifies each Appendix 3Y; hold measured in months |
+| F | 52-week-high breakout | **Downgraded** | Prices | Build only because it is cheap; expect it to fail |
+| G | Pullbacks | **Reframed** | Prices + industry classification | Large, liquid stock down against its industry peers over a month, momentum controlled for |
+| N1 | Placement overhang | **New** | Archive + prices | Build first as a veto on other strategies |
+| N2 | Index deletion reversal | New, low | Index rebalance history + prices | Needs rebalance history, which Norgate supplies |
+| Baseline | 12-1 momentum | Keep as baseline only | Prices | Rerun on survivorship-free data |
+
+### A — announcement gap: DROPPED
+492 trades across 155 companies: +0.05% per trade at 1× slippage and −0.33% at 2× (`reports/phase1.md`). The rule is also misspecified: it triggers on a 5% gap and uses the announcement only as a filter, so it tests gap continuation, not drift after surprise. Keep running live only as a machinery test.
+
+### B — volume surprise: DROPPED
+Loses after costs, on both universes at 1× and 2× slippage (`reports/phase1.md`).
+
+### C — earnings drift: KEEP, REBUILD
+Post-earnings-announcement drift is documented in Australia but has weakened as information spreads faster and costs fall. The only positive slice of A was results announcements: 181 trades, +0.90% average, 53.6% win rate (`reports/phase1.md`, announcement-type split). That is a hypothesis found by slicing, not a finding. Rebuild C to measure the surprise against the company's own prior guidance in the announcement archive, with a 30–60 session hold.
+
+### D — trading-halt resumptions: KEEP, LOW
+No evidence found either way. Before building, check whether the tradability screen still rejects reinstatements.
+
+### E — directors buying: UPGRADED
+Discretionary director purchases showed a +4.6% cumulative abnormal return over 200 trading days; non-discretionary purchases showed −4.7% (published study; citation not yet recorded, see Sources). The evidence is stronger in larger firms. The reader should classify each Appendix 3Y as a discretionary on-market purchase versus a plan, dividend reinvestment or option exercise. Hold measured in months, not 10 sessions.
+
+### F — 52-week-high breakout: DOWNGRADED
+Tested on the ASX over 1996–2008 and found not of practical use once short-sale restrictions and transaction costs are counted (published study; citation not yet recorded, see Sources). Build only because it is cheap; expect it to fail.
+
+### G — pullbacks: REFRAMED
+In Australia, over a one-month horizon, small stocks tend to reverse while large stocks tend to trend, and the small-stock reversals are driven by illiquidity, so costs consume them (Chai & Do 2016). What holds up is narrower: large stocks show intra-industry reversals once price momentum is controlled for. Rebuild G as a large, liquid stock that has fallen against its own industry peers over the past month, with momentum controlled for. Plain "buy any dip in an uptrend" is dropped.
+
+### N1 — placement overhang: NEW
+Australia puts no resale restriction on placement shares, so holders can sell immediately. Capital-raising announcements scored a −1.30% average and a 34.5% win rate in A, on 29 trades (`reports/phase1.md`, announcement-type split). The decider reasoned about quotation-date supply unprompted on TGN and AUE on 23 Sep (`data/logs/asxbot.log`). Build first as a VETO on other strategies: do not open a long when new placement shares quote inside the hold window.
+
+### N2 — index deletion reversal: NEW, LOW
+S&P/ASX 200 deletions showed negative returns on announcement that began to reverse afterwards (2011 study; citation not yet recorded, see Sources). Long-only friendly and scheduled, but likely decayed. Needs rebalance history, which Norgate supplies.
+
+### Baseline — momentum: KEEP AS BASELINE ONLY
+Its 24.5% CAGR is survivorship bias (`reports/phase1.md`): on a universe of today's largest companies, momentum buys the stocks that went on to become large.
 
 ## Order of work
-1. Build and run F and G now (price data only).
-2. Build C, D and E; run them once the ASX 300 archive has finished. Start the small-universe archive after that.
-3. Rerun A with the full archive.
-4. Shortlist at most 3 → run once on the holdout → report.
-5. Real verdict: rerun the shortlist on Norgate full history.
+1. Strategy harness with trial counting.
+2. Survivorship-free data: Norgate Platinum (three-week free trial available).
+3. Then C, E, N1 (as a veto), G and F, in that order.
+4. Shortlist at most three.
+5. One holdout run each.
 
-## Results so far (plumbing test, 22 Sep 2026)
-- B loses after costs on both universes, at 1× and 2× slippage.
-- A: 43 trades from only 6 archived companies. Too few to judge.
-- Baseline: an implausible 28% CAGR, caused by testing on today's top 300 companies (survivorship).
+## Sources
+- `reports/phase1.md` — Phase 1 backtest, generated 23 Sep 2026 09:51. yfinance, no delisted stocks; ASX 300 proxy universe; in-sample to 22 Sep 2023.
+- `data/logs/asxbot.log` — decider passes on TGN (07:52) and AUE (10:36), 23 Sep 2026.
+- McLean, R. D. & Pontiff, J. (2016), "Does Academic Research Destroy Stock Return Predictability?", *Journal of Finance* 71(1).
+- Chai & Do (2016) — one-month reversal and momentum by firm size in Australia. Full citation to add.
+- To add: the director-trading study behind E, the ASX 1996–2008 52-week-high study behind F, and the 2011 S&P/ASX 200 deletion study behind N2.
