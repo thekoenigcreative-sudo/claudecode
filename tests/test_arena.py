@@ -917,3 +917,18 @@ def test_the_re_look_note_carries_the_earlier_reason():
     note = relook_note("the auction has not happened yet")
     assert "RE-LOOK" in note and "the auction has not happened yet" in note
     assert "Passing again is a" in note  # it must not read as pressure to trade
+
+
+def test_the_decider_packet_carries_the_re_look_note(setup, monkeypatch):
+    """This shipped broken once: the packet took the note but the signature did not, so
+    every re-look died at the decider with a TypeError after paying for a reader call."""
+    from asxbot.arena import watch as W
+
+    cfg, broker, pb, acct = setup
+    _offline_price(monkeypatch)
+    fake = _FakeArena(cfg, broker, acct)
+    ctx = {"dossier": {}, "reaction": {}, "text": ""}
+    note = W.relook_note("the auction has not happened yet")
+    packet = W.decider_packet(fake, pb, acct, _ann(), ctx, "summary", _AT, note)
+    assert "THIS IS A RE-LOOK" in packet and "HOW TO DECIDE" in packet
+    assert "THIS IS A RE-LOOK" not in W.decider_packet(fake, pb, acct, _ann(), ctx, "s", _AT)

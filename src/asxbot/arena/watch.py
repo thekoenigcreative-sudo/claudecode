@@ -275,6 +275,7 @@ def decider_packet(
     ctx: dict,
     summary: str,
     now: datetime | None = None,
+    relook_note: str = "",
 ) -> str:
     now = now or datetime.now(SYD)
     lvl = pb.level
@@ -343,7 +344,7 @@ WHAT THE CODE WILL ALLOW
   - your fill will be the true 1-minute bar price covering the moment you decide, so a
     limit far away from the current price simply will not fill
 
-HOW TO DECIDE - work through this and show it:
+{relook_note}HOW TO DECIDE - work through this and show it:
   1. WHAT IS NEW: what does this change that the market did not already know?
   2. HOW BIG: size it against the company. A $2m contract for a $2bn company is noise.
   3. WHAT WAS EXPECTED: was this already priced in? The move so far is your evidence.
