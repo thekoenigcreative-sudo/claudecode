@@ -57,6 +57,8 @@ ARENA_PROCESS = re.compile(
     r"arena_(warmup|evening)\.(ps1|pyw)|asxbot(\.exe)?\"?\s+arena\s|\barena\s+watch\b", re.I
 )
 REPORT_STEP = "--- asxbot arena report"
+STEP_DONE = re.compile(r"^--- exit -?\d+ ---$")
+ANY_HEAD = re.compile(r"^=== evening report ")
 
 
 class Refused(RuntimeError):
@@ -145,11 +147,20 @@ def evening_finished(log_text: str, day: date, slot: time_cls) -> str | None:
     if start is None:
         return f"no evening report for {day} at or after {slot:%H:%M} in the evening log"
     section = lines[start + 1 :]
+    # Only this run's lines: a later day's run must not answer for this one.
+    section = section[: next((i for i, ln in enumerate(section) if ANY_HEAD.match(ln)), None)]
     step = next((i for i, ln in enumerate(section) if ln.startswith(REPORT_STEP)), None)
     if step is None:
         return f"the evening routine for {day} has not reached its report step yet"
-    # The script writes the step's header, runs it, then writes its output. A header with
-    # nothing after it is a report still running (or one that was killed mid-way).
+    if any(STEP_DONE.match(ln.strip()) for ln in section):
+        # The hidden launcher (arena_evening.pyw, from 2026-09-23) writes output as it
+        # arrives, so a line after the header proves nothing; it closes each step with an
+        # exit line, and only that says the report returned.
+        if not any(STEP_DONE.match(ln.strip()) for ln in section[step + 1 :]):
+            return f"the evening report for {day} has started but not returned"
+        return None
+    # arena_evening.ps1 writes the step's header, runs it, then writes its output. A header
+    # with nothing after it is a report still running (or one that was killed mid-way).
     if step + 1 >= len(section):
         return f"the evening report for {day} has started but not returned"
     return None

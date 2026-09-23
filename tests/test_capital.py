@@ -82,6 +82,34 @@ def test_the_evening_must_have_returned_from_its_report_step():
     assert "no evening report" in C.evening_finished(early, WED, slot)
 
 
+# The hidden launcher (scripts/arena_evening.pyw) streams output and closes each step.
+HIDDEN = """
+=== evening report 2026-09-23 19:30 ===
+--- asxbot arena resolve ---
+nothing to resolve
+--- exit 0 ---
+--- asxbot arena mark ---
+asx_announcements__agent: equity 10,244.11
+--- exit 0 ---
+--- asxbot arena report --agent --send ---
+2026-09-23 19:31:02 WARNING the agent returned an empty report; sending the code version
+"""
+
+
+def test_a_streamed_line_is_not_a_returned_report_only_its_exit_line_is():
+    slot = time(19, 30)
+    # A warning streamed while the report is still running must not read as "returned".
+    assert "not returned" in C.evening_finished(HIDDEN, WED, slot)
+    assert C.evening_finished(HIDDEN + "[sent]\n--- exit 0 ---\n", WED, slot) is None
+    assert C.evening_finished(HIDDEN + "--- exit 3 ---\n", WED, slot) is None  # returned, unsent
+    # Killed before the report: the mark's exit line does not answer for the report.
+    assert "report step" in C.evening_finished(HIDDEN.split("--- asxbot arena report")[0],
+                                               WED, slot)  # fmt: skip
+    # A later day's finished run does not answer for this one.
+    later = HIDDEN.replace("2026-09-23", "2026-09-24") + "--- exit 0 ---\n"
+    assert "not returned" in C.evening_finished(HIDDEN + later, WED, slot)
+
+
 def test_tonight_means_the_last_session_before_the_next_morning():
     assert C.evening_day(EVENING) == WED
     assert C.evening_day(datetime(2026, 9, 24, 6, 30, tzinfo=SYD)) == WED  # before the warm-up

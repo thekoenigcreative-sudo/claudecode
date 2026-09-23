@@ -345,6 +345,19 @@ Two lessons. A check that runs inside the process it checks cannot report that
 process's death, so liveness has to be watched from outside (watchdog.py, fed by
 heartbeat.py). And a long-running process should not own a window someone can close.
 The warm-up now has a pythonw launcher with no console (scripts/arena_warmup.pyw).
+The evening routine (settle, mark, report) ran in a window the same way, and got the
+same launcher the same day (scripts/arena_evening.pyw).
+
+Testing that launcher by killing it mid-step showed the watcher's launcher had only half
+its promise. It said output was written "line by line, so a killed watcher still leaves
+its last lines". That was true of logging, which goes to stderr. It was not true of
+anything printed: Python buffers stdout to a pipe in 8 KB blocks, and a killed process
+loses the buffer. Both launchers now run their child with PYTHONUNBUFFERED=1. The test
+that caught it kills a real process and reads what it left. Removing that one setting
+makes the test fail. Streaming also broke a quiet assumption elsewhere: the $10,000 top-up
+(capital.py) took any line after the report step's header to mean the report had
+returned, which only held while PowerShell wrote everything at the end. Each step now
+closes with an exit line, and that is what capital.py reads.
 
 Found the same afternoon, while testing a fix from a clean checkout: `.gitignore` held
 `data/`, which matches every folder named data, so `src/asxbot/data` (eight modules the

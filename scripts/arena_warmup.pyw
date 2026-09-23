@@ -16,7 +16,9 @@ CREATE_NO_WINDOW, so it and everything it runs (the OpenClaw agent calls) share 
 console that has no window at all: nothing to close, and nothing flashing up on screen.
 
 Unlike the PowerShell version, output is written line by line as it arrives, not all at
-once at the end, so a killed watcher still leaves its last lines in this log.
+once at the end, so a killed watcher still leaves its last lines in this log. The watcher
+runs unbuffered for that (added 23 Sep 2026): Python holds printed output to a pipe in a
+buffer, and a killed process loses it - only its logging reached this file as it happened.
 """
 
 import os
@@ -52,7 +54,7 @@ def main() -> int:
                      "is not mounted, which usually means nobody is logged in.\n")  # fmt: skip
         return 1
     os.chdir(REPO)
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
     with open(LOG, "a", encoding="utf-8", buffering=1) as log:
         log.write(f"\n=== warm-up starting {stamp()} (hidden) ===\n")
         try:

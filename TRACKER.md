@@ -86,6 +86,7 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 20 | No outside check that the watcher is alive | High | Built, **waiting on Rick** — `watchdog.py` + heartbeat, run every 5 min by `ASXBot Arena Watchdog` (`scripts/schedule_watchdog.ps1`, not yet run). One Telegram alert per outage, one on recovery |
 | 21 | ~~`.gitignore`'s `data/` also hid `src/asxbot/data` — 8 modules never committed, a clone would not import~~ | — | **Fixed `76c2036`** — pattern is now `/data/` |
 | 22 | The 22 Sep marks are in `events/arena_marks.jsonl` but `data/arena/marks/` is empty. Not a bug: `arena reset --yes` at 21:40 22 Sep (the deliberate cleanup in HANDOVER.md) deleted the marks files for test accounts that no longer exist; the event log is append-only and keeps them. No real account ever had a 22 Sep mark. `reset` writes nothing to the event log, so the log reads as if those marks still apply | Low | Optional: have `reset` log an event |
+| 23 | The evening task (19:30/20:30: settle, mark, report) also ran in a visible console window; closing it would lose the day's settlement and the report. The watcher's hidden launcher did not flush printed output, so a killed run lost it | High | **Fixed and applied 23 Sep 16:01** - `scripts/arena_evening.pyw`; `scripts/schedule_evening_hidden.ps1` re-pointed the task (read back: only the action changed; backup in `data/task_backups/`). Both launchers now run unbuffered. First real run 19:30 23 Sep, **not yet verified** |
 
 ---
 
