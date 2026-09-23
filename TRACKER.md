@@ -52,6 +52,10 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | G | Industry-relative pullback | Chai & Do: in AU small stocks reverse (illiquidity), large stocks trend; large stocks reverse within their industry once momentum is controlled | **Reframed** | Not built | Large liquid stock down vs industry peers over a month |
 | N1 | Placement overhang | No resale limits in AU; capital_raising −1.30%, 34.5% win; decider reasons about it unprompted | **New, promising as a veto** | Not built | As a filter on other strategies first |
 | N2 | Index deletion reversal | ASX 200 deletions reverse after announcement (2011); likely decayed | New, low | Not built | Needs rebalance history since 2011 |
+| N3 | Merger arbitrage, cash takeovers | Mitchell & Pulvino 2001: ~4%/yr excess after costs; failed-deal losses far exceed gains; wider spreads earn more despite more failures. US evidence | **New** | Not built | Reader judges completion odds from scheme booklet; decider did this on GL1 23 Sep |
+| N4 | Buyback with stated motive | Ikenberry et al. 1995: +12.1% over 4 yrs, value stocks +45.3%, glamour none; later study: none after costs. AU: undervaluation-motivated buybacks +1.25% on the day | New, contested | Not built | Reader classifies the stated motive |
+| N5 | June tax-loss rebound | Brown, Ferguson & Sherry 2010: June tax-loss selling of losers, July rebound, small miners targeted (1994–2007). Proposed CGT changes may weaken it | New, annual | Not built | Next window June 2027 |
+| N6 | Short-interest veto | Short-selling risk predicts lower AU returns outside the top 200 only (limits to arbitrage). ASIC data free daily, T+4 | New, as veto | Not built | Filter on small-cap longs |
 | Base | 12-1 momentum | Real anomaly; 24.5% here is survivorship | Baseline only | Built | Rerun on Norgate |
 
 ---
@@ -69,9 +73,12 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 7 | Screen rejects reinstatements (kills D) | Medium | PROMPTS #4 — verify if already fixed |
 | 8 | Win rate before costs; raw P&L comparison; trades count legs | Medium | PROMPTS #5 |
 | 9 | Decider asserts stale world facts confidently (NUF "index member") | Medium | **Not yet queued** |
-| 10 | Decider can't see its own pending orders, and code doesn't block a duplicate opening order while one is pending | Medium | Next prompt |
-| 11 | STRATEGIES.md says E evidence is "stronger in larger firms" — wrong; the sources conflict | Low | Next prompt |
-| 12 | ARENA.md setup 8 still describes the old G | Low | Next prompt |
+| 10 | ~~Decider can't see its own pending orders; duplicate opening order allowed~~ | — | **Fixed `22b2f1a`**; loads at 07:30 24 Sep restart |
+| 11 | ~~STRATEGIES.md E firm-size error~~ | — | **Fixed `6bfbb8d`** |
+| 12 | ~~ARENA.md setup 8 old G~~ | — | **Fixed `6bfbb8d`** |
+| 13 | Pending orders don't count toward max open positions or the leverage cap: 3 held + 2 pending in different tickers can fill to 5 | Medium | **Not yet queued** |
+| 14 | STRATEGIES.md order of work still puts survivorship-free data second; decided 23 Sep to defer it until a strategy survives free data. N3–N6 not yet in STRATEGIES.md | Low | **Not yet queued** |
+| 15 | Setup 8 pullback exit ("first up close or 5 days") was written for 3-day dips; may not suit a one-month reversal signal. Decide when G's rule is frozen, not before | Low | When G is built |
 
 ---
 
@@ -93,6 +100,10 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 
 ## Review log
 
+- **23 Sep 12:45** — `22b2f1a` pending-orders fix (162 tests pass; both new tests fail on
+  old code) and `6bfbb8d` docs. Running watcher keeps old code; `ASXBot Arena Warmup`
+  restarts it 07:30 24 Sep, so no mid-session restart with A1M open. Claude Code flagged
+  three gaps, logged as #13–#15. N3–N6 researched and added to the register above.
 - **23 Sep 12:26** — STRATEGIES.md rewritten and committed (`2407016`). Chasing its
   missing citations found an error I introduced: E's "stronger in larger firms" merged
   two studies that disagree. Foley et al. 2016 (the source of the +4.6%/−4.7%) finds

@@ -29,6 +29,11 @@ Mark each DONE with the commit hash when its output comes back.
   (Wikipedia, stopgap until Norgate) with a `short_universe` self-check. New errors
   inside an alert window are no longer hidden. NUF was correctly refused — S&P removed
   it in September 2025. TUA was a genuine loss.
+- **STRATEGIES.md register rewritten** (`2407016`): A and B dropped, E upgraded, F
+  downgraded, G reframed as industry-relative pullback, N1 and N2 added.
+- **Pending orders visible to the decider; duplicate opening orders refused**
+  (`22b2f1a`). Loads when the watcher restarts 07:30 24 Sep. Docs corrections and
+  citations (`6bfbb8d`).
 
 
 ---
@@ -36,7 +41,10 @@ Mark each DONE with the commit hash when its output comes back.
 ## 1. Commit LEARNINGS.md and start the ETF agent
 
 **Where:** Claude Code
-**Status:** NEXT
+**Status:** SENT 23 Sep 13:17 as its own repo, `G:\My Drive\etf-agent`, run in parallel
+with #2 — the version below targeted this repo and would have collided with #2 on
+config.yaml. LEARNINGS.md was already committed in `0a3ad3d`. The version sent is in
+the chat.
 **Why:** no deadline. The money is in cash, the IBKR account isn't funded, and this
 work needs no broker at all.
 
@@ -89,7 +97,8 @@ Commit and confirm.
 ## 2. $20,000 account, real-money limits, and the bot's entry timing
 
 **Where:** Claude Code
-**Status:** PENDING — decisions already made, reasons included
+**Status:** NEXT — sent 23 Sep 13:20 with defect #13 (pending orders vs position and
+leverage limits) folded in; the version sent is in the chat, not below
 **Why:** every backtest number was computed at $10,000 and doesn't describe the
 account. Brokerage is 0.088% with a $6.60 minimum, which binds under $7,500, so
 position count sets the cost drag.
@@ -128,7 +137,9 @@ Commit and confirm.
 ## 3. Build strategies F and G
 
 **Where:** Claude Code
-**Status:** PENDING
+**Status:** PENDING — **G's rule below is out of date.** Rewrite it to the reframed G in
+STRATEGIES.md (large liquid stock down against its industry peers over a month,
+momentum controlled for) before sending. The "profit every day" framing is also stale.
 **Why:** strategy A is dead on 492 trades, and it structurally cannot trade daily —
 its trigger fires a few times a week across the whole ASX 300. F and G scan the
 market and have candidates every session. STRATEGIES.md said build them first and
@@ -231,7 +242,9 @@ progress in the morning.
 ## 7. Norgate — the thing that unblocks everything
 
 **Where:** decision for me, not a prompt yet
-**Status:** BLOCKED on me
+**Status:** DEFERRED 23 Sep — free data only inflates results, so it can kill strategies
+at no cost. Clean data is needed only to confirm a strategy that survives, and
+Norgate's three-week free trial may cover that confirmation run.
 
 Nothing in this repo is a go or no-go until the price data includes delisted stocks.
 `universe.asx300_source: vas_holdings` is today's membership applied backwards to
