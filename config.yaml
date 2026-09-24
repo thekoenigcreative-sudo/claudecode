@@ -13,9 +13,39 @@ capital:
   # position size = starting_aud / max_positions, equal weight
 
 data:
-  provider: yfinance          # yfinance | norgate
+  provider: yfinance          # yfinance | norgate   (daily history, for backtests)
   dir: data                   # gitignored; copy across manually when moving PCs
   price_history_start: "2003-01-01"
+  # Intraday prices for the arena's decisions (day trader scan, v2 reaction looks and rule
+  # bot, quotes): ibkr | yfinance. Added 2026-09-24 (replaces arena.intraday_data.provider).
+  #   yfinance - Yahoo, ~20 minutes delayed. IB Gateway is never touched.
+  #   ibkr     - IBKR real-time through IB Gateway (settings under `ibkr:` below), falling
+  #              back to Yahoo by itself whenever Gateway is down, logged out, cut off from
+  #              IBKR or sending delayed data - logged, flagged by the live_data self-check,
+  #              and each decision records which prices it used (the evening report says).
+  # Fills stay simulated from the minute cache either way. Set to ibkr only after
+  # `asxbot ibkr check` has passed.
+  live_provider: yfinance
+
+# IB Gateway, market data ONLY (src/asxbot/ibkr). Added 2026-09-24. No order call exists in
+# that code (a test fails the build if one appears), the connection is read-only, and
+# Gateway's "Read-Only API" setting refuses orders at the broker. Pacing: see ibkr/gateway.py.
+ibkr:
+  host: 127.0.0.1
+  port: 4001                  # IB Gateway, live account, API port as set in Gateway
+  client_id: 41               # fixed; `asxbot ibkr check` uses 42 so it never clashes
+  connect_timeout_s: 10
+  request_timeout_s: 20       # one bars request; a whole batch gets twice this
+  market_data_lines: 100      # IBKR's default for a new account
+  max_quote_lines: 20         # quotes are the only line users; each is cancelled on answer
+  max_requests_per_cycle: 90  # historical bar requests a scan (the universe is rotated)
+  max_requests_per_10min: 600
+  max_concurrent_requests: 8  # IBKR allows 50 open at once
+  min_refetch_s: 15           # never the same request twice inside 15 s
+  reconnect_every_s: 300      # while on the Yahoo fallback, try Gateway again this often
+  quote_wait_s: 3
+  generic_ticks: "225"        # 225 = the auction's indicative price, volume and imbalance
+  probe_code: BHP             # quoted every 10 min in market hours to confirm real-time
 
 universe:
   frozen_on: "2026-09-22"
@@ -359,12 +389,12 @@ arena:
     tz: "Australia/Sydney"
 
   # Playbooks. Only ONE is tested at a time (PLAN.md). Numbers are ARENA.md labels.
-  # Where the arena's intraday prices come from (added 2026-09-24). Switching to IBKR's live
-  # data is this one line: `provider: ibkr_live` (arena/intraday.py). Until then every
-  # decision is made on Yahoo's delayed 1-minute bars and every report says "delayed data -
-  # rehearsal until IBKR live prices".
+  # The arena's intraday data (added 2026-09-24). Where the prices come from is one line,
+  # data.live_provider (ibkr | yfinance, top of this file). On Yahoo every decision is made
+  # on delayed 1-minute bars and every report says "delayed data - rehearsal until IBKR
+  # live prices"; on IBKR the report counts which prices each decision used.
   intraday_data:
-    provider: yahoo_delayed    # yahoo_delayed | ibkr_live
+    # The feed switch moved to data.live_provider on 2026-09-24 (ibkr | yfinance).
     # Yahoo's ASX bars arrive about this far behind the market. Used ONLY by the plumbing
     # replay, to decide which bars a decision could have seen; the live watcher uses the
     # bars the feed actually holds at the moment it decides, whatever the delay is.
@@ -588,7 +618,7 @@ arena:
     # the bars the feed holds at the moment of the decision; a fill is the first bar that
     # starts after the order is recorded, so on the delayed feed a setup is entered ~20
     # minutes after the bar that triggered it. Every report says "delayed data - rehearsal
-    # until IBKR live prices". intraday_data.provider switches the feed.
+    # until IBKR live prices". data.live_provider switches the feed (from 2026-09-24).
     # -------------------------------------------------------------------------------------
     asx_daytrader:
       arena_id: 12

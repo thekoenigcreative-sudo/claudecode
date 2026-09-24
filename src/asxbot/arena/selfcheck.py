@@ -22,6 +22,10 @@ All arithmetic and file checks. No judgement, no model, nothing that needs inter
   short_universe     the ASX 200 list is short, stale, or not a constituent list at all
   console_launcher   the venv's pythonw.exe, which every scheduled task starts, is a console
                      program, so each start flashes a window (scripts/install_gui_launcher.py)
+  live_data          with data.live_provider: ibkr, the feed has fallen back to Yahoo (IB
+                     Gateway down, logged out, cut off from IBKR, or sending delayed data),
+                     or its status has gone stale in market hours. When Gateway needs a
+                     login, Rick is told once, in one line, instead of every hour
 
 A failure is loud: CRITICAL in the log, an `arena_selfcheck` event, an alerts flag file,
 and a Telegram message. The same failure is not repeated more often than
@@ -326,6 +330,57 @@ def _books(arena, pb) -> list:
     return [arena.account(p, kind) for p in pbs for kind in ("agent", "bot")]
 
 
+LIVE_STATUS_STALE_MIN = 15
+
+
+def check_live_data(cfg, now: datetime) -> Check:
+    """IBKR live prices, when config asks for them (ibkr/feed.py writes the status)."""
+    provider = str(cfg.get("data.live_provider", "yfinance"))
+    if provider != "ibkr":
+        return Check(
+            "live_data", True,
+            f"live prices off by config (data.live_provider: {provider}): Yahoo, ~20 min delayed",
+        )  # fmt: skip
+    from asxbot.ibkr.feed import market_hours, read_status
+
+    st = read_status(cfg.data_dir)
+    if not st.get("at"):
+        return Check("live_data", True, "no live-data status yet: the feed starts with the "
+                     "watcher's first intraday cycle")  # fmt: skip
+    age = (now - datetime.fromisoformat(st["at"]).astimezone(SYD)).total_seconds() / 60.0
+    gwh = st.get("gateway") or {}
+    down = bool(gwh.get("refused") or not gwh.get("connected") or not gwh.get("server_ok"))
+    fresh = age <= LIVE_STATUS_STALE_MIN
+    facts = {
+        "provider_in_use": st.get("provider_in_use"), "status_age_min": round(age, 1),
+        "login_needed": down and fresh and st.get("provider_in_use") != "ibkr",
+        "gateway": gwh,
+    }  # fmt: skip
+    if fresh and st.get("provider_in_use") != "ibkr":
+        why = st.get("why") or gwh.get("last_error") or "IBKR unavailable"
+        return Check(
+            "live_data", False,
+            f"IBKR live prices unavailable ({why}); decisions are on Yahoo's delayed prices "
+            "until it is back",
+            facts=facts, items=[why],
+        )  # fmt: skip
+    if market_hours(now) and not fresh:
+        return Check(
+            "live_data", False,
+            f"the live-data status has not been updated for {age:.0f} minutes in market hours",
+            facts=facts, items=[f"stale since {st['at']}"],
+        )  # fmt: skip
+    kind = gwh.get("market_data") or "unknown"
+    return Check("live_data", True, f"prices from {st.get('provider_in_use')} ({kind} at the "
+                 f"last quote, {st['at'][11:16]})", facts=facts)  # fmt: skip
+
+
+LOGIN_LINE = (
+    "IB Gateway needs you to log in again (it is not reaching IBKR) - the arena is on "
+    "delayed Yahoo prices until you do."
+)
+
+
 def check_short_universe(cfg) -> Check:
     """The set the arena allows shorts in: is it the index, is it full, is it current?
 
@@ -517,6 +572,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("log_silent", lambda: check_log_growing(cfg)),
         ("short_universe", lambda: check_short_universe(cfg)),
         ("console_launcher", check_gui_launcher),
+        ("live_data", lambda: check_live_data(cfg, now)),
     ]
     out = []
     for key, fn in runners:
@@ -557,6 +613,8 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
     alert = notify.get(arena)
 
     for c in checks:
+        if c.key == "live_data" and c.ok:
+            state.pop("_ibkr_login_told", None)  # the next outage is told again
         if c.ok:
             if state.pop(c.key, None) is not None:
                 alerts.clear(c.key)
@@ -588,7 +646,12 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
             alerts.raise_alert(c.key, c.detail)
         else:
             log.info("self-check %s still failing (already reported): %s", c.key, c.detail)
-        if due and alert:
+        if c.facts.get("login_needed"):
+            # One line, once an outage (Rick's brief, 24 Sep), not the hourly repeat.
+            if alert and not state.get("_ibkr_login_told"):
+                alert.send(LOGIN_LINE)
+                state["_ibkr_login_told"] = now.isoformat(timespec="seconds")
+        elif due and alert:
             body = notify.escape_text(c.detail)
             if new_items and not overdue:
                 lines = "\n".join(notify.escape_text(i) for i in new_items[:5])

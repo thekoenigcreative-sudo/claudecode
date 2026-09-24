@@ -130,7 +130,10 @@ per day, and is flat at 15:50. Exact rules: config.yaml `asx_daytrader`.
 
 Both run on Yahoo's delayed bars: decisions use only bars that were final when they were
 made, fills come from the first bar after the order, and every report says "delayed data -
-rehearsal until IBKR live prices". `arena.intraday_data.provider` switches to IBKR.
+rehearsal until IBKR live prices". `data.live_provider: ibkr` switches to IBKR's real-time
+prices through IB Gateway (built 24 Sep, read-only, no order call anywhere in it); Yahoo stays
+the automatic fallback whenever Gateway is down, and the evening report counts which prices
+each decision used. Fills stay simulated either way.
 
 ### Start at Level 2 — Weekly (these are weekly by nature)
 6. **Crypto momentum.** Trigger: the daily ranking of the top 30 coins by 2–4 week return, at 00:00 UTC when daily candles close. The agent picks and sizes up to 5 holdings, checking news, upcoming unlocks and themes, and rebalances weekly (the signal plays out over 1–4 weeks, so daily churn only pays fees). If BTC closes below its 200-day average, it decides whether to move to stablecoins. Yardstick: top 5, weekly rebalance, stablecoins when BTC is below its 200-day average.

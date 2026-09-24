@@ -512,6 +512,16 @@ shown its reaction; the day trader looks for setups instead of waiting for news.
 frozen in config.yaml before they ran, and a plumbing replay on past bars is labelled as
 plumbing: a few days on Yahoo data measure the machinery, not an edge.
 
+## 22. A logged-in Gateway is not a data feed
+
+24 Sep, 21:09: IB Gateway was running, logged in to the live account, and accepted the API
+connection on port 4001 - and in the same breath said its own link to IBKR was broken (2110,
+market data and sec-def farms down). A quote request then waited forever. "Gateway is up" is
+three separate facts: the API port answers, Gateway reaches IBKR, and the data comes back
+real-time rather than delayed. The data layer checks each one (`ibkr/gateway.py` health, the
+`live_data` self-check, `asxbot ibkr check`), bounds every request with a timeout, and falls
+back to Yahoo, labelled, when any is missing.
+
 ---
 
 ## Standing rules

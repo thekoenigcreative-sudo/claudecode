@@ -179,7 +179,7 @@ Level 1 test on 25 Sep; the evening report says "day N of 10 (v2)" / "(v1)".
 
 | Piece | Where |
 |---|---|
-| Intraday data (Yahoo delayed now; `arena.intraday_data.provider: ibkr_live` later) | `arena/intraday.py` - batched fetches held in memory, whole sessions written to the minute cache once at 16:40 |
+| Intraday data (Yahoo delayed now; `data.live_provider: ibkr` switches to IBKR, see below) | `arena/intraday.py` - batched fetches held in memory, whole sessions written to the minute cache once at 16:40 |
 | Size-aware liquidity rule | `arena/liquid.py` (order < 5% of median daily turnover; also in `arena_place_order`) |
 | v2 screen, reaction, queue, rule bot arithmetic | `arena/reaction_v2.py` |
 | v2 decider packet, reaction looks, v2 rule bot day, flat sweep | `arena/v2_flow.py` |
@@ -191,6 +191,41 @@ Where to look during a day: `data/arena/reaction/<day>.json` (each stock's look 
 `data/arena/v2bot/<day>.json` (the v2 rule at 10:30), `data/arena/daytrader/<day>.json`
 (every setup, what the bot and the agent did), events `daytrader_scan` (each cycle's top
 lists), `v2_reaction`, `v2_bot`, `daytrader_setups`, `intraday_feed` (a refusal).
+
+## IBKR live prices (built 24 Sep evening; not switched on yet)
+
+Rick's IBKR account is live, ASX Total real-time data subscribed (A$25/month). There is no
+paper account, so IB Gateway 10.50 (`%LOCALAPPDATA%\Programs\ibgateway`) is logged in to the
+LIVE account with **Read-Only API on**. The arena reads market data from it and nothing else.
+
+| Piece | Where |
+|---|---|
+| Connection, pacing, quotes, bars | `src/asxbot/ibkr/gateway.py` - port 4001, client id 41, read-only, order methods replaced with ones that raise |
+| Live feed with Yahoo fallback, quotes | `src/asxbot/ibkr/feed.py` - status in `data/arena/live_data.json`, events `live_data` |
+| The switch | `config.yaml` `data.live_provider: ibkr \| yfinance` (settings under `ibkr:`) |
+| One-command check | `C:\venvs\asx-bot\Scripts\asxbot.exe ibkr check` (client id 42; safe beside the watcher; writes `data/arena/ibkr_check.json`) |
+| No-order test | `tests/test_ibkr_no_orders.py` fails the build if the data layer names an order call |
+| Self-check | `live_data`: fell back to Yahoo, or status stale in market hours. A Gateway that needs a login gets ONE Telegram line per outage |
+
+**To switch on:** with Gateway logged in and connected, run the check. If it passes (ideally
+in market hours, where "real-time" is proven rather than "frozen"), set
+`data.live_provider: ibkr`, commit, and the next 07:30 watcher uses it. Nothing else changes:
+if Gateway is down that morning the watcher runs on Yahoo and says so.
+
+How the ~250-stock scan fits IBKR's limits: bars never hold a market data line; the universe
+is rotated through 1-minute historical requests, 90 a scan (stalest first, ~every 3 min
+each), at most 600 in ten minutes and 8 open at once (IBKR allows 50), never the same request
+inside 15 s; a stock being decided on is fetched on the spot. Quotes are the only line users,
+one at a time, cancelled on answer (cap 20 of 100). A pacing violation halves the budget.
+"Usual volume" and the previous close come from IBKR's own prior sessions when IBKR is the
+feed (fetched pre-open), so today's volume is never divided by Yahoo's.
+
+**Not verified yet (24 Sep 21:25):** Gateway accepted the API connection but reported its
+link to IBKR broken (2110; market data and sec-def farms down) every time it was tried
+21:09-21:25, so no live quote or bar has been seen. Still to confirm on the first real
+connection: real-time type in market hours, IBKR vs Yahoo volumes per minute (the check prints
+the ratio), whether XJO index bars come with the subscription, and that the 16:10 closing
+auction appears in IBKR's bars (previous close).
 
 ## The terms gate (23 Sep — needs Rick's decision, not the code's)
 

@@ -48,9 +48,17 @@ class Arena:
         return self.account(pb, "agent"), self.account(pb, "bot")
 
     def quote_provider(self):
+        """Yahoo's delayed quotes, or with `data.live_provider: ibkr` IBKR's real-time quote
+        whenever IB Gateway is ready and Yahoo's otherwise (each Quote's source says which)."""
+        from asxbot.arena.intraday import live_provider
         from asxbot.live.quotes import YFinanceQuotes
 
-        return YFinanceQuotes(self.cfg.get("backtest.index_ticker"))
+        yahoo = YFinanceQuotes(self.cfg.get("backtest.index_ticker"))
+        if live_provider(self.cfg) != "ibkr":
+            return yahoo
+        from asxbot.ibkr.feed import quote_provider
+
+        return quote_provider(self.cfg, yahoo)
 
     def daily_lookup(self):
         from asxbot.data.factory import get_store

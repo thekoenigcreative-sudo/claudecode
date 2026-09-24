@@ -106,8 +106,9 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 39 | Yahoo's 10:00 minute bar holds the opening auction's volume on some stock-days and none on others (171 vs 892, 17-24 Sep) | Medium | **Handled before any run** - every v2 and day-trader volume measure counts from 10:01 (`intraday.VOLUME_FROM`), dated in config.yaml (18ca09f). LEARNINGS #20 |
 | 40 | The day trader's scan asks Yahoo for up to 90 stocks a cycle (~5,400 an hour). Yahoo's limit is unknown; a refusal would also stall fills | Medium | **Watch 25 Sep** - a refused or mostly empty batch halves the budget and logs an ERROR (self-check alert). The backfill of 633 stocks x 6 days in 3 minutes on 24 Sep was not refused |
 | 41 | The decider is asked about every day-trader setup the agent's book can take (60 s each). The replay found dozens of setups a day | Medium | **Watch plan usage 25 Sep** - calls stop when the book is full (3 open / 6 new) and a setup older than 5 bars (including time spent on earlier calls) is not asked about |
-| 42 | On the free feed every decision is ~20 minutes behind the market: the v2 rule bot's "10:31" entry is ~10:52, a setup is entered ~20 minutes after its trigger bar | High (for meaning, not for code) | **By design until IBKR live data** - every report says "delayed data - rehearsal until IBKR live prices"; `arena.intraday_data.provider: ibkr_live` switches it (not connected yet) |
+| 42 | On the free feed every decision is ~20 minutes behind the market: the v2 rule bot's "10:31" entry is ~10:52, a setup is entered ~20 minutes after its trigger bar | High (for meaning, not for code) | **By design until IBKR live data** - every report says "delayed data - rehearsal until IBKR live prices"; `data.live_provider: ibkr` switches it (built 24 Sep, #44; not switched on) |
 | 43 | v1's yardstick signal OFX (for the 25 Sep open, day review) will not be traded: v1 is retired | Low | Recorded, not a defect |
+| 44 | **IBKR live data layer built, not switched on.** `src/asxbot/ibkr` (read-only, no order call - test enforced), `data.live_provider` switch with automatic Yahoo fallback, `live_data` self-check, report counts prices per decision, `asxbot ibkr check`. Gateway on 4001 accepted the API but its link to IBKR was broken (2110) at every try 21:09-21:25 on 24 Sep, so no live quote was seen | High | **25 Sep runs on Yahoo delayed** (`data.live_provider: yfinance`). Switch after `asxbot ibkr check` passes with Gateway connected. Unverified: real-time type, IBKR/Yahoo volume ratio, XJO bars, closing auction in IBKR bars |
 
 ---
 
@@ -128,6 +129,16 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 ---
 
 ## Review log
+
+- **24 Sep ~21:40** - Headless build: the IBKR live data layer (#44). Data only: 1-minute
+  bars, quotes (bid/ask/last/sizes, open, auction, halt), connection read-only with order
+  methods replaced, no order call in the code (test). `data.live_provider: ibkr | yfinance`,
+  Yahoo fallback logged + `live_data` self-check + one Telegram line when Gateway needs a
+  login; decisions record their prices and the evening report counts them. Pacing: rotation
+  of historical requests, no market data lines for bars. Tests: 419 passed, 1 skipped; ruff
+  clean. Live test FAILED to reach data: Gateway up on 4001 but cut off from IBKR (2110), so
+  the default stays **yfinance** for 25 Sep. The previous build's uncommitted docs were
+  committed first, unchanged (3e85250).
 
 - **24 Sep ~21:30** - Headless build from Rick's brief (24 Sep evening). **Announcements v2**
   (trade the reaction) and **the day trader** frozen in config.yaml before any run (666c17e),

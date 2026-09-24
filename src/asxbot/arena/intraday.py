@@ -1,13 +1,14 @@
 """Intraday 1-minute bars for many stocks at once: the data layer behind the day trader and
 announcements v2's reaction look.
 
-One interface, three feeds, chosen by `arena.intraday_data.provider` in config.yaml:
+One interface, three feeds. `data.live_provider` in config.yaml picks the live one:
 
-  * yahoo_delayed - Yahoo's 1-minute bars, ~20 minutes behind the ASX. What runs now.
-  * ibkr_live     - IBKR's live bars. Not connected yet: selecting it stops the scanner with
-                    a clear message rather than quietly using Yahoo. Switching is that one line.
-  * replay        - bars already on disk, shown as a delayed feed would have shown them at a
-                    given moment. Only the plumbing replay uses it.
+  * yfinance - Yahoo's 1-minute bars, ~20 minutes behind the ASX (YahooDelayedFeed).
+  * ibkr     - IBKR's real-time bars through IB Gateway, falling back to Yahoo by itself
+               whenever Gateway is down, cut off from IBKR, or sending delayed data
+               (ibkr/feed.py: FailoverFeed). Switching is that one line.
+  * replay   - bars already on disk, shown as a delayed feed would have shown them at a
+               given moment. Only the plumbing replay uses it (never chosen by config).
 
 Whatever the feed, a decision may only use bars that were final when it was made (no
 peeking): a bar that traded, has ended, and is not the newest row of an intraday fetch
@@ -42,12 +43,12 @@ SESSION_OPEN = time_cls(10, 0)
 # day-trader rule had run; dated in config.yaml.
 VOLUME_FROM = time_cls(10, 1)
 CONTINUOUS_END = time_cls(16, 0)  # the closing auction (16:10) is not continuous trading
-PROVIDERS = ("yahoo_delayed", "ibkr_live", "replay")
+LIVE_PROVIDERS = ("ibkr", "yfinance")
 DELAYED_LABEL = "delayed data - rehearsal until IBKR live prices"
 
 
 class FeedNotConnected(RuntimeError):
-    """The configured feed cannot be used (IBKR live data is not connected yet)."""
+    """The feed cannot be used right now (IB Gateway down or not reaching IBKR)."""
 
 
 class FeedRefused(RuntimeError):
@@ -215,6 +216,20 @@ class IntradayFeed(ABC):
     def bars(self, code: str, day: date, now: datetime) -> pd.DataFrame:
         """The day's bars a decision at `now` may use: traded, and final by then."""
 
+    def history_source(self):
+        """Where prior sessions come from (anything with `.cached(code, day)`): the minute
+        cache, unless the feed keeps its own (IBKR's, so volumes are compared like for like)."""
+        return self.minutes
+
+    def ensure_history(self, code: str, day: date, sessions: int) -> bool:
+        """Fetch one stock's prior sessions from the feed itself. False: not handled here,
+        and the caller backfills the minute cache from Yahoo as before."""
+        return False
+
+    def prepare(self, codes: list[str], day: date, sessions: int) -> int:
+        """Fetch prior sessions ahead of the open, for feeds that keep their own."""
+        return 0
+
 
 class YahooDelayedFeed(IntradayFeed):
     """Yahoo's delayed 1-minute bars, fetched in batches and kept IN MEMORY for today.
@@ -291,24 +306,6 @@ class YahooDelayedFeed(IntradayFeed):
         return visible(df, now, None, day_complete=bool(complete), index=code.startswith("^"))
 
 
-class IBKRLiveFeed(IntradayFeed):
-    """IBKR's live bars. The account and its ASX data subscription are not connected yet
-    (PLAN.md, Rick's part), so this refuses to run rather than fall back to Yahoo."""
-
-    name = "ibkr_live"
-    delayed = False
-
-    def refresh(self, codes: list[str], now: datetime) -> list[str]:
-        raise FeedNotConnected(
-            "arena.intraday_data.provider is ibkr_live, but IBKR live data is not connected "
-            "yet. Set it back to yahoo_delayed, or connect IBKR (broker/ibkr.py) first."
-        )
-
-    def bars(self, code: str, day: date, now: datetime) -> pd.DataFrame:
-        self.refresh([code], now)
-        raise AssertionError("unreachable")
-
-
 class ReplayFeed(IntradayFeed):
     """Bars on disk, shown as a feed `delay_minutes` behind would have shown them at `now`.
     For the plumbing replay only; never fetches."""
@@ -334,21 +331,31 @@ class ReplayFeed(IntradayFeed):
         return visible(self.full(code, day), now, self.delay, index=code.startswith("^"))
 
 
-def make_feed(cfg, minutes: MinuteBars, events=None) -> IntradayFeed:
-    """The feed config.yaml names. One line switches Yahoo for IBKR."""
+def live_provider(cfg) -> str:
+    """`data.live_provider`: ibkr | yfinance."""
     conf = cfg.get("arena.intraday_data") or {}
-    provider = str(conf.get("provider", "yahoo_delayed"))
-    if provider == "yahoo_delayed":
-        return YahooDelayedFeed(
-            minutes,
-            int(conf.get("max_requests_per_cycle", 90)),
-            events if events is not None else EventLog(cfg.data_dir),
+    if "provider" in conf:
+        raise ValueError(
+            "arena.intraday_data.provider was replaced on 2026-09-24 by data.live_provider "
+            "(ibkr | yfinance); remove it"
         )
-    if provider == "ibkr_live":
-        return IBKRLiveFeed(minutes)
-    raise ValueError(
-        f"arena.intraday_data.provider must be one of {PROVIDERS[:2]}, got {provider!r}"
-    )
+    provider = str(cfg.get("data.live_provider", "yfinance"))
+    if provider not in LIVE_PROVIDERS:
+        raise ValueError(f"data.live_provider must be one of {LIVE_PROVIDERS}, got {provider!r}")
+    return provider
+
+
+def make_feed(cfg, minutes: MinuteBars, events=None) -> IntradayFeed:
+    """The feed config.yaml names. One line (`data.live_provider`) switches Yahoo for IBKR."""
+    conf = cfg.get("arena.intraday_data") or {}
+    provider = live_provider(cfg)
+    events = events if events is not None else EventLog(cfg.data_dir)
+    yahoo = YahooDelayedFeed(minutes, int(conf.get("max_requests_per_cycle", 90)), events)
+    if provider == "yfinance":
+        return yahoo
+    from asxbot.ibkr.feed import build_failover
+
+    return build_failover(cfg, minutes, yahoo, events)
 
 
 # --------------------------------------------------------------------------
@@ -358,7 +365,7 @@ class MarketView:
     """Today's bars, previous closes and usual volumes, for the scanner, the reaction look
     and both rule bots - one object, so they all see the same market.
 
-    Live (a YahooDelayedFeed or IBKRLiveFeed): `bars` refetches a stock at most every
+    Live (Yahoo's feed, or IBKR's with its Yahoo fallback): `bars` refetches a stock at most every
     `refetch_s` seconds unless told not to fetch (the scanner refreshes its universe itself,
     in budgeted batches). Replay (a ReplayFeed): never fetches; bars are shown as the feed
     would have shown them at `now`.
@@ -386,6 +393,25 @@ class MarketView:
         self._prev: dict[str, float | None] = {}
         self._usual: dict[str, pd.Series | None] = {}
         self._history_tried: set[str] = set()
+        self._generation = getattr(feed, "generation", 0)
+
+    def _sync(self) -> None:
+        """When the feed has switched source (IBKR <-> Yahoo), forget what came from the old
+        one: previous closes and usual volumes must come from the feed now in use."""
+        gen = getattr(self.feed, "generation", 0)
+        if gen != self._generation:
+            self._generation = gen
+            self._fetched.clear()
+            self._prev.clear()
+            self._usual.clear()
+            self._history_tried.clear()
+
+    def prepare(self, codes: list[str]) -> int:
+        """Ahead of the open: prior sessions for a feed that keeps its own (IBKR)."""
+        if self.replay:
+            return 0
+        self._sync()
+        return self.feed.prepare(codes, self.day, self.sessions)
 
     @property
     def label(self) -> str:
@@ -394,9 +420,10 @@ class MarketView:
     def bars(self, code: str, now: datetime, fetch: bool = True) -> pd.DataFrame:
         if self.replay:
             return self.feed.bars(code, self.day, now)
+        self._sync()
         last = self._fetched.get(code)
         if fetch and (last is None or (now - last).total_seconds() >= self.refetch_s):
-            if isinstance(self.feed, YahooDelayedFeed):
+            if hasattr(self.feed, "fetch_one"):
                 self.feed.fetch_one(code, now)
             else:
                 self.feed.refresh([code], now)
@@ -412,21 +439,28 @@ class MarketView:
         b = self.bars(self.index, now)
         return None if not len(b) else b.index.max().to_pydatetime()
 
+    def _history(self):
+        return self.minutes if self.replay else self.feed.history_source()
+
     def prev_close(self, code: str) -> float | None:
+        self._sync()
         if code not in self._prev:
-            px = previous_close(self.minutes, code, self.day)
+            px = previous_close(self._history(), code, self.day)
             if px is None and not self.replay:
                 self.ensure_history(code)
-                px = previous_close(self.minutes, code, self.day)
+                px = previous_close(self._history(), code, self.day)
             self._prev[code] = px
         return self._prev[code]
 
     def usual(self, code: str) -> pd.Series | None:
+        self._sync()
         if code not in self._usual:
-            u = usual_cum_volume(self.minutes, code, self.day, self.sessions, self.min_sessions)
+            h = self._history()
+            u = usual_cum_volume(h, code, self.day, self.sessions, self.min_sessions)
             if u is None and not self.replay:
                 self.ensure_history(code)
-                u = usual_cum_volume(self.minutes, code, self.day, self.sessions, self.min_sessions)
+                h = self._history()
+                u = usual_cum_volume(h, code, self.day, self.sessions, self.min_sessions)
             self._usual[code] = u
         return self._usual[code]
 
@@ -435,6 +469,8 @@ class MarketView:
         if self.replay or code in self._history_tried:
             return
         self._history_tried.add(code)
+        if self.feed.ensure_history(code, self.day, self.sessions):
+            return
         days = prior_sessions(self.day, self.sessions)
         try:
             backfill(self.minutes, [code], days, batch=1, pause_s=0.0)

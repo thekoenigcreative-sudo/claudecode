@@ -651,6 +651,7 @@ def v2_bot_cycle(
         status="done",
         decided_at=arena.broker.clock().isoformat(timespec="seconds"),
         feed_at=data_time.isoformat(timespec="minutes"),
+        data=view.label,  # which prices the rule was measured on (IBKR live or Yahoo)
         candidates=seen,
         orders=orders,
     )

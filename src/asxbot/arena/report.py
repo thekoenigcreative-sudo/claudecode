@@ -46,11 +46,50 @@ def test_day(pb, day: date) -> str:
     return f"day {k} of {n} (v{pb.version})"
 
 
+def decision_data(cfg, day: date) -> dict[str, dict[str, int]]:
+    """Which prices each of today's decisions was made on, per playbook: every day-trader
+    setup, every v2 reaction look and the v2 rule bot record the feed's label when they
+    decide (IBKR live, or Yahoo delayed - including a fallback when IBKR was down)."""
+    from asxbot.arena.daytrader import load_state
+    from asxbot.arena.reaction_v2 import load_bot_state, load_queue
+
+    out: dict[str, dict[str, int]] = {}
+
+    def add(key: str, label) -> None:
+        if label:
+            d = out.setdefault(key, {})
+            d[str(label)] = d.get(str(label), 0) + 1
+
+    for sig in load_state(cfg.data_dir, day).get("signals", []):
+        add("asx_daytrader", sig.get("data"))
+    for k, v in load_queue(cfg.data_dir, day).items():
+        if not k.startswith("_") and isinstance(v, dict):
+            add("asx_announcements_v2", (v.get("reaction") or {}).get("data_label"))
+    add("asx_announcements_v2", load_bot_state(cfg.data_dir, day).get("data"))
+    return out
+
+
+def data_line(pb, counts: dict[str, int] | None) -> str:
+    """The playbook's data label for the day: its frozen label when every decision was on
+    Yahoo's delayed feed (or there were none), otherwise how many were on which prices."""
+    from asxbot.arena.intraday import DELAYED_LABEL
+
+    counts = counts or {}
+    if not counts or set(counts) == {DELAYED_LABEL}:
+        return pb.data_basis or ""
+    return "prices per decision: " + ", ".join(f"{n} on {k}" for k, n in counts.items())
+
+
 def playbook_facts(arena: Arena, day: date) -> list[dict]:
+    try:
+        used = decision_data(arena.cfg, day)
+    except Exception:  # noqa: BLE001 - a label must never stop the report
+        used = {}
     return [
         {
             "key": pb.key, "title": pb.title, "version": pb.version, "level": pb.level.number,
-            "test": test_day(pb, day), "data": pb.data_basis or "",
+            "test": test_day(pb, day), "data": data_line(pb, used.get(pb.key)),
+            "data_by_decision": used.get(pb.key, {}),
             "accounts": [pb.agent_account, pb.bot_account],
         }
         for pb in arena.playbooks()

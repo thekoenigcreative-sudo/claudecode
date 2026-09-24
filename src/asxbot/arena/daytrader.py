@@ -840,6 +840,7 @@ def cycle(
         end_of_day(arena, pb, view, now)
         return []
     if now.time() < _t(scan_conf.get("start", "10:00")):
+        _prepare_history(arena, pb, view)
         return []
     ev = EventLog(cfg.data_dir)
     state = load_state(cfg.data_dir, day)
@@ -865,6 +866,7 @@ def cycle(
         return []  # the scan's window is over in market time: no more requests today
     if refresh and not view.replay:
         _DAY["news"] = news_today(cfg.data_dir, day) if now.minute % 5 == 0 else _DAY["news"]
+        view.prepare([view.index, *codes])  # IBKR: prior sessions still missing, if any
         refreshed = view.feed.refresh(codes, now)
         view.mark_fetched(refreshed, now)
     found, summary = scan(view, pb, codes, now, state, set(arena.short_universe), _DAY["news"])
@@ -892,7 +894,8 @@ def cycle(
     recs = []
     # The rule bot first, on every setup: it needs no call, so it acts at the scan's moment.
     for s in order:
-        rec = {"at": now.isoformat(timespec="seconds"), **s.to_dict(), "bot": None, "agent": None}
+        rec = {"at": now.isoformat(timespec="seconds"), **s.to_dict(), "data": view.label,
+               "bot": None, "agent": None}  # fmt: skip
         if s.context.get("stale"):
             rec["skipped"] = f"stale: the trigger bar is {s.context['age_bars']} bars old"
         elif last_entry is not None and scanned_at.astimezone(SYD).time() > last_entry:
@@ -917,6 +920,27 @@ def cycle(
         out.append(rec)
     save_state(cfg.data_dir, day, state)
     return out
+
+
+def _prepare_history(arena, pb: Playbook, view: MarketView) -> None:
+    """Before the scan starts, and only for a feed that keeps its own prior sessions (IBKR):
+    fetch them for the liquid universe, as far as the pacing allows each cycle, so the first
+    scans have "usual volume" from the same source as today's bars. Yahoo's feed reads the
+    minute cache instead, so nothing is done for it."""
+    if view.replay or view.feed.history_source() is view.minutes:
+        return
+    if _PRE.get("day") != view.day:
+        try:
+            codes, _why = build_universe(arena, pb)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not list the universe for the pre-open history: %s", e)
+            return
+        _PRE.clear()
+        _PRE.update(day=view.day, codes=[view.index, *codes])
+    view.prepare(_PRE["codes"])
+
+
+_PRE: dict = {}
 
 
 def _bot_take(arena, pb, s: Setup, now: datetime, day: date) -> dict:

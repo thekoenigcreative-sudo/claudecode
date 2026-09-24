@@ -1,0 +1,483 @@
+"""One read-only connection to IB Gateway, and the pacing rules that keep it welcome.
+
+DATA ONLY (see the package docstring). What it asks IB Gateway for:
+  * 1-minute TRADES bars (reqHistoricalData), for today and for the prior sessions that
+    make "usual volume" - one request per stock, never streamed;
+  * a quote (reqMktData, cancelled as soon as it has answered): bid, ask, last and their
+    sizes, the day's open (the opening auction's price once the market is open), the
+    pre-open auction's indicative price and volume (generic tick 225), and the halt flag;
+  * nothing about the account: the connection is opened read-only with no startup fetch
+    of orders, executions or account values. (ib_async always asks for positions when it
+    connects; this module never reads them.)
+
+IBKR's limits, and how they are kept (TWS API "Historical Data Limitations", read
+2026-09-24; interactivebrokers.github.io/tws-api/historical_limitations.html):
+  * at most 50 historical requests open at once: `max_concurrent_requests` (8) at a time;
+  * bars of 1 minute and larger have no hard pacing limit, only a "soft" slow-down, and too
+    much too fast "can lead to throttling and eventual disconnect". The 30-seconds-and-under
+    rules are kept anyway: no identical request within 15 s (`min_refetch_s`), and at most
+    `max_requests_per_10min` (600) in any ten minutes, `max_requests_per_cycle` (90) a scan;
+  * market data lines (100 on a new account) are used ONLY by quotes, one at a time and
+    cancelled on answer, capped at `max_quote_lines`. Bars do not hold a line open. So the
+    day trader's universe (~250 stocks) never meets the line limit: it is ROTATED through
+    historical requests, the stalest stocks first, 90 a scan - each stock refreshed about
+    every three minutes, and a stock being decided on is fetched on the spot.
+  * a pacing violation (error 162 with "pacing", or 420) halves the per-scan budget for the
+    rest of the day and is logged as an ERROR.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+from asxbot.log import get_logger
+
+log = get_logger("asxbot.ibkr.gateway")
+SYD = ZoneInfo("Australia/Sydney")
+
+# IB message codes this module acts on (TWS API "Message Codes").
+LOST = {1100, 2110}  # connectivity between Gateway and IBKR's servers broken
+RESTORED = {1101, 1102}
+FARM_BROKEN = {2103, 2105, 2157}  # a market data / historical / sec-def farm is down
+FARM_OK = {2104, 2106, 2158}
+NOT_CONNECTED = {502, 504}
+PACING = {420}
+NO_PERMISSION = {354, 10089, 10090, 10167, 10168, 10186, 10187}  # delayed / not subscribed
+NO_SECURITY = {200}
+# reqMarketDataType: 1 real-time, 2 frozen, 3 delayed, 4 delayed-frozen. We ask for 4, which
+# still delivers real-time data (1, or 2 after the close) wherever the account is subscribed;
+# the type each quote actually came back with is what is checked.
+MARKET_DATA_TYPES = {1: "real-time", 2: "frozen", 3: "delayed", 4: "delayed-frozen"}
+REAL_TIME_TYPES = {1, 2}
+
+
+@dataclass
+class GatewaySettings:
+    host: str = "127.0.0.1"
+    port: int = 4001
+    client_id: int = 41
+    connect_timeout_s: float = 10.0
+    request_timeout_s: float = 20.0
+    market_data_lines: int = 100
+    max_quote_lines: int = 20
+    max_requests_per_cycle: int = 90
+    max_requests_per_10min: int = 600
+    max_concurrent_requests: int = 8
+    min_refetch_s: float = 15.0
+    reconnect_every_s: float = 300.0
+    quote_wait_s: float = 3.0
+    generic_ticks: str = "225"
+    probe_code: str = "BHP"
+
+    def __post_init__(self) -> None:
+        if int(self.client_id) == 0:
+            # client 0 is bound to orders placed in Gateway by hand; never ours
+            raise ValueError("ibkr.client_id must not be 0")
+        if self.host not in ("127.0.0.1", "localhost", "::1"):
+            # Gateway on this PC only: its API is trusted to 127.0.0.1 (jts.ini TrustedIPs).
+            raise ValueError(f"ibkr.host must be this PC (127.0.0.1), got {self.host!r}")
+
+
+def settings_from_config(cfg) -> GatewaySettings:
+    raw = cfg.get("ibkr") or {}
+    known = GatewaySettings.__dataclass_fields__
+    return GatewaySettings(**{k: v for k, v in raw.items() if k in known})
+
+
+def _num(x) -> float | None:
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) or f < 0 else f
+
+
+def disable_orders(ib) -> list[str]:
+    """Replace every order method on the connection and its client with one that raises.
+
+    Belt and braces: nothing here calls them (the no-order test checks the source), and IB
+    Gateway's Read-Only API setting would refuse them. Names are matched by pattern, so a new
+    order method in a later ib_async is caught too. Returns the names disabled."""
+    done = []
+
+    def refuse(name):
+        def _refused(*a, **k):
+            raise PermissionError(f"{name}: the IBKR data connection never touches orders")
+
+        return _refused
+
+    for obj in (ib, getattr(ib, "client", None)):
+        if obj is None:
+            continue
+        for name in dir(obj):
+            low = name.lower()
+            if name.startswith("_") or name.endswith("Event"):
+                continue  # events are how ib_async reports; replacing them breaks it
+            if not callable(getattr(obj, name, None)):
+                continue
+            if "order" in low or "globalcancel" in low or low.startswith("exercise"):
+                try:
+                    setattr(obj, name, refuse(name))
+                    done.append(name)
+                except (AttributeError, TypeError):
+                    pass
+    return done
+
+
+class Pacer:
+    """At most `per_10min` requests in any ten minutes."""
+
+    def __init__(self, per_10min: int):
+        self.per_10min = max(1, int(per_10min))
+        self.stamps: deque[float] = deque()
+
+    def room(self, now_s: float) -> int:
+        while self.stamps and now_s - self.stamps[0] >= 600:
+            self.stamps.popleft()
+        return max(0, self.per_10min - len(self.stamps))
+
+    def spend(self, n: int, now_s: float) -> None:
+        self.stamps.extend([now_s] * int(n))
+
+
+@dataclass
+class Health:
+    connected: bool = False
+    server_ok: bool = False  # Gateway's own link to IBKR (codes 1100 / 2110 break it)
+    refused: bool = False  # the last connect attempt was refused: Gateway down or logged out
+    market_data_type: int | None = None  # of the last quote
+    last_error: str = ""
+    last_ok_at: str = ""
+    pacing_hits: int = 0
+    farms_broken: set = field(default_factory=set)
+
+    def to_dict(self) -> dict:
+        return {
+            "connected": self.connected,
+            "server_ok": self.server_ok,
+            "refused": self.refused,
+            "market_data_type": self.market_data_type,
+            "market_data": MARKET_DATA_TYPES.get(self.market_data_type or 0, "unknown"),
+            "last_error": self.last_error,
+            "last_ok_at": self.last_ok_at,
+            "pacing_hits": self.pacing_hits,
+            "farms_broken": sorted(self.farms_broken),
+        }
+
+
+def _make_ib():
+    from ib_async import IB
+
+    return IB()
+
+
+class Gateway:
+    """The one connection. Every call is synchronous and never raises for a data problem:
+    a failed request is an empty answer plus a note in `health`."""
+
+    def __init__(self, settings: GatewaySettings, ib_factory=_make_ib, clock=time.monotonic):
+        self.s = settings
+        self.ib_factory = ib_factory
+        self.clock = clock
+        self.ib = None
+        self.health = Health()
+        self.pacer = Pacer(settings.max_requests_per_10min)
+        self.budget = max(1, int(settings.max_requests_per_cycle))
+        self.last_connect_try: float | None = None
+        self.unknown_codes: set[str] = set()
+        self._req_errors: dict[int, tuple[int, str]] = {}
+        self._lines = 0
+
+    # -- connection ---------------------------------------------------------
+    @property
+    def ready(self) -> bool:
+        return bool(
+            self.ib is not None
+            and self.ib.isConnected()
+            and self.health.connected
+            and self.health.server_ok
+        )
+
+    def connect(self) -> bool:
+        """Connect if not connected. True when connected and Gateway reaches IBKR."""
+        if self.ib is not None and self.ib.isConnected():
+            return self.ready
+        self.last_connect_try = self.clock()
+        pacing_hits = self.health.pacing_hits
+        self.health = Health(pacing_hits=pacing_hits)  # what arrives while connecting counts
+        ib = self.ib_factory()
+        disable_orders(ib)
+        ib.errorEvent += self._on_error
+        try:
+            from ib_async import StartupFetchNONE
+
+            fetch = StartupFetchNONE
+        except ImportError:  # the fake in tests
+            fetch = 0
+        try:
+            ib.connect(
+                self.s.host, int(self.s.port), clientId=int(self.s.client_id),
+                timeout=float(self.s.connect_timeout_s), readonly=True, fetchFields=fetch,
+            )  # fmt: skip
+        except (OSError, TimeoutError) as e:  # refused, reset, or no answer
+            self.health = Health(refused=True, last_error=f"connect refused: {e!r}")
+            log.warning(
+                "IB Gateway at %s:%s refused the connection (%r): not running or logged out",
+                self.s.host, self.s.port, e,
+            )  # fmt: skip
+            self.ib = None
+            return False
+        self.ib = ib
+        self.health.connected = True
+        self.health.refused = False
+        # Assume the link is up unless Gateway said otherwise while connecting (its farm and
+        # connectivity messages arrive during the handshake and are handled in _on_error).
+        if not self.health.last_error.startswith("lost"):
+            self.health.server_ok = True
+        ib.reqMarketDataType(4)
+        ib.disconnectedEvent += self._on_disconnect
+        log.info(
+            "IB Gateway connected at %s:%s (client %s), read-only; link to IBKR %s",
+            self.s.host, self.s.port, self.s.client_id,
+            "up" if self.health.server_ok else "BROKEN",
+        )  # fmt: skip
+        return self.ready
+
+    def disconnect(self) -> None:
+        self._closing = True
+        if self.ib is not None:
+            try:
+                self.ib.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        self.ib = None
+        self.health.connected = False
+        self._closing = False
+
+    def _on_disconnect(self) -> None:
+        self.health.connected = False
+        if getattr(self, "_closing", False):
+            return  # we closed it
+        self.health.last_error = "Gateway closed the API connection"
+        log.error("IB Gateway closed the API connection")
+
+    def _on_error(self, req_id, code, msg, contract=None) -> None:
+        code = int(code)
+        if code in LOST:
+            self.health.server_ok = False
+            self.health.last_error = f"lost {code}: {msg}"
+            log.error("IB Gateway lost its link to IBKR (%s): %s", code, msg)
+        elif code in RESTORED:
+            self.health.server_ok = True
+            log.warning("IB Gateway's link to IBKR restored (%s): %s", code, msg)
+        elif code in FARM_BROKEN:
+            self.health.farms_broken.add(str(msg).split(":")[-1])
+        elif code in FARM_OK:
+            self.health.farms_broken.discard(str(msg).split(":")[-1])
+            self.health.server_ok = True
+        elif code in NOT_CONNECTED:
+            self.health.connected = False
+            self.health.last_error = f"{code}: {msg}"
+        elif code in PACING or (code == 162 and "pacing" in str(msg).lower()):
+            self._pacing(f"{code}: {msg}")
+        if int(req_id) > 0:
+            self._req_errors[int(req_id)] = (code, str(msg))
+
+    def _pacing(self, why: str) -> None:
+        self.health.pacing_hits += 1
+        self.budget = max(10, self.budget // 2)
+        log.error("IBKR pacing violation (%s); %d requests a scan from now on", why, self.budget)
+
+    # -- contracts ----------------------------------------------------------
+    @staticmethod
+    def contract(code: str):
+        from ib_async import Index, Stock
+
+        if code.startswith("^"):
+            if code.upper() != "^AXJO":
+                raise ValueError(f"no IBKR index mapped for {code}")
+            return Index("XJO", "ASX", "AUD")
+        # ASX exchange, not SMART: bars and volumes are the ASX's own, like Yahoo's .AX
+        return Stock(code.upper(), "ASX", "AUD")
+
+    # -- bars ---------------------------------------------------------------
+    def room(self) -> int:
+        """Requests allowed right now: the scan budget, within the ten-minute cap."""
+        return min(self.budget, self.pacer.room(self.clock()))
+
+    def bars(self, requests: dict[str, tuple[str, datetime | None]]) -> dict[str, pd.DataFrame]:
+        """1-minute TRADES bars. `requests` maps code -> (duration, end or None for now).
+        At most `room()` are sent (the caller picks which); the rest are left out. Returns
+        code -> bars (Sydney index, open/high/low/close/volume); a code with none is left out.
+        """
+        if not requests or not self.ready:
+            return {}
+        codes = list(requests)[: self.room()]
+        if not codes:
+            return {}
+        self.pacer.spend(len(codes), self.clock())
+        sem = asyncio.Semaphore(max(1, min(int(self.s.max_concurrent_requests), 45)))
+
+        async def one(code: str):
+            dur, end = requests[code]
+            try:
+                c = self.contract(code)
+            except ValueError:
+                return code, None
+            async with sem:
+                try:
+                    got = await self.ib.reqHistoricalDataAsync(
+                        c, end or "", dur, "1 min", "TRADES", False, formatDate=2,
+                        timeout=float(self.s.request_timeout_s),
+                    )  # fmt: skip
+                except Exception as e:  # noqa: BLE001
+                    log.warning("IBKR bars for %s failed: %r", code, e)
+                    return code, None
+            return code, got
+
+        # The whole batch is bounded too: a data farm that hangs must not stall the watcher.
+        whole = float(self.s.request_timeout_s) * 2
+
+        async def every():  # gathered inside the running loop, never before it
+            return await asyncio.wait_for(asyncio.gather(*(one(c) for c in codes)), timeout=whole)
+
+        try:
+            results = self.ib.run(every())
+        except Exception as e:  # noqa: BLE001
+            self.health.last_error = f"bars batch failed: {e!r}"
+            self.health.server_ok = False  # a batch that hangs or breaks: treat the link as down
+            log.error("IBKR bars batch of %d failed: %r", len(codes), e)
+            return {}
+        out = {}
+        for code, got in results:
+            df = bars_frame(got)
+            if df is not None and len(df):
+                out[code] = df
+        if out:
+            self.health.last_ok_at = datetime.now(SYD).isoformat(timespec="seconds")
+        return out
+
+    # -- quotes -------------------------------------------------------------
+    def quote(self, code: str) -> dict | None:
+        """One quote, then the line is given back. None if Gateway is not ready, every line
+        is in use, or nothing came back in `quote_wait_s`."""
+        if not self.ready or self._lines >= min(self.s.max_quote_lines, self.s.market_data_lines):
+            return None
+        try:
+            c = self.contract(code)
+        except ValueError:
+            return None
+        self._lines += 1
+        tk = None
+        try:
+            tk = self.ib.reqMktData(c, "" if code.startswith("^") else self.s.generic_ticks)
+            deadline = self.clock() + float(self.s.quote_wait_s)
+            while self.clock() < deadline:
+                self.ib.sleep(0.2)
+                have_px = _num(tk.last) or _num(tk.close)
+                have_book = code.startswith("^") or (_num(tk.bid) and _num(tk.ask))
+                if have_px and have_book:
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.warning("IBKR quote for %s failed: %r", code, e)
+            return None
+        finally:
+            self._lines -= 1
+            try:
+                self.ib.cancelMktData(c)
+            except Exception:  # noqa: BLE001
+                pass
+        mdt = getattr(tk, "marketDataType", None)
+        q = {
+            "code": code,
+            "bid": _num(tk.bid), "bid_size": _num(tk.bidSize),
+            "ask": _num(tk.ask), "ask_size": _num(tk.askSize),
+            "last": _num(tk.last), "last_size": _num(tk.lastSize),
+            "open": _num(tk.open), "prev_close": _num(tk.close), "volume": _num(tk.volume),
+            "halted": _num(getattr(tk, "halted", None)),
+            "auction_price": _num(getattr(tk, "auctionPrice", None)),
+            "auction_volume": _num(getattr(tk, "auctionVolume", None)),
+            "market_data_type": int(mdt) if mdt else None,
+            "time": str(getattr(tk, "time", "") or ""),
+        }  # fmt: skip
+        if q["last"] is None and q["prev_close"] is None:
+            return None
+        self.health.market_data_type = q["market_data_type"]
+        self.health.last_ok_at = datetime.now(SYD).isoformat(timespec="seconds")
+        return q
+
+
+def bars_frame(got) -> pd.DataFrame | None:
+    """ib_async bars -> the frame every feed returns: Sydney-local index, bar START times,
+    open/high/low/close/volume. An index's volume (IBKR sends -1 or 0) is 0."""
+    if not got:
+        return None
+    rows = []
+    for b in got:
+        ts = pd.Timestamp(b.date)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        vol = _num(getattr(b, "volume", 0)) or 0.0
+        rows.append((ts.tz_convert(SYD), float(b.open), float(b.high), float(b.low),
+                     float(b.close), vol))  # fmt: skip
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+    df = df.drop_duplicates("ts", keep="last").set_index("ts").sort_index()
+    df.index.name = None
+    return df
+
+
+def end_of(day) -> datetime:
+    """The end of a Sydney day, as the end time of a request for the sessions before it."""
+    return datetime.combine(day, datetime.min.time(), tzinfo=SYD)
+
+
+def seconds_since(ts: datetime, now: datetime, pad_s: int = 180) -> str:
+    """A duration covering `ts` to now plus a margin, as IBKR wants it ("900 S")."""
+    secs = int((now - ts).total_seconds()) + int(pad_s)
+    return f"{max(300, min(secs, 86_400))} S"
+
+
+_SHARED: dict = {}
+
+
+def shared(cfg) -> Gateway:
+    """The process's one Gateway connection (fixed client id), built on first use."""
+    s = settings_from_config(cfg)
+    key = (s.host, s.port, s.client_id)
+    gw = _SHARED.get(key)
+    if gw is None:
+        gw = _SHARED[key] = Gateway(s)
+    return gw
+
+
+def maybe_reconnect(gw: Gateway) -> bool:
+    """Try again, but not more often than `reconnect_every_s`."""
+    if gw.ready:
+        return True
+    last = gw.last_connect_try
+    if last is not None and gw.clock() - last < float(gw.s.reconnect_every_s):
+        return False
+    if gw.ib is not None and not gw.ib.isConnected():
+        gw.disconnect()
+    if gw.ib is not None and gw.ib.isConnected():
+        gw.last_connect_try = gw.clock()
+        try:
+            gw.ib.sleep(0.2)  # let Gateway's "link restored" messages in
+        except Exception:  # noqa: BLE001
+            pass
+        return gw.ready  # connected; only the server link is down, and Gateway restores it
+    return gw.connect()
+
+
+__all__ = [
+    "Gateway", "GatewaySettings", "Health", "Pacer", "bars_frame", "disable_orders",
+    "end_of", "maybe_reconnect", "seconds_since", "settings_from_config", "shared",
+]  # fmt: skip

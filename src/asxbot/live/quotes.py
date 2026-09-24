@@ -1,5 +1,6 @@
-"""Live quote provider behind a small interface. yfinance now (delayed ~20 min on the ASX,
-plumbing only); IBKR real-time later behind the same interface.
+"""Live quote provider behind a small interface. yfinance (delayed ~20 min on the ASX,
+plumbing only), or IBKR real-time behind the same interface (ibkr/feed.py, selected by
+`data.live_provider`).
 """
 
 from __future__ import annotations
@@ -25,6 +26,16 @@ class Quote:
     as_of: datetime
     source: str
     delayed: bool = True
+    # IBKR only (None from Yahoo): the book, sizes, the halt flag (0 trading, 1 halted,
+    # 2 volatility halt) and the pre-open auction's indicative price and volume.
+    bid: float | None = None
+    ask: float | None = None
+    bid_size: float | None = None
+    ask_size: float | None = None
+    last_size: float | None = None
+    halted: float | None = None
+    auction_price: float | None = None
+    auction_volume: float | None = None
 
 
 class QuoteProvider(ABC):

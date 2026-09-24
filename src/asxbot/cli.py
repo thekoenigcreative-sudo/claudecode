@@ -159,6 +159,15 @@ def cmd_ann_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ibkr_check(args: argparse.Namespace) -> int:
+    """Is IB Gateway ready to feed live ASX prices? Read-only; safe beside the watcher."""
+    from asxbot.ibkr.check import run_check
+
+    cfg = load_config()
+    setup_logging(cfg.logs_dir)
+    return run_check(cfg)
+
+
 def cmd_alerts_clear(args: argparse.Namespace) -> int:
     from asxbot.alerts import Alerts
 
@@ -599,6 +608,12 @@ def build_parser() -> argparse.ArgumentParser:
     from asxbot.arena.cli import add_parsers as _arena_parsers
 
     _arena_parsers(sub)
+    ibk = sub.add_parser("ibkr", help="IB Gateway live market data (read-only)").add_subparsers(
+        dest="ibkr_cmd", required=True
+    )
+    ibk.add_parser(
+        "check", help="connect to IB Gateway and check live quotes and bars (BHP, XJO)"
+    ).set_defaults(fn=cmd_ibkr_check)
     ac = sub.add_parser("alerts-clear", help="clear an alert flag by hand")
     ac.add_argument("key")
     ac.set_defaults(fn=cmd_alerts_clear)
