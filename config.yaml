@@ -227,7 +227,16 @@ arena:
       # so the difference is the whole edge and more. And 3x leverage means a 10% adverse
       # move costs 30% of equity in a day, whatever the account size. Levels 2 and 3 are
       # unchanged.
-      max_open_positions: 4          # per playbook account
+      #
+      # Changed 2026-09-24 (evening), a DELIBERATE CHANGE set by Rick in his brief of that
+      # evening, not a finding and not tuned: no result prompted it. Position size up to
+      # $5,000 (IBKR's $6.60 minimum is then ~0.13% a side), at most 3 open, at most 6 new a
+      # day. Was: 4 open, no per-position dollar cap (only the playbook's 40%-of-equity
+      # guidance and the $8,000 per-order guard), no daily count. In force from the 25 Sep
+      # 07:30 start. The real-money `limits:` above are NOT changed.
+      max_open_positions: 3          # per playbook account (was 4)
+      max_position_aud: 5000         # per position, entry and adds together (new 2026-09-24)
+      max_new_positions_per_day: 6   # opening orders a day, per account (new 2026-09-24)
       leverage_asx: 1.0
       leverage_crypto: 10.0          # unused until a crypto playbook starts
       daily_loss_limit_pct: 15.0     # then no NEW positions until tomorrow; exits stay allowed
@@ -350,14 +359,45 @@ arena:
     tz: "Australia/Sydney"
 
   # Playbooks. Only ONE is tested at a time (PLAN.md). Numbers are ARENA.md labels.
+  # Where the arena's intraday prices come from (added 2026-09-24). Switching to IBKR's live
+  # data is this one line: `provider: ibkr_live` (arena/intraday.py). Until then every
+  # decision is made on Yahoo's delayed 1-minute bars and every report says "delayed data -
+  # rehearsal until IBKR live prices".
+  intraday_data:
+    provider: yahoo_delayed    # yahoo_delayed | ibkr_live
+    # Yahoo's ASX bars arrive about this far behind the market. Used ONLY by the plumbing
+    # replay, to decide which bars a decision could have seen; the live watcher uses the
+    # bars the feed actually holds at the moment it decides, whatever the delay is.
+    feed_delay_minutes: 20
+    # Requests to Yahoo per scan cycle, at most. The liquid universe is ~250 stocks; one
+    # request per stock every minute is ~15,000 an hour, which risks Yahoo refusing the
+    # whole machine (fills included). So each cycle refreshes the stalest stocks first, up
+    # to this many, and each stock is seen every few minutes. A refusal halves it for the
+    # rest of the day and is alerted.
+    max_requests_per_cycle: 90
+    # Prior sessions used for "usual volume at this time of day" (1-minute history on the
+    # free feed is ~7 days). Fewer than min_sessions cached: no baseline, and no setup or
+    # reaction test that needs one.
+    baseline_sessions: 5
+    baseline_min_sessions: 3
+
   playbooks:
+    # -------------------------------------------------------------------------------------
+    # VERSION 1 of the announcements playbook, RETIRED 2026-09-24 (evening) by Rick's brief:
+    # "Two days of a design that barely trades is not a test." Every value below is version
+    # 1's, kept as it ran (23-24 Sep 2026) so the record stays readable. Its accounts
+    # (asx_announcements__agent, __bot) are kept on disk and no longer traded; neither held
+    # a position when it was retired. Version 2 is `asx_announcements_v2` below.
+    # -------------------------------------------------------------------------------------
     asx_announcements:
       arena_id: 2
-      title: "ASX announcements"
+      title: "ASX announcements (v1, retired 2026-09-24)"
       market: asx
       level: 1
-      enabled: true
-      status: warmup            # build | shakedown | warmup | test | passed | retired
+      version: 1
+      enabled: false            # retired 2026-09-24; was true
+      retired_on: "2026-09-24"
+      status: retired           # build | shakedown | warmup | test | passed | retired (was warmup)
       warmup_start: "2026-09-23T07:30:00+10:00"
       # Holding, set 2026-09-23. The level's default is intraday, which put the agent in a
       # different race from its own yardstick: the 15:50 sweep flattened the agent every
@@ -407,3 +447,278 @@ arena:
         hold_days: 10
         stop_loss_pct: 8.0
         long_only: true
+
+    # -------------------------------------------------------------------------------------
+    # VERSION 2 of the announcements playbook. FROZEN 2026-09-24 (evening), written here
+    # BEFORE it ran, from Rick's brief of that evening. Its 10-trading-day Level 1 test
+    # starts 25 Sep 2026 (PLAN.md: only a failed test steps down to Weekly). A change to
+    # anything below after it has run is a new dated version, scored separately.
+    #
+    # The idea: trade the REACTION, not the news. The agent still gets its pre-open look at
+    # overnight news; then it decides on each stock with price-sensitive news once the market
+    # has traded it for 10-30 minutes, from what the market did (move against the ASX 200,
+    # volume against the stock's usual volume at that time of day, the opening auction
+    # price) and the news. Holds are intraday; everything is flat by the pre-close sweep.
+    # -------------------------------------------------------------------------------------
+    asx_announcements_v2:
+      arena_id: 2
+      title: "ASX announcements v2 (trade the reaction)"
+      market: asx
+      level: 1
+      version: 2
+      frozen_on: "2026-09-24"
+      enabled: true
+      status: test
+      test_start: "2026-09-25"   # day 1 of 10 (v2); the evening report counts from here
+      test_days: 10
+      # New accounts, $20,000 each (arena.starting_aud): v2's record starts clean.
+      accounts: asx_announcements_v2
+      holding: intraday
+      # Flat by the pre-close sweep at arena.preclose.sweep_time (15:50): code closes every
+      # position without asking - no overnight holds in v2, so the agent and its rule bot run
+      # the same race. (v1's sweep asked the decider for a written reason to hold.)
+      preclose: flat
+      # No new opening orders after this wall-clock time, and an entry still unfilled by
+      # then stops filling: with the delayed feed a later fill would not be visible to the
+      # sweep before the 16:10 close.
+      last_entry_time: "15:40"
+      data_basis: "delayed data - rehearsal until IBKR live prices"
+      screen:
+        # Kept from v1: a halt or suspension notice is out. (A reinstatement passes, as in v1.)
+        halt_headlines: true
+        # Kept from v1: one tick worth more than this % of the price is out.
+        max_tick_pct: 3.0
+        # REPLACES v1's fixed $250,000 turnover floor: a stock is tradeable if our order is
+        # under this share of its median daily dollar turnover over the last 20 sessions.
+        # Screened at the largest order the level allows (max_position_aud, $5,000), so
+        # the floor is $100,000 a day; arena_place_order also refuses any order above it.
+        max_order_share_of_turnover: 0.05
+        turnover_window_days: 20
+        # Kept from v1: no live quote = out. The ticker is written to
+        # data/arena/no_quote/<day>.json for the IBKR data fix.
+        no_quote: true
+        # REPLACES v1's "no trades by 10:30" test, which read a volume the quote never
+        # returned (24 Sep day review): halted = the minute bars show no trade in the
+        # 10 minutes after the news reached the market (see reaction below).
+        halted_if_no_trade_minutes: 10
+      reader:
+        # The reader still writes CAN_SIZE_AND_EXIT, but in v2 it no longer stops a stock:
+        # liquidity is the screen's arithmetic above. TRADE_WORTHY still gates the PRE-OPEN
+        # look only; the reaction look below is asked whatever the reader said, because v2
+        # trades what the market does with the news.
+        can_size_gate: false
+      pre_open_look: true        # as v1: news before 10:00 is judged before the open
+      relook: false              # v1's 10:20 re-look is replaced by the reaction look
+      reaction:
+        # One look per stock per day. The news "reaches the market" at the first traded
+        # minute at or after max(its release, 10:00) - the open for overnight news, the
+        # resumption after the price-sensitive pause for news during the session.
+        # News counts from the previous session's 16:10 close. The look happens once the
+        # feed's final bars reach 10 minutes after that, and must start before they reach
+        # 40 minutes after it; otherwise it is recorded as missed. For overnight news that
+        # is Rick's 10:10-10:40 window in MARKET time. On the ~20-minute delayed feed the
+        # wall clock then reads about 10:32-11:02; with IBKR live data the two coincide.
+        after_minutes: 10
+        before_minutes: 40
+        # Wake the decider only for a reaction worth a look: |move vs ASX 200| >= 1.0% OR
+        # volume >= 2x the stock's usual volume over the same minutes. The rest are logged
+        # as quiet, not asked. Written before the first run; not tuned.
+        wake_move_vs_index_pct: 1.0
+        wake_volume_multiple: 2.0
+        # Most interesting first when several are due: |move vs index| x volume multiple.
+        order_by: move_x_volume
+      # The decider's question in v2 (watch.py, the v2 packet): "over the rest of today, is
+      # the expected move in this direction bigger than about 0.4% after costs, and where
+      # is the stop?" - not "is the news mispriced".
+      decider:
+        min_expected_net_move_pct: 0.4
+      guidance:
+        default_exit: same_day
+        shorts_allowed_in: asx200
+      # The rule bot (yardstick) for v2, written before it ran. No model. Same costs, fill
+      # rules and level limits as the agent.
+      yardstick:
+        name: announcement_reaction_v2
+        # A stock with price-sensitive news today (released after the previous session's
+        # 16:10 close and before 10:30) that at 10:30 is up >= 3% against the ASX 200 on
+        # >= 3x its usual first-30-minute volume is BOUGHT at 10:31, stop at the low of
+        # 10:00-10:30, exit 15:55. Mirror: an ASX 200 member down >= 3% against the index
+        # on >= 3x is SHORTED, stop at the 10:00-10:30 high.
+        #   move at 10:30 = (close of the 10:29 bar / previous close - 1)
+        #                 - (^AXJO close of its 10:29 bar / ^AXJO previous close - 1), in %
+        #   previous close = the previous session's last minute bar (its 16:10 closing
+        #     auction, which equals Yahoo's daily close on 348 of 348 days checked)
+        #   first-30-minute volume = the sum of the 10:00-10:29 minute bars' volume (the
+        #     opening auction is not in the minute feed, today or on the baseline days)
+        #   usual = the mean of the same sum over the prior sessions in the minute cache
+        #     (intraday_data.baseline_sessions, at least baseline_min_sessions)
+        #   stop = the lowest low (highest high for a short) of the 10:00-10:29 bars
+        move_vs_index_pct: 3.0
+        volume_multiple: 3.0
+        measure_at: "10:30"
+        exit_at: "15:55"
+        # "Bought at 10:31" means the first bar after the decision. On the delayed feed the
+        # decision can only be made once the 10:29 bar is final, ~10:52 by the wall clock,
+        # so it fills then; with IBKR live data, at 10:31. A decision not made by this wall
+        # time is recorded as missed, never taken late.
+        latest_decision_time: "11:15"
+        # Sizing: the level's max position ($5,000) within its limits, capped by the 5%-of-
+        # turnover rule; screens as the agent's (tick, halt, turnover, quote).
+        size_aud: 5000
+        # More signals than free slots (3 open, 6 a day): highest volume multiple first.
+        priority: highest_volume_multiple
+        # The entry is a limit this far through the last visible price, so it behaves like a
+        # marketable order but never fills at any price.
+        entry_limit_slack_pct: 2.0
+
+    # -------------------------------------------------------------------------------------
+    # DAY-TRADER playbook, VERSION 1. FROZEN 2026-09-24 (evening), written here BEFORE it
+    # ran, from Rick's brief of that evening ("why can't it be doing the work of a day
+    # trader"). Its own $20,000 agent account and its own rule bot. Level 1 test of 10 ASX
+    # trading days from 25 Sep 2026. Every rule below is exact; a change after it has run is
+    # a new dated version.
+    #
+    # DATA HONESTY: Yahoo's ASX 1-minute bars are ~20 minutes delayed. Decisions use only
+    # the bars the feed holds at the moment of the decision; a fill is the first bar that
+    # starts after the order is recorded, so on the delayed feed a setup is entered ~20
+    # minutes after the bar that triggered it. Every report says "delayed data - rehearsal
+    # until IBKR live prices". intraday_data.provider switches the feed.
+    # -------------------------------------------------------------------------------------
+    asx_daytrader:
+      arena_id: 12
+      title: "ASX day trader"
+      market: asx
+      level: 1
+      version: 1
+      frozen_on: "2026-09-24"
+      enabled: true
+      status: test
+      test_start: "2026-09-25"
+      test_days: 10
+      accounts: asx_daytrader_v1
+      holding: intraday
+      preclose: flat             # flat by the 15:50 pre-close sweep, no overnight holds
+      data_basis: "delayed data - rehearsal until IBKR live prices"
+      # Risk per trade, |entry - stop| x shares, at most 0.5% of equity (the level allows 5%).
+      risk_per_trade_pct: 0.5
+      universe:
+        # The liquid universe: ASX 300 names whose median daily dollar turnover over the
+        # last 20 sessions is at least 20x the largest order (the same 5% size-aware rule as
+        # v2), and whose tick is at most max_tick_pct of the price (a setup's stop is often
+        # 1-3% away; a coarser tick makes it meaningless). Built once each morning.
+        base: asx300
+        max_order_share_of_turnover: 0.05
+        turnover_window_days: 20
+        max_tick_pct: 1.0
+      scan:
+        # SCANNED IN CODE every cycle (the watcher polls every 60 s) in market time
+        # 10:00-15:45 - the time of the newest final bar - across the liquid universe:
+        # movers against the ASX 200, volume against the usual volume by this minute, new
+        # intraday highs and lows, halt resumptions, and stocks with price-sensitive news
+        # today. Each cycle's top lists go to the event log (daytrader_scan).
+        start: "10:00"
+        end: "15:45"
+        top_n: 10
+      # No new entry after this WALL time: later fills could not be seen by the sweep.
+      last_entry_time: "15:40"
+      # A setup is acted on only if its trigger bar is at most this many bars older than the
+      # newest bar the feed holds for that stock (each stock is refreshed every few minutes).
+      max_signal_age_bars: 5
+      # Each (stock, setup, direction) triggers at most once a day.
+      setups:
+        # Definitions shared by the setups:
+        #   previous close  = the previous session's last minute bar (its closing auction)
+        #   open            = the open of the day's first traded minute bar (the auction
+        #                     price is not in the minute feed; median gap 0.30%, TRACKER #28)
+        #   index open      = ^AXJO's 10:00 bar open (TRACKER #27)
+        #   RVOL at bar t   = volume from 10:00 through t / the mean of the same over the
+        #                     prior sessions (intraday_data.baseline_*)
+        #   VWAP at bar t   = sum(typical price x volume) / sum(volume), 10:00 through t,
+        #                     typical = (high + low + close) / 3
+        #   long rules below; the SHORT mirror (every inequality reversed, highs <-> lows) is
+        #   allowed only for the dated ASX 200 list (arena.shorts)
+        gap_and_go:
+          # gap vs index = (open / previous close - 1) - (index open / index previous close
+          # - 1) >= 3%; the first bar from 10:15 to 10:45 that CLOSES above the high of the
+          # 10:00-10:14 bars, while no bar since the open has traded below the previous
+          # close (the gap is not filled), with RVOL >= 2.0 at that bar.
+          # Stop (invalidation): the low of the 10:00-10:14 bars.
+          gap_pct_vs_index: 3.0
+          range_minutes: 15
+          window: ["10:15", "10:45"]
+          min_rvol: 2.0
+        opening_range_breakout:
+          # The first bar from 10:30 to 14:30 that CLOSES above the high of the 10:00-10:29
+          # bars, on rising volume: that bar's volume >= 2x the mean volume of the 10 bars
+          # before it, and RVOL >= 1.5.
+          # Stop: the midpoint of the 10:00-10:29 range (a breakout that falls back halfway
+          # into the range has failed; the far side would put +2R out of reach on most days).
+          range_minutes: 30
+          window: ["10:30", "14:30"]
+          bar_volume_multiple: 2.0
+          bar_volume_lookback: 10
+          min_rvol: 1.5
+        vwap_reclaim:
+          # Trend intact: at the prior bar the stock is up >= 1.0% against the ASX 200 since
+          # the previous close, and VWAP is higher than 30 bars earlier. Pullback: at least
+          # 3 of the last 20 bars before this one closed below VWAP, the last of them being
+          # the prior bar. Reclaim: this bar, between 10:45 and 15:15, CLOSES above VWAP, on
+          # volume >= the mean of the 20 bars before it. (Short mirror: "VWAP loss".)
+          # Stop: the lowest low of the last 15 bars, this one included.
+          window: ["10:45", "15:15"]
+          min_move_vs_index_pct: 1.0
+          vwap_slope_bars: 30
+          pullback_lookback: 20
+          min_bars_below: 3
+          bar_volume_lookback: 20
+          stop_lookback: 15
+        halt_resumption:
+          # A halt: 10 or more minutes with no trade, after 10:05 and before 15:30, in a
+          # stock that traded in at least 80% of the 30 minutes before the gap; or a first
+          # trade of the day at or after 10:30 on a day with a reinstatement or a
+          # price-sensitive announcement for it. The resumption range is the first 10 minutes
+          # of trading after it. Continuation: the resumption move (close of the 10th minute
+          # against the last price before the halt - the previous close for a late start)
+          # is >= +2% against the index's move over the same time, and within 60 minutes a
+          # bar CLOSES above the resumption range's high. Stop: the resumption range's low.
+          min_gap_minutes: 10
+          prior_activity_share: 0.8
+          late_first_trade: "10:30"
+          resumption_range_minutes: 10
+          min_move_vs_index_pct: 2.0
+          within_minutes: 60
+      entry:
+        # A limit this far through the last visible price (above it for a buy), rounded to
+        # the tick; it stops filling 10 minutes after it is recorded (a stale setup).
+        limit_slack_pct: 1.0
+        good_for_minutes: 10
+        # Size: shares = min(risk budget / |entry - stop|, max_position_aud / entry,
+        # max_order_share_of_turnover x median turnover / entry), whole shares.
+      manage:
+        # Code manages every position, agent's and bot's alike, bar by bar in the broker
+        # (the stop only ever tightens; a move is effective from the next bar):
+        #   R = |average fill - the stop it opened with|
+        #   the best price since entry reaches +1R: the stop moves to breakeven (the average
+        #     fill, before costs)
+        #   it reaches +2R: half the shares are sold at +2R (a resting take-profit, filled
+        #     like any target), and from then the stop trails 1R behind the best price
+        #   a stop that is reached exits whatever is left; everything is flat at 15:50
+        breakeven_at_r: 1.0
+        half_at_r: 2.0
+        trail_at_r: 2.0
+        trail_distance_r: 1.0
+      # One re-entry per stock per day: after a first trade in a stock has closed, one more
+      # entry in it that day, on a new trigger. Never while a position or entry is working.
+      max_entries_per_stock_per_day: 2
+      agent:
+        # The AGENT (trader-decider) confirms or rejects each code-found setup: one call per
+        # setup, with the context a trader checks (the news, the market's direction, the
+        # stock's industry move, how extended it is from VWAP and the open, where the stop
+        # goes). No answer within 60 s is a rejection. It may tighten the stop, never widen
+        # it; code sizes the order and enforces the stop.
+        timeout_s: 60
+      yardstick:
+        # The RULE BOT takes every setup mechanically, sized and managed the same way,
+        # through the same limits. Several at once: highest RVOL first.
+        name: daytrader_setups_v1
+        priority: highest_rvol
