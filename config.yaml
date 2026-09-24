@@ -548,8 +548,14 @@ arena:
         #                 - (^AXJO close of its 10:29 bar / ^AXJO previous close - 1), in %
         #   previous close = the previous session's last minute bar (its 16:10 closing
         #     auction, which equals Yahoo's daily close on 348 of 348 days checked)
-        #   first-30-minute volume = the sum of the 10:00-10:29 minute bars' volume (the
-        #     opening auction is not in the minute feed, today or on the baseline days)
+        #   first-30-minute volume = the sum of the 10:01-10:29 minute bars' volume.
+        #     CORRECTED 2026-09-24, BEFORE ANY RUN (was "10:00-10:29", on the belief that the
+        #     auction is never in the minute feed): Yahoo's 10:00 bar holds the opening
+        #     auction's volume on some stock-days and nothing on others (17-24 Sep, 300 codes:
+        #     171 first bars over 10x the next ten bars' median, a median 3.9% of the day's
+        #     volume, against 892 with none). Counting it would make "usual" depend on which
+        #     days Yahoo included the auction. Every volume measure in v2 and the day trader
+        #     starts at 10:01 (arena/intraday.py VOLUME_FROM). No rule had been run.
         #   usual = the mean of the same sum over the prior sessions in the minute cache
         #     (intraday_data.baseline_sessions, at least baseline_min_sessions)
         #   stop = the lowest low (highest high for a short) of the 10:00-10:29 bars
@@ -628,11 +634,13 @@ arena:
       setups:
         # Definitions shared by the setups:
         #   previous close  = the previous session's last minute bar (its closing auction)
-        #   open            = the open of the day's first traded minute bar (the auction
-        #                     price is not in the minute feed; median gap 0.30%, TRACKER #28)
+        #   open            = the open of the day's first traded minute bar (Yahoo's
+        #                     10:00 bar carries the auction print on some days and not on
+        #                     others; against the auction the median gap is 0.30%, TRACKER #28)
         #   index open      = ^AXJO's 10:00 bar open (TRACKER #27)
-        #   RVOL at bar t   = volume from 10:00 through t / the mean of the same over the
-        #                     prior sessions (intraday_data.baseline_*)
+        #   RVOL at bar t   = volume from 10:01 through t / the mean of the same over the
+        #                     prior sessions (intraday_data.baseline_*). From 10:01, not
+        #                     10:00: corrected 2026-09-24 before any run, as v2's volume above
         #   VWAP at bar t   = sum(typical price x volume) / sum(volume), 10:00 through t,
         #                     typical = (high + low + close) / 3
         #   long rules below; the SHORT mirror (every inequality reversed, highs <-> lows) is
