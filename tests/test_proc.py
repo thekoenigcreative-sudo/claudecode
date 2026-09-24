@@ -12,6 +12,12 @@ from asxbot import proc
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "src" / "asxbot" / "proc.py"
+# The shared botctl module is vendored VERBATIM from C:\Users\Richa\.cc-jobs\changes (the
+# same file in every bot), so it keeps its own default process runner, `_default_run`, which
+# already passes CREATE_NO_WINDOW. It is the one allowance, and a narrow one: the tests
+# below hold it to starting processes only in that hook, and hold asxbot.chat to replacing
+# the hook with asxbot.proc before anything can call it.
+VENDORED = ROOT / "src" / "asxbot" / "botctl.py"
 BANNED_MODULES = {"subprocess", "multiprocessing", "pty"}
 BANNED_OS = {"system", "popen", "startfile", "posix_spawn", "posix_spawnp"}
 BANNED_OS_PREFIXES = ("spawn", "exec")
@@ -20,7 +26,9 @@ BANNED_OS_PREFIXES = ("spawn", "exec")
 def _sources():
     for folder in ("src", "scripts"):
         for p in sorted((ROOT / folder).rglob("*")):
-            if p.suffix in (".py", ".pyw") and "__pycache__" not in p.parts and p != HELPER:
+            if p.suffix in (".py", ".pyw") and "__pycache__" not in p.parts and p not in (
+                HELPER, VENDORED
+            ):
                 yield p
 
 
@@ -92,3 +100,37 @@ def test_every_child_gets_create_no_window(monkeypatch, fn, target):
     assert seen["creationflags"] & proc.CREATE_NO_WINDOW == proc.CREATE_NO_WINDOW
     assert seen["creationflags"] & 0x10  # an existing flag is kept
     assert proc.CREATE_NO_WINDOW == 0x08000000  # this project runs on Windows
+
+
+def test_the_vendored_botctl_starts_processes_only_in_its_default_hook():
+    """botctl.py may use subprocess in `_default_run` only, and only windowless."""
+    tree = ast.parse(VENDORED.read_text(encoding="utf-8"))
+    hook = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_default_run")
+    inside = {id(n) for n in ast.walk(hook)}
+    outside = [
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+        and n.value.id == "subprocess" and id(n) not in inside
+        and n.attr not in ("TimeoutExpired", "CREATE_NO_WINDOW")
+    ]  # fmt: skip
+    assert not outside, f"botctl.py starts a process outside _default_run at lines {outside}"
+    calls = [n for n in ast.walk(hook) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "run"]  # fmt: skip
+    assert calls and all(any(k.arg == "creationflags" for k in c.keywords) for c in calls)
+    rest = [o for o in _offences(VENDORED) if "imports subprocess" not in o]
+    assert not rest, rest
+
+
+def test_the_chat_points_botctl_at_the_windowless_helper(monkeypatch):
+    from asxbot import botctl, chat
+
+    assert botctl.RUN is chat.run_hidden
+    seen = {}
+
+    def fake_run(args, **kw):
+        seen.update(kw, args=args)
+        return subprocess.CompletedProcess(args, 0, "out", "")
+
+    monkeypatch.setattr(proc, "run", fake_run)
+    assert botctl.RUN(["openclaw", "config", "validate"], 5) == (0, "out", "")
+    assert seen["args"] == ["openclaw", "config", "validate"] and seen["timeout"] == 5

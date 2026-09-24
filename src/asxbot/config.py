@@ -35,6 +35,10 @@ class Config:
     raw: dict[str, Any]
     root: Path
     env: dict[str, str] = field(default_factory=dict)
+    # The file `raw` was read from (None when built in memory). The few settings that can
+    # change while a process runs - the agents' expected models and effort, set from the
+    # Trader chat - are re-read from it (asxbot.arena.agents.agent_settings).
+    path: Path | None = None
 
     def __getitem__(self, key: str) -> Any:
         return self.raw[key]
@@ -119,4 +123,4 @@ def load_config(path: str | Path | None = None, env_file: str | Path | None = No
     }
     _validate(raw, env)
     # data dir is always resolved against the real repo root, even for a temp config copy
-    return Config(raw=raw, root=root, env=env)
+    return Config(raw=raw, root=root, env=env, path=cfg_path)

@@ -404,9 +404,8 @@ def _brief(item: dict) -> dict:
 
 
 def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: str) -> dict:
+    from asxbot.arena.agents import expected_model
     from asxbot.arena.watch import (
-        DECIDER_MODEL,
-        READER_MODEL,
         announcement_by_id,
         dossier,
         pdf_text_why,
@@ -448,7 +447,7 @@ def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: 
             reply = call_agent(
                 READER,
                 reader_packet(arena, a, {**ctx, "text": text}),
-                expect_model=READER_MODEL,
+                expect_model=expected_model(cfg, "reader"),
                 data_dir=cfg.data_dir,
                 purpose=f"read {a.code} {a.ids_id} (v2 reaction look)",
             )
@@ -483,7 +482,7 @@ def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: 
         reply = call_agent(
             DECIDER,
             packet,
-            expect_model=DECIDER_MODEL,
+            expect_model=expected_model(cfg, "decider"),
             data_dir=cfg.data_dir,
             purpose=f"v2 reaction look {code}",
             timeout_s=240,
@@ -502,7 +501,7 @@ def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: 
             "ticker": code,
             "ids_id": item["ids"][0],
             "model": reply.model,
-            "model_expected": DECIDER_MODEL,
+            "model_expected": expected_model(cfg, "decider"),
             "decision": d,
             "reply": reply.text,
             "v2": "reaction",
@@ -742,7 +741,7 @@ def pre_open_decider(
     arena, pb: Playbook, a: Announcement, ctx: dict, summary: str, now: datetime, seen_at: datetime
 ) -> dict:
     """The v2 pre-open look: the decider on overnight news, before the auction."""
-    from asxbot.arena.watch import DECIDER_MODEL
+    from asxbot.arena.agents import expected_model
 
     cfg = arena.cfg
     ev = EventLog(cfg.data_dir)
@@ -758,7 +757,7 @@ def pre_open_decider(
         reply = call_agent(
             DECIDER,
             packet,
-            expect_model=DECIDER_MODEL,
+            expect_model=expected_model(cfg, "decider"),
             data_dir=cfg.data_dir,
             purpose=f"v2 pre-open {a.code} {a.ids_id}",
             timeout_s=240,
@@ -777,7 +776,7 @@ def pre_open_decider(
             "ticker": a.code,
             "ids_id": a.ids_id,
             "model": reply.model,
-            "model_expected": DECIDER_MODEL,
+            "model_expected": expected_model(cfg, "decider"),
             "decision": d,
             "reply": reply.text,
             "v2": "pre_open",

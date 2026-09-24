@@ -543,17 +543,17 @@ def check_gui_launcher(scripts: Path | None = None) -> Check:
 def expected_agents(cfg) -> dict[str, tuple[str, str]]:
     """agent -> (model, effort) that the agent_mismatch check holds every call to.
 
-    Models come from watch.py (the same constants every call passes as `expect_model`),
-    effort levels from `arena.agents.effort` in config.yaml. The fallbacks are the levels
-    set on the agents on 2026-09-23 (reader medium, decider high); config normally has both.
+    Both from config.yaml: models from `arena.agents.models` (moved there from watch.py's
+    constants on 2026-09-24, the same values every call now passes as `expect_model`),
+    effort levels from `arena.agents.effort`. Re-read from the file when it changes, so a
+    /model or /think in the Trader chat - recorded there as a dated strategy change -
+    applies to the next check (agents.agent_settings). The fallbacks are the settings of
+    2026-09-23 evening; config normally has all four.
     """
-    from asxbot.arena.watch import DECIDER_MODEL, READER_MODEL
+    from asxbot.arena.agents import ROLES, expected_effort, expected_model
 
-    effort = cfg.get("arena.agents.effort") or {}
-    return {
-        "trader-reader": (READER_MODEL, str(effort.get("reader", "medium"))),
-        "trader-decider": (DECIDER_MODEL, str(effort.get("decider", "high"))),
-    }
+    return {agent: (expected_model(cfg, role), expected_effort(cfg, role))
+            for role, agent in ROLES.items()}  # fmt: skip
 
 
 def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:

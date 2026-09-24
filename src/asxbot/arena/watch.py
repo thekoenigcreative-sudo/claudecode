@@ -36,9 +36,11 @@ from asxbot.arena import notify, selfcheck
 from asxbot.arena.accounts import Account
 from asxbot.arena.agents import (
     DECIDER,
+    FALLBACK_MODELS,
     READER,
     AgentCallFailed,
     call_agent,
+    expected_model,
     parse_can_size,
     parse_decision,
     parse_verdict,
@@ -61,8 +63,10 @@ log = get_logger("asxbot.arena.watch")
 SYD = ZoneInfo("Australia/Sydney")
 
 
-READER_MODEL = "anthropic/claude-sonnet-5"
-DECIDER_MODEL = "anthropic/claude-opus-5-5"
+# Fallback defaults only (2026-09-24): what the repo expects each agent to run on is
+# config.yaml arena.agents.models, read by agents.expected_model at every call.
+READER_MODEL = FALLBACK_MODELS["reader"]
+DECIDER_MODEL = FALLBACK_MODELS["decider"]
 MAX_PDF_CHARS = 24000
 SESSION_OPEN = time_cls(10, 0)  # the ASX opening auction; before it, no reaction exists
 # An order joins the opening auction only if recorded before this minute (minutes.py,
@@ -635,7 +639,7 @@ def handle_announcement(
     # -- trader-reader (Sonnet 5) -------------------------------------------
     try:
         reader = call_agent(
-            READER, reader_packet(arena, a, ctx), expect_model=READER_MODEL,
+            READER, reader_packet(arena, a, ctx), expect_model=expected_model(cfg, "reader"),
             data_dir=cfg.data_dir, purpose=f"read {a.code} {a.ids_id}",
         )  # fmt: skip
     except AgentCallFailed as e:
@@ -657,7 +661,7 @@ def handle_announcement(
         "arena_decisions",
         {
             "stage": "reader", "ticker": a.code, "ids_id": a.ids_id, "model": reader.model,
-            "model_expected": READER_MODEL, "trade_worthy": worthy, "why": why,
+            "model_expected": expected_model(cfg, "reader"), "trade_worthy": worthy, "why": why,
             "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
         },  # fmt: skip
     )
@@ -695,7 +699,7 @@ def handle_announcement(
         decider = call_agent(
             DECIDER,
             decider_packet(arena, pb, acct, a, ctx, reader.text, now, relook_note(prior_why)),
-            expect_model=DECIDER_MODEL, data_dir=cfg.data_dir,
+            expect_model=expected_model(cfg, "decider"), data_dir=cfg.data_dir,
             purpose=f"decide {a.code} {a.ids_id}",
         )  # fmt: skip
     except AgentCallFailed as e:
@@ -715,7 +719,7 @@ def handle_announcement(
         "arena_decisions",
         {
             "stage": "decider", "ticker": a.code, "ids_id": a.ids_id, "model": decider.model,
-            "model_expected": DECIDER_MODEL, "decision": d, "reply": decider.text,
+            "model_expected": expected_model(cfg, "decider"), "decision": d, "reply": decider.text,
         },  # fmt: skip
     )
 
@@ -845,7 +849,7 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
     }
     try:
         reader = call_agent(
-            READER, reader_packet(arena, a, ctx), expect_model=READER_MODEL,
+            READER, reader_packet(arena, a, ctx), expect_model=expected_model(cfg, "reader"),
             data_dir=cfg.data_dir, purpose=f"read {a.code} {a.ids_id}",
         )  # fmt: skip
     except AgentCallFailed as e:
@@ -859,7 +863,7 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
     record(
         "arena_decisions",
         {"stage": "reader", "ticker": a.code, "ids_id": a.ids_id, "model": reader.model,
-         "model_expected": READER_MODEL, "trade_worthy": worthy, "why": why,
+         "model_expected": expected_model(cfg, "reader"), "trade_worthy": worthy, "why": why,
          "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
          "v2": True},
     )  # fmt: skip
@@ -1616,7 +1620,7 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
         action, reason, model = "close", "the agent could not be reached; the level is intraday", ""
         try:
             reply = call_agent(
-                DECIDER, prompt, expect_model=DECIDER_MODEL, data_dir=cfg.data_dir,
+                DECIDER, prompt, expect_model=expected_model(cfg, "decider"), data_dir=cfg.data_dir,
                 purpose=f"pre-close {ticker}",
             )  # fmt: skip
             model = reply.model

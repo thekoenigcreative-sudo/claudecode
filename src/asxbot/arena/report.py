@@ -11,7 +11,9 @@ alerts acted on, trades placed, P&L against the matching bot, green days vs red 
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
+from html import escape
 from zoneinfo import ZoneInfo
 
 from asxbot.alerts import Alerts
@@ -19,9 +21,41 @@ from asxbot.announcements.history import status as archive_status
 from asxbot.arena.runtime import Arena
 from asxbot.arena.scoreboard import Score, agent_vs_bot, format_table, score
 from asxbot.data.universe import asx200_provenance
+from asxbot.io import write_text_atomic
 from asxbot.log import EventLog
 
 SYD = ZoneInfo("Australia/Sydney")
+SENT_FILE = "report_sent.json"
+
+
+def mark_report_sent(cfg, when: datetime | None = None) -> None:
+    """Remember when the evening report was last delivered, so the next one can list what
+    changed since (settings_changed). Best effort: a report is never failed over this."""
+    at = (when or datetime.now(SYD)).isoformat(timespec="seconds")
+    try:
+        write_text_atomic(json.dumps({"sent_at": at}), cfg.data_dir / "arena" / SENT_FILE)
+    except OSError:
+        pass
+
+
+def last_report_sent(cfg) -> datetime | None:
+    try:
+        raw = json.loads((cfg.data_dir / "arena" / SENT_FILE).read_text(encoding="utf-8"))
+        t = datetime.fromisoformat(str(raw["sent_at"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=SYD)
+
+
+def settings_changed(cfg, day: date) -> list[dict]:
+    """Rick's deliberate model/effort changes (config.yaml arena.agents.history) since the
+    previous report, or since the start of `day` when there is none. Each with a `line`:
+    'decider model Opus 5.5 -> Sonnet 5 (Rick, 10:15pm)'."""
+    from asxbot.arena import settings_history as H
+    from asxbot.arena.agents import agent_settings
+
+    start, end = H.report_window(last_report_sent(cfg), day)
+    return [{**e, "line": H.describe(e, day)} for e in H.since(agent_settings(cfg), start, end)]
 
 
 def test_day(pb, day: date) -> str:
@@ -210,8 +244,15 @@ def gather(arena: Arena, day: date | None = None) -> dict:
     signals_today = today_rows("signals")
 
     keys = {pb.key for pb in arena.playbooks()}
+    try:
+        changed = settings_changed(cfg, day)
+    except Exception:  # noqa: BLE001 - a malformed history entry must never stop the report
+        changed = [{"line": "(config.yaml arena.agents.history could not be read)"}]
     return {
         "day": iso,
+        # Deliberate changes Rick made to the agents' model or effort (/model, /think in the
+        # Trader chat) since the previous report. Every one must be mentioned.
+        "settings_changed": changed,
         "playbooks": playbook_facts(arena, day),
         "announcements_v2_today": v2_facts(cfg, day) if "asx_announcements_v2" in keys else None,
         "daytrader_today": daytrader_facts(cfg, day) if "asx_daytrader" in keys else None,
@@ -277,8 +318,13 @@ def render_plain(facts: dict) -> str:
         f"<b>ASX arena - {facts['day']}</b>",
         f"{facts['money']}",
         f"Data: {facts['data_label']}",
-        "",
     ]
+    changed = facts.get("settings_changed") or []
+    if changed:
+        lines.append(
+            "Settings changed: " + "; ".join(escape(str(c.get("line", ""))) for c in changed)
+        )
+    lines.append("")
     for p in facts.get("playbooks", []):
         lines.append(f"<b>{p['title']}</b>: {p['test']}" + (f" - {p['data']}" if p["data"] else ""))
     dt = facts.get("daytrader_today")
@@ -359,9 +405,17 @@ def render_plain(facts: dict) -> str:
 
 def agent_brief(facts: dict) -> str:
     """What the decider agent is given so it can write the report in its own words."""
-    import json
-
     payload = {k: v for k, v in facts.items() if k != "score_objects"}
+    changed = [str(c.get("line", "")) for c in facts.get("settings_changed") or []]
+    settings_rule = (
+        "- Rick deliberately changed the agents' settings since the last report (FACTS "
+        "settings_changed). You MUST mention every one near the top, on one line starting "
+        "'Settings changed:', as Rick's deliberate change, not a finding: "
+        + "; ".join(changed)
+        + ".\n"
+        if changed
+        else ""
+    )
     return (
         "Write tonight's arena report for Rick, for Telegram.\n\n"
         "Rules:\n"
@@ -370,6 +424,7 @@ def agent_brief(facts: dict) -> str:
         "- Cover: what you traded and why, what the limits refused, how you are doing against "
         "your yardstick bot, green days vs red days, and what you will watch next.\n"
         "- If you placed no trades, say why not - that is a real answer.\n"
+        f"{settings_rule}"
         "- Index membership comes from FACTS asx200_list, which is authoritative and dated "
         f"(as of {(facts.get('asx200_list') or {}).get('as_of') or 'unknown'}). Never say "
         "from memory that a company is or is not an index member, or that a membership flag "

@@ -35,6 +35,51 @@ log = get_logger("asxbot.arena.agents")
 
 READER = "trader-reader"
 DECIDER = "trader-decider"
+ROLES = {"reader": READER, "decider": DECIDER}
+
+# What the repo expects each agent to run on is config.yaml `arena.agents.models` and
+# `arena.agents.effort` (models moved there from watch.py on 2026-09-24, so a /model change
+# in the Trader chat is recorded as a dated strategy change - arena/settings_history.py).
+# These are fallbacks only, for a config without the keys: the settings of 23 Sep evening.
+FALLBACK_MODELS = {"reader": "anthropic/claude-sonnet-5", "decider": "anthropic/claude-opus-5-5"}
+FALLBACK_EFFORT = {"reader": "medium", "decider": "high"}
+
+_fresh: dict[str, tuple[float, dict]] = {}
+
+
+def agent_settings(cfg) -> dict:
+    """config.yaml `arena.agents`, re-read from the file whenever it has changed.
+
+    A /model or /think in the Trader chat changes the OpenClaw agent at once and records
+    the new expectation in config.yaml; a watcher that started at 07:30 must hold the next
+    call to the new value, not raise a false mismatch alert all day. Falls back to what
+    `cfg` was loaded with when there is no file (or it cannot be read).
+    """
+    path = getattr(cfg, "path", None)
+    if path is not None:
+        import yaml
+
+        try:
+            mtime = Path(path).stat().st_mtime
+            hit = _fresh.get(str(path))
+            if hit is None or hit[0] != mtime:
+                raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+                hit = (mtime, ((raw.get("arena") or {}).get("agents")) or {})
+                _fresh[str(path)] = hit
+            return hit[1]
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("could not re-read %s (%s); using the settings loaded at start", path, e)
+    return cfg.get("arena.agents") or {}
+
+
+def expected_model(cfg, role: str) -> str:
+    """The model config.yaml expects `role` (reader | decider) to run on."""
+    return str((agent_settings(cfg).get("models") or {}).get(role) or FALLBACK_MODELS[role])
+
+
+def expected_effort(cfg, role: str) -> str:
+    """The effort (thinking) level config.yaml expects `role` to run at."""
+    return str((agent_settings(cfg).get("effort") or {}).get(role) or FALLBACK_EFFORT[role])
 
 
 class AgentCallFailed(RuntimeError):
@@ -96,8 +141,13 @@ def call_agent(
     data_dir: Path | None = None,
     purpose: str = "",
     process_timeout_s: int | None = None,
+    session_key: str | None = None,
 ) -> AgentReply:
-    """Run one turn of an OpenClaw agent and return its text plus the model that ran it."""
+    """Run one turn of an OpenClaw agent and return its text plus the model that ran it.
+
+    `session_key` keeps a conversation going across calls (the Trader chat); without one
+    each call is OpenClaw's default session for the agent, as the watcher has always used.
+    """
     fd, path = tempfile.mkstemp(suffix=".md", prefix=f"{agent}-", text=True)
     os.close(fd)
     Path(path).write_text(message, encoding="utf-8")
@@ -105,6 +155,8 @@ def call_agent(
         _openclaw_bin(), "agent", "--agent", agent, "--message-file", path,
         "--json", "--timeout", str(timeout_s),
     ]  # fmt: skip
+    if session_key:
+        cmd[4:4] = ["--session-key", session_key]
     try:
         # A model call can legitimately run to its timeout with nothing logged; say so, so
         # the watchdog does not report a quiet log as a dead watcher.

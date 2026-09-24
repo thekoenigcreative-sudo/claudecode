@@ -530,6 +530,12 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chat(args: argparse.Namespace) -> int:
+    from asxbot.chat import main as chat_main
+
+    return chat_main(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="asxbot")
     p.add_argument("--version", action="version", version=__version__)
@@ -614,6 +620,17 @@ def build_parser() -> argparse.ArgumentParser:
     ibk.add_parser(
         "check", help="connect to IB Gateway and check live quotes and bars (BHP, XJO)"
     ).set_defaults(fn=cmd_ibkr_check)
+    ch = sub.add_parser(
+        "chat", help="the Trader's own Telegram chat with Rick (long-polls the trader bot)"
+    )
+    ch.add_argument(
+        "--probe", metavar="TEXT",
+        help="run one message through the whole pipeline; replies are printed, not sent, "
+        "and Telegram is never polled (agent calls are real unless --no-agent)",
+    )  # fmt: skip
+    ch.add_argument("--button", metavar="DATA", help="like --probe, for a button tap's data")
+    ch.add_argument("--no-agent", action="store_true", help="with --probe: never call the AI")
+    ch.set_defaults(fn=cmd_chat)
     ac = sub.add_parser("alerts-clear", help="clear an alert flag by hand")
     ac.add_argument("key")
     ac.set_defaults(fn=cmd_alerts_clear)

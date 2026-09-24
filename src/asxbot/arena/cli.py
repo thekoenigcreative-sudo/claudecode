@@ -90,33 +90,42 @@ def cmd_scoreboard(args) -> int:
     return 0
 
 
-def cmd_positions(args) -> int:
-    cfg, log, arena = _arena()
+def positions_lines(arena, account: str | None = None) -> list[str]:
+    """Open positions and pending fills per arena account, as `arena positions` prints them
+    (the Trader chat's /positions sends the same lines). Plain code, fake money."""
+    out = []
     for pb in arena.playbooks():
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
-            if args.account and acct.name != args.account:
+            if account and acct.name != account:
                 continue
             prices = arena.broker.prices(acct)
-            print(
+            out.append(
                 f"{acct.name}: cash {acct.cash:,.2f}  equity {acct.equity(prices):,.2f}  "
                 f"today {arena.broker.day_loss_pct(acct):+.2f}%"
             )
             for t, p in acct.positions.items():
                 px = prices.get(t, p.avg_cost)
-                print(
+                out.append(
                     f"  {t} {p.qty:+d} @ {p.avg_cost:.4f}  now {px:.4f}  "
                     f"open P&L {(px - p.avg_cost) * p.qty:+,.2f}  stop {p.stop}  "
                     f"target {p.target}  opened {p.opened_at} by {p.opened_by}"
                 )
             pend = [o for o in acct.orders.values() if o.status == "pending_fill"]
             for o in pend:
-                print(
+                out.append(
                     f"  PENDING FILL {o.order_id} {o.side} {o.qty} {o.ticker} @ {o.limit} "
                     f"(decided {o.decided_at})"
                 )
             if not acct.positions and not pend:
-                print("  no positions, no pending orders")
+                out.append("  no positions, no pending orders")
+    return out
+
+
+def cmd_positions(args) -> int:
+    cfg, log, arena = _arena()
+    for line in positions_lines(arena, args.account):
+        print(line)
     return 0
 
 
@@ -224,9 +233,8 @@ def cmd_mark(args) -> int:
 
 
 def cmd_report(args) -> int:
-    from asxbot.arena.agents import DECIDER, AgentCallFailed, call_agent
-    from asxbot.arena.report import agent_brief, gather, render_plain
-    from asxbot.arena.watch import DECIDER_MODEL
+    from asxbot.arena.agents import DECIDER, AgentCallFailed, call_agent, expected_model
+    from asxbot.arena.report import agent_brief, gather, mark_report_sent, render_plain
 
     cfg, log, arena = _arena()
     facts = gather(arena)
@@ -236,7 +244,7 @@ def cmd_report(args) -> int:
     if args.agent:
         try:
             reply = call_agent(
-                DECIDER, agent_brief(facts), expect_model=DECIDER_MODEL,
+                DECIDER, agent_brief(facts), expect_model=expected_model(cfg, "decider"),
                 data_dir=cfg.data_dir, purpose="evening report",
             )  # fmt: skip
             if reply.text.strip():
@@ -258,6 +266,7 @@ def cmd_report(args) -> int:
         try:
             ids = load_bot(cfg).send(text)
             sent_note = f"[sent to Telegram: {len(ids)} message(s)]"
+            mark_report_sent(cfg)  # the next report lists settings changed after this one
         except TelegramError as e:
             sent_note, rc = f"[Telegram NOT sent: {e}]", 3
             log.error("telegram delivery failed: %s", e)

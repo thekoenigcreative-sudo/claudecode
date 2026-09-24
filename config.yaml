@@ -242,6 +242,17 @@ arena:
     effort:                    # set on the OpenClaw agents themselves; checked, not applied
       reader: medium
       decider: high
+    # Added 2026-09-24: the models the repo expects, MOVED here from watch.py's READER_MODEL
+    # and DECIDER_MODEL (now fallbacks only) so that /model in the Trader chat can record a
+    # change as a dated strategy change. Not a change of model: these are the models in
+    # force since 23 Sep evening. The self-check and every agent call read them from here.
+    models:                    # set on the OpenClaw agents themselves; checked, not applied
+      reader: anthropic/claude-sonnet-5
+      decider: anthropic/claude-opus-5-5
+    # Every /model or /think Rick sends in the Trader chat, appended here by code
+    # (src/asxbot/arena/settings_history.py) and committed: a DELIBERATE CHANGE by Rick, not
+    # a finding. Newest last. The evening report lists those since the previous report.
+    history: []
   selfcheck:
     repeat_minutes: 60         # a standing failure is re-alerted at most this often
 

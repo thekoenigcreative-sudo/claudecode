@@ -751,8 +751,7 @@ def setup_context(
 
 def ask_agent(arena, pb: Playbook, s: Setup, t: dict, context: dict, now: datetime) -> dict:
     """One decider call, answer within the configured seconds, or it is a rejection."""
-    from asxbot.arena.agents import parse_decision
-    from asxbot.arena.watch import DECIDER_MODEL
+    from asxbot.arena.agents import expected_model, parse_decision
 
     limit_s = int((pb.raw.get("agent") or {}).get("timeout_s", 60))
     started = time_mod.monotonic()
@@ -760,7 +759,7 @@ def ask_agent(arena, pb: Playbook, s: Setup, t: dict, context: dict, now: dateti
         reply = call_agent(
             DECIDER,
             agent_packet(arena, pb, s, t, context, now),
-            expect_model=DECIDER_MODEL,
+            expect_model=expected_model(arena.cfg, "decider"),
             timeout_s=limit_s,
             data_dir=arena.cfg.data_dir,
             purpose=f"day trader {s.setup} {s.ticker}",

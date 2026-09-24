@@ -106,15 +106,59 @@ EXPECT = {"trader-reader": ("anthropic/claude-sonnet-5", "medium")}
 def test_the_expected_agents_are_what_rick_set_on_23_sep_evening(cfg):
     # Set on the OpenClaw agents by Rick on the evening of 2026-09-23 and confirmed on a
     # live call to each. The self-check must hold calls to exactly this, from config.
+    # Since 2026-09-24 the models live in config.yaml (arena.agents.models) and watch.py's
+    # constants are fallbacks only; a later /model or /think from the Trader chat is a
+    # dated entry in arena.agents.history. So: the 23 Sep settings, plus exactly the
+    # recorded changes and nothing else, must be what config.yaml and the check expect.
     from asxbot.arena.watch import DECIDER_MODEL, READER_MODEL
 
     assert READER_MODEL == "anthropic/claude-sonnet-5"
     assert DECIDER_MODEL == "anthropic/claude-opus-5-5"
-    assert cfg.get("arena.agents.effort") == {"reader": "medium", "decider": "high"}
+    want = {"models": {"reader": "anthropic/claude-sonnet-5",
+                       "decider": "anthropic/claude-opus-5-5"},
+            "effort": {"reader": "medium", "decider": "high"}}  # fmt: skip
+    for e in cfg.get("arena.agents.history") or []:
+        assert e["by"].startswith("Rick") and e["date"] >= "2026-09-24", e
+        want[{"model": "models", "effort": "effort"}[e["setting"]]][e["role"]] = e["new"]
+    assert cfg.get("arena.agents.models") == want["models"]
+    assert cfg.get("arena.agents.effort") == want["effort"]
     assert S.expected_agents(cfg) == {
-        "trader-reader": ("anthropic/claude-sonnet-5", "medium"),
-        "trader-decider": ("anthropic/claude-opus-5-5", "high"),
+        f"trader-{role}": (want["models"][role], want["effort"][role])
+        for role in ("reader", "decider")
     }
+    if not cfg.get("arena.agents.history"):  # as set on 23 Sep, before any chat change
+        assert S.expected_agents(cfg) == {
+            "trader-reader": ("anthropic/claude-sonnet-5", "medium"),
+            "trader-decider": ("anthropic/claude-opus-5-5", "high"),
+        }
+
+
+def test_a_changed_expectation_in_config_yaml_applies_without_a_restart(tmp_path):
+    """A /model from the Trader chat rewrites config.yaml mid-day; the running watcher's
+    check and calls must expect the new model from then on, not alert all day."""
+    import os
+
+    import yaml
+
+    from asxbot.arena.agents import expected_effort, expected_model
+
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump({"arena": {"agents": {
+        "models": {"reader": "anthropic/claude-sonnet-5", "decider": "anthropic/claude-opus-5-5"},
+        "effort": {"reader": "medium", "decider": "high"}}}}), encoding="utf-8")  # fmt: skip
+    from asxbot.config import Config
+
+    c = Config(raw=yaml.safe_load(p.read_text(encoding="utf-8")), root=tmp_path, path=p)
+    assert expected_model(c, "decider") == "anthropic/claude-opus-5-5"
+    p.write_text(p.read_text(encoding="utf-8").replace("claude-opus-5-5", "claude-sonnet-5")
+                 .replace("decider: high", "decider: max"), encoding="utf-8")  # fmt: skip
+    st = p.stat()
+    os.utime(p, (st.st_atime, st.st_mtime + 5))  # a coarse clock must still see the change
+    assert expected_model(c, "decider") == "anthropic/claude-sonnet-5"
+    assert expected_effort(c, "decider") == "max"
+    assert S.expected_agents(c)["trader-decider"] == ("anthropic/claude-sonnet-5", "max")
+    # and without a file, what the config was loaded with (or the fallbacks)
+    assert expected_model(Config(raw={}, root=tmp_path), "reader") == "anthropic/claude-sonnet-5"
 
 
 def test_opus_5_and_opus_5_5_are_different_models(cfg):

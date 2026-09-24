@@ -16,6 +16,14 @@ Rules for every session:
 - The repo is in Google Drive: keep the virtual environment outside Drive (one per PC) and no SQLite or other live database files inside the repo.
 - Never start the watcher (`asxbot arena watch`) from a Claude Code shell or any terminal that might be closed. Always start it through its scheduled task: `schtasks /run /tn "ASXBot Arena Warmup"`. A watcher tied to a window dies with that window. On 23 Sep a window was closed at 13:32, the watcher went with it, and nothing reported it.
 
+## The Trader chat (@rick_asx_trader_bot)
+
+- Rick's Telegram chat with the Trader is this repo's own receiver, `asxbot chat` (src/asxbot/chat.py; docs/chat.md). It runs hidden under the scheduled task "ASXBot Chat" (scripts/chat.pyw, logging to %LOCALAPPDATA%\asx-bot\logs\chat.log) and answers only Rick. Restart it with `schtasks /end /tn "ASXBot Chat"` then `schtasks /run /tn "ASXBot Chat"`; never run `asxbot chat` from a terminal (a closed window kills it). `asxbot chat --probe "text" [--no-agent]` tries one message without Telegram.
+- Never add this bot back to OpenClaw as a channel (openclaw.json `channels.telegram.accounts.trader`). Two programs polling one bot take each other's messages; the chat refuses to start while that account exists.
+- Commands are handled in code by src/asxbot/botctl.py, a VERBATIM copy of C:\Users\Richa\.cc-jobs\changes\botctl.py (shared by all Rick's bots). Never edit the copy; change the master and re-copy it (`python sync_botctl.py trader` there). Its process hook is pointed at asxbot.proc by chat.py.
+- `/model` and `/think` in the chat are STRATEGY CHANGES: they change the OpenClaw agent and write the new expectation into config.yaml (`arena.agents.models` / `arena.agents.effort`) with a dated entry in `arena.agents.history`, committed on its own (src/asxbot/arena/settings_history.py). The evening report lists them. What the agents are expected to run on lives in config.yaml; watch.py's READER_MODEL/DECIDER_MODEL are fallbacks only.
+- Nothing in the chat can place, change or approve an order.
+
 ## Verification
 
 - Check the artefact, not your own account of it. A commit message, a passing test count and a summary of what you changed are not evidence the thing works. Before saying something works, look at the file it wrote, the log line it produced, or the response it got.

@@ -39,24 +39,33 @@ def logs_dir() -> Path:
 
 
 def setup_logging(
-    log_dir: Path | None = None, level: int = logging.INFO, name: str = "asxbot"
+    log_dir: Path | None = None,
+    level: int = logging.INFO,
+    name: str = "asxbot",
+    file: bool = True,
+    stream=None,
 ) -> logging.Logger:
+    """Console plus asxbot.log. `file=False` is console only (to `stream`, default stderr):
+    the Trader chat runs all day beside the watcher, and its launcher writes what it prints
+    to chat.log, so it must not hold asxbot.log open too (two processes rotating one file
+    at midnight is a fight on Windows). The first call wins; later calls are no-ops."""
     global _configured
     logger = logging.getLogger(name)
     if _configured:
         return logger
-    log_dir = Path(log_dir) if log_dir is not None else logs_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    console = logging.StreamHandler()
+    console = logging.StreamHandler(stream)
     console.setFormatter(fmt)
-    fileh = logging.handlers.TimedRotatingFileHandler(
-        log_dir / "asxbot.log", when="midnight", backupCount=KEEP_DAYS, encoding="utf-8"
-    )
-    fileh.setFormatter(fmt)
     logger.setLevel(level)
     logger.addHandler(console)
-    logger.addHandler(fileh)
+    if file:
+        log_dir = Path(log_dir) if log_dir is not None else logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fileh = logging.handlers.TimedRotatingFileHandler(
+            log_dir / "asxbot.log", when="midnight", backupCount=KEEP_DAYS, encoding="utf-8"
+        )
+        fileh.setFormatter(fmt)
+        logger.addHandler(fileh)
     logger.propagate = False
     _configured = True
     return logger
