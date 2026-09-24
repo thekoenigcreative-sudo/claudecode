@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -100,6 +100,22 @@ def counts_for(data_dir: Path, day: date | None = None) -> Counts:
             [r for r in _read(data_dir, "arena_gate_compare", day) if not r.get("agrees")]
         ),
     )
+
+
+def orders_between(data_dir: Path, since: datetime, until: datetime) -> list[dict]:
+    """Every real order placed after `since` and up to `until`, oldest first: agent, bot or
+    code (a stop or a target). The hourly digest reads this to know whether its hour had
+    a trade in it."""
+    since, until = since.astimezone(SYD), until.astimezone(SYD)
+    out, day = [], since.date()
+    while day <= until.date():
+        out += [
+            o
+            for o in _read(data_dir, "arena_orders", day)
+            if o.get("event") == "submitted" and since < o["syd"] <= until
+        ]
+        day += timedelta(days=1)
+    return sorted(out, key=lambda o: o["syd"])
 
 
 def decider_items(data_dir: Path, day: date | None = None) -> list[dict]:

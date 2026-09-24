@@ -131,6 +131,21 @@ def screen(
     )
 
 
+def worth_reading(verdict: Screen, a: Announcement) -> bool:
+    """A screen-out the hourly digest lists by name. Notification only; the screen is the same.
+
+    One decided by today's market data, which can be wrong: no live quote, no daily
+    history, or no trades by 10:30 on an announcement that is not itself a halt notice (on
+    24 Sep that test threw out every new announcement after 10:30). A coarse tick, a thin
+    stock or a halt notice is a standing fact about the stock, and stays a count.
+    """
+    if verdict.ok:
+        return False
+    if verdict.test in ("no_quote", "no_history"):
+        return True
+    return verdict.test == "halted" and not is_halt(a)
+
+
 def limits_for(cfg, pb) -> tuple[float, float]:
     """The playbook's turnover floor and tick limit, falling back to the universe's."""
     trigger = pb.raw.get("trigger") or {}

@@ -211,10 +211,16 @@ alerted. The yardstick bot is deliberately untouched, so the comparison stays ho
 Paired and working, both ways. Besides the evening report, the arena now sends **instant
 alerts** (`arena/notify.py`): each trade decided (agent or bot) and each refused by the limits,
 each fill with its price and stop, every stop that fires and every close with its result, and
-passes are NOT instant. The digest goes out **every hour the watcher is up**, quiet hour or
-not (a silent hour and a dead watcher must not look alike), headed by a counts line: seen,
-screened by test, read, passed, traded. At **16:10** one end-of-session message gives the
-day's totals, everything that reached the decider with its reason, and both balances. State
+passes are NOT instant. The digest goes out **on the hour, only if the hour had something**
+(since 24 Sep): a pass, an order, or a screen-out worth reading (no live quote, no history,
+or no trades by 10:30 on an announcement that is not a halt notice; `tradability.worth_reading`),
+headed by a counts line: seen, screened by test, read, passed, traded. A quiet hour sends
+nothing; the watchdog and `log_silent` say when the watcher is down. At **16:10** one
+end-of-session message gives the day's totals, everything that reached the decider with its
+reason, and both balances, preceded by the last part-hour's digest if it had anything. After
+it, **no digest at all** that day, not even when the watcher stops: only instant alerts
+(orders, fills, stops, refusals) and self-checks. What arrives after 16:10 goes in the next
+trading day's first digest. State
 lives in `data/arena/pass_digest.json`; counts are read back from the event log
 (`arena/tally.py`) rather than kept twice. Send either by hand with `asxbot arena digest`
 (`--summary`, `--print-only`, `--again`). Off switch: `arena.alerts.telegram: false`.

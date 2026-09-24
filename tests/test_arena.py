@@ -443,6 +443,34 @@ def test_the_decider_is_called_only_when_both_reader_gates_are_yes(setup, monkey
     assert "decider" not in out
 
 
+@pytest.mark.parametrize(
+    "test, why, headline, queued",
+    [
+        ("halted", "no trades at all by 10:59, which usually means halted", "Drilling", True),
+        ("no_quote", "no live quote, so an entry and a stop cannot be priced", "Placement", True),
+        ("halted", "the announcement is a halt (Trading Halt)", "Trading Halt", False),
+        ("tick", "one tick (0.001) is 12.50% of the 0.008 price", "Drilling", False),
+        ("turnover", "median 20-day turnover $4,089 is below the floor", "Drilling", False),
+    ],
+)
+def test_only_screen_outs_worth_reading_reach_the_digest(
+    setup, monkeypatch, test, why, headline, queued
+):
+    """The watcher queues a screen-out for the digest only when today's data decided it."""
+    from asxbot.arena import watch as W
+    from asxbot.arena.tradability import Screen
+
+    cfg, broker, pb, acct = setup
+    broker.notifier, sent = _capture(cfg, monkeypatch)
+    monkeypatch.setattr(W, "screen", lambda *a, **k: Screen(False, why, test))
+    fake = _FakeArena(cfg, broker, acct)
+    fake.quote_provider = lambda: _StaticQuote()
+    W.handle_announcement(fake, pb, _ann(headline), now=_AT, run_bot=False, ignore_warmup=True)
+    screened = broker.notifier._state()["screened"]
+    assert [r["ticker"] for r in screened] == (["AAA"] if queued else [])
+    assert sent == []  # queued for the hour, never instant
+
+
 def test_an_unparseable_decision_is_a_pass():
     assert parse_decision("I think we should buy a lot of it")["action"] == "pass"
     d = parse_decision('reasoning...\n{"action": "trade", "side": "buy", "qty": 10}')
@@ -866,12 +894,19 @@ def test_passes_are_held_back_and_sent_as_one_digest_an_hour(cfg, monkeypatch):
     assert n.flush_passes(_AT + timedelta(minutes=70)) is False
 
 
-def test_a_quiet_hour_still_sends_a_digest(cfg, monkeypatch):
-    """Silence and a dead watcher must never look the same on a phone."""
+def test_a_quiet_hour_sends_nothing_and_the_clock_moves_on(cfg, monkeypatch):
+    """Until 24 Sep a quiet hour said "nothing passed this hour". The watchdog and the
+    log_silent self-check now say when the watcher is down, so a quiet hour is silent."""
     n, sent = _capture(cfg, monkeypatch)
     n.flush_passes(_AT)
-    assert n.flush_passes(_AT + timedelta(minutes=61)) is True
-    assert "nothing passed this hour" in sent[0] and "seen 0" in sent[0]
+    assert n.flush_passes(_AT + timedelta(minutes=61)) is False
+    assert n.flush_passes(_AT + timedelta(minutes=61), force=True) is False
+    assert sent == []
+    # The hour still ended: a pass in the next one waits for that hour, not for now.
+    n.passed("AAA", "Quarterly report", "too small", _AT + timedelta(minutes=70))
+    assert n.flush_passes(_AT + timedelta(minutes=100)) is False
+    assert n.flush_passes(_AT + timedelta(minutes=122)) is True
+    assert "13:01–14:02" in sent[0] and "AAA" in sent[0]
 
 
 def test_the_end_of_session_summary_is_sent_once_a_day(cfg, monkeypatch):

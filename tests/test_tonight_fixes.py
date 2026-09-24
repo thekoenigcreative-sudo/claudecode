@@ -38,7 +38,8 @@ def test_the_hourly_digest_does_not_re_arm_the_session_summary(cfg, monkeypatch)
     assert n.session_summary("SESSION DONE", start.replace(hour=16, minute=10)) is True
     for hour in (16, 17, 18):
         digest = start.replace(hour=hour, minute=56, second=35)
-        assert n.flush_passes(digest) is (hour > 15)
+        n.passed("AAA", "Quarterly report", "too small", digest - timedelta(minutes=5))
+        assert n.flush_passes(digest) is False  # no digest after the summary (24 Sep)
         assert n.session_summary("SESSION DONE", digest + timedelta(seconds=11)) is False
     # A restart (a fresh notifier reading the same state) does not send it again either.
     again = _notifier(cfg, monkeypatch, sent)

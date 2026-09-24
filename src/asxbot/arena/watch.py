@@ -51,7 +51,7 @@ from asxbot.arena.notify import one_line
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.runtime import Arena, make_bot
 from asxbot.arena.tally import session_summary_text
-from asxbot.arena.tradability import limits_for, screen
+from asxbot.arena.tradability import limits_for, screen, worth_reading
 from asxbot.io import safe_stem
 from asxbot.live.reaction import measure
 from asxbot.live.scanner import round_to_tick, session_fraction
@@ -601,7 +601,10 @@ def handle_announcement(
     )
     if not verdict.ok:
         # Logged, never alerted: these are the quiet majority, stopped before they cost anything.
+        # The few decided by today's market data are listed in the hourly digest.
         log.info("screened out %s before any model call: %s", a.code, verdict.why)
+        if alert and not test and worth_reading(verdict, a):
+            alert.screened_out(a.code, a.headline, verdict.why, now)
         return out
 
     why_no_text = ""
@@ -828,10 +831,11 @@ def watch(
         while True:
             now = datetime.now(SYD)
             if alert:
-                alert.flush_passes(now)  # one digest an hour; passes are never instant
+                alert.flush_passes(now)  # a digest an hour, only if the hour had something
             if stop_at is not None and now >= stop_at:
                 if alert:
-                    alert.flush_passes(now, force=True)  # never leave the last part-hour unsent
+                    # The last part-hour, if it had anything; nothing after today's summary.
+                    alert.flush_passes(now, force=True)
                 log.info("reached the stop time %s; the watcher is done for today", until)
                 ended = "stopped"
                 return

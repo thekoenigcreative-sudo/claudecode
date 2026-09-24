@@ -426,7 +426,11 @@ def cmd_digest(args) -> int:
     if args.print_only:
         return 0
     sent = build_notifier(cfg).flush_passes(now, force=True)
-    print("digest sent" if sent else "nothing to send")
+    print(
+        "digest sent"
+        if sent
+        else "nothing to send: nothing happened since the last digest, or today's summary has gone"
+    )
     return 0
 
 

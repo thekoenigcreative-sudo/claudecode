@@ -6,19 +6,32 @@ Sent the moment it happens, one short message each:
   * every FILL, with the fill price and the stop the position now carries;
   * every STOP that fires, every TARGET hit, and every position CLOSED, with the result.
 
-Sent as ONE DIGEST PER HOUR, every hour the watcher is up, whether or not anything passed:
-  * a counts line - seen, screened (split by test), read, passed, traded;
-  * each announcement the decider looked at and PASSED on, one line and its reason.
+Sent as ONE DIGEST AN HOUR, and only for an hour that had something in it:
+  * each announcement the decider looked at and PASSED on, one line and its reason;
+  * each order placed that hour (it was also alerted when it happened);
+  * each SCREEN-OUT WORTH READING: one decided by today's market data rather than by the
+    stock's standing facts - no live quote, no daily history, or no trades by 10:30 on an
+    announcement that is not itself a halt notice (tradability.worth_reading). A coarse
+    tick, a thin stock or a halt notice is the quiet majority and stays a count;
+  * headed by a counts line - seen, screened (split by test), read, passed, traded.
 
-A quiet hour still sends, because "nothing passed this hour" and "the watcher died at
-11:04" must never look the same on a phone.
+A quiet hour sends nothing. Until 2026-09-24 it sent "nothing passed this hour", so a dead
+watcher and a quiet one would not look alike; on 24 Sep that sent eight in a row after the
+last thing happened. The watchdog (watchdog.py) and the log_silent self-check now say when
+the watcher is down or deaf, which a missing digest never did (LEARNINGS 14).
 
 Sent ONCE A DAY, at 16:10:
   * the end-of-session message: the day's totals, everything that reached the decider,
-    and both account balances.
+    and both account balances. Anything still queued for the digest goes just before it.
 
-The digest state - queued passes, when the last digest went out, whether today's summary
-has been sent - lives in one small file, so all of it survives the watcher restarting.
+After the end-of-session message, no digest at all, including when the watcher stops: only
+the instant alerts below (orders, fills, stops, refusals) and the self-checks. Until
+2026-09-24 the hourly digest carried on after it (16:34, 17:35, 18:35 and 19:25 on 24 Sep).
+What is queued after 16:10 waits for the next trading day's first digest.
+
+The digest state - queued passes and screen-outs, when the last digest went out, whether
+today's summary has been sent - lives in one small file, so all of it survives the watcher
+restarting.
 
 The evening report is separate and unchanged (report.py).
 
@@ -35,7 +48,7 @@ from html import escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from asxbot.arena.tally import counts_for
+from asxbot.arena.tally import counts_for, orders_between
 from asxbot.config import Config
 from asxbot.io import write_text_atomic
 from asxbot.log import EventLog, get_logger
@@ -109,9 +122,19 @@ class Notifier:
     # -- the hourly digest ----------------------------------------------------
     def passed(self, ticker: str, headline: str, why: str, now: datetime | None = None) -> None:
         """Queue a pass. Nothing is sent here - the digest goes out on the hour."""
+        self._queue("passes", ticker, headline, why, now)
+        log.info("pass queued for the digest: %s - %s", ticker, one_line(why))
+
+    def screened_out(
+        self, ticker: str, headline: str, why: str, now: datetime | None = None
+    ) -> None:
+        """Queue a screen-out worth reading (the caller decides which). Sent with the digest."""
+        self._queue("screened", ticker, headline, why, now)
+
+    def _queue(self, key: str, ticker: str, headline: str, why: str, now) -> None:
         now = (now or datetime.now(SYD)).astimezone(SYD)
         state = self._state()
-        state["passes"].append(
+        state[key].append(
             {
                 "at": now.isoformat(timespec="seconds"),
                 "ticker": ticker,
@@ -120,54 +143,74 @@ class Notifier:
             }
         )
         self._write_state(state)
-        log.info("pass queued for the digest: %s - %s", ticker, one_line(why))
 
     def flush_passes(self, now: datetime | None = None, force: bool = False) -> bool:
-        """Send the digest every hour the watcher is up, whether or not anything passed.
+        """Send the digest on the hour, if the hour had anything in it.
 
-        A quiet hour is worth saying out loud: it is the difference between "nothing
-        happened" and "the watcher died at 11:04 and nobody noticed".
+        `force` sends the part-hour now rather than waiting for the hour; it still sends
+        nothing for a quiet part-hour. After today's end-of-session message nothing is sent
+        at all, forced or not, and the queue waits for the next trading day.
         """
         now = (now or datetime.now(SYD)).astimezone(SYD)
         state = self._state()
+        if state.get("summary_day") == now.date().isoformat():
+            return False  # the session is summarised; only real events from here
         last = state.get("last_digest_at")
         if last is None and not force:  # first cycle: start the clock, say nothing yet
             state["last_digest_at"] = now.isoformat(timespec="seconds")
             self._write_state(state)
             return False
-        since = datetime.fromisoformat(last) if last else now
+        since = datetime.fromisoformat(last).astimezone(SYD) if last else now
         if not force and now - since < timedelta(minutes=self.digest_minutes):
             return False
 
-        rows = state["passes"]
-        counts = counts_for(self.cfg.data_dir, now.date())
-        head = f"🕐 <b>{since:%H:%M}–{now:%H:%M}</b>\n{escape(counts.line())}"
-        if rows:
+        passes, screened = state["passes"], state["screened"]
+        orders = orders_between(self.cfg.data_dir, since, now)
+        if not (passes or screened or orders):
+            # A quiet hour: the clock moves on, nothing is sent.
+            state["last_digest_at"] = now.isoformat(timespec="seconds")
+            self._write_state(state)
+            return False
+
+        day = now.date()
+        counts = counts_for(self.cfg.data_dir, day)
+        span = f"{since:%H:%M}" if since.date() == day else f"{since:%a %H:%M}"
+        parts = [f"🕐 <b>{span}–{now:%H:%M}</b>\n{escape(counts.line())}"]
+        if orders:
             body = "\n".join(
-                f"• <b>{escape(r['ticker'])}</b> {escape(r['headline'])} — "
-                f"<i>{escape(r['why'])}</i> ({r['at'][11:16]})"
-                for r in rows
+                f"• {who(str(o.get('placed_by', '')))} {str(o.get('side', '')).upper()} "
+                f"<b>{escape(str(o.get('ticker', '?')))}</b> {int(o.get('qty') or 0):,} "
+                f"({o['syd']:%H:%M})"
+                for o in orders
             )
-            body = f"\n\n⚪ <b>passed this hour ({len(rows)})</b>\n{body}"
-        else:
-            body = "\n\n<i>nothing passed this hour</i>"
-        self.send(head + body)
+            parts.append(f"🟡 <b>orders this hour ({len(orders)})</b>\n{body}")
+        if passes:
+            parts.append(f"⚪ <b>passed this hour ({len(passes)})</b>\n{_rows(passes, day)}")
+        if screened:
+            parts.append(
+                f"🚧 <b>screened out, worth a look ({len(screened)})</b>\n{_rows(screened, day)}"
+            )
+        self.send("\n\n".join(parts))
         # Everything else in the state stays. Until 2026-09-24 this wrote a fresh state with
         # only these two keys, dropping `summary_day`, so every hourly digest after 16:10
         # re-armed the end-of-session summary: on 23 Sep it went out at 16:10, 16:56, 17:56
         # and 18:57.
-        state.update(passes=[], last_digest_at=now.isoformat(timespec="seconds"))
+        state.update(passes=[], screened=[], last_digest_at=now.isoformat(timespec="seconds"))
         self._write_state(state)
         return True
 
     def session_summary(self, text: str, now: datetime | None = None) -> bool:
         """The 16:10 end-of-session message. Sent once a trading day, however many times the
         watcher restarts or the digest runs; the caller builds the text. A send that fails
-        (Telegram down) is not counted, so the next cycle tries again."""
+        (Telegram down) is not counted, so the next cycle tries again.
+
+        Whatever is still queued for the digest goes first, as a part-hour digest: after
+        this message no digest is sent today."""
         now = (now or datetime.now(SYD)).astimezone(SYD)
         state = self._state()
         if state.get("summary_day") == now.date().isoformat():
             return False
+        self.flush_passes(now, force=True)
         if not self.send(text) and self.enabled:
             return False
         state = self._state()  # re-read: nothing else may be lost by this write
@@ -176,7 +219,7 @@ class Notifier:
         return True
 
     def _state(self) -> dict:
-        blank: dict = {"passes": [], "last_digest_at": None, "summary_day": ""}
+        blank: dict = {"passes": [], "screened": [], "last_digest_at": None, "summary_day": ""}
         if not self.queue_path.exists():
             return blank
         try:
@@ -226,6 +269,19 @@ class Notifier:
             f"⌛ {kind} order {o.order_id} {o.side.upper()} {escape(o.ticker)} expired unfilled: "
             f"<i>{escape(one_line(o.message))}</i>"
         )
+
+
+def _rows(rows: list[dict], day) -> str:
+    """One line per queued item; one from an earlier day carries its day."""
+    out = []
+    for r in rows:
+        at = datetime.fromisoformat(r["at"]).astimezone(SYD)
+        when = f"{at:%H:%M}" if at.date() == day else f"{at:%a %H:%M}"
+        out.append(
+            f"• <b>{escape(r['ticker'])}</b> {escape(r['headline'])} — "
+            f"<i>{escape(r['why'])}</i> ({when})"
+        )
+    return "\n".join(out)
 
 
 def build_notifier(cfg: Config) -> Notifier:

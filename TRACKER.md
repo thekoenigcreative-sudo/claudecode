@@ -100,6 +100,7 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 34 | The opening-auction price is Yahoo's daily open: **checked, not confirmed** against the ASX (#28, `reports/auction_open_check.md`). Accepted by Rick on that basis 23 Sep 22:20 until IBKR live data starts | Medium | **Tied to IBKR live data (milestone 8)** - once it starts, confirm the auction price against a broker trade record (course of sales / IBKR fill) for the same stock-days; until then every auction fill stays labelled "checked, not confirmed" |
 | 35 | **The watcher's logs went silent while it ran, twice on 24 Sep.** Google Drive silently cut off the long-open append handles on `data/logs/asxbot.log` and `data/arena_warmup.log`: at 08:14 (noticed; restarted 08:23), and again at 12:14:04 until the watcher stopped at 19:25 (not noticed until the logs were moved that evening). Files written whole or opened per write kept updating, so the heartbeat looked healthy; `errors_logged` read a dead file for 7 hours | High | **Fixed 24 Sep evening** - every log in `%LOCALAPPDATA%\asx-bot\logs` (daily rotation kept), copied to `data/logs/` whole after each evening run; new `log_silent` self-check (a log 5+ min behind the watcher's last line), Telegram once an hour. Old logs copied over and checked byte for byte. First real run 07:30 25 Sep, **not yet verified** |
 | 36 | The 07:30 poll logged ERROR "no announcements table with a Headline column found" (07:30:05, 07:31:24 on 24 Sep): before the ASX posts anything the page has no table | Low | **Fixed 24 Sep evening** - an ASX page with no announcement links is zero, at INFO; anything else is still an ERROR. The empty-page fixture is built by hand (no real one was kept); the poller now keeps the first empty page of each day in `data/announcements/pages/` to replace it. First real empty page 07:30 25 Sep, **not yet seen** |
+| 37 | **The hourly digest was noise.** On 24 Sep the Trader sent "nothing passed this hour" every hour from 11:33 to 18:35, eight times after the last pass (10:32), and four digests after the 16:10 session summary (16:34, 17:35, 18:35, and 19:25 when the watcher stopped). The quiet-hour digest was meant to show the watcher alive; the watchdog and `log_silent` do that now | Low | **Fixed 24 Sep evening** - a digest only for an hour with a pass, an order, or a screen-out worth reading (no quote, no history, or no trades by 10:30 on a non-halt announcement, listed by name); the last part-hour goes just before the 16:10 summary if it had anything; after the summary no digest that day, forced or not. A test replays 24 Sep's passes and quiet hours: one digest (10:32) and the summary. With 24 Sep's real screen-outs, 5 digests instead of 10 (review log). First real day 25 Sep, **not yet seen** |
 
 ---
 
@@ -120,6 +121,20 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 ---
 
 ## Review log
+
+- **24 Sep 20:30** - Headless job, no strategy change. The hourly digest now goes only for
+  an hour with a pass, an order or a screen-out worth reading, and never after the 16:10
+  session summary (#37). Notification only: the screen, the decider and every threshold are
+  unchanged. 24 Sep's real screen-outs replayed through the new rule (`worth_reading`):
+  digests at 10:32, 11:33, 12:33 and 15:34, plus a 15:34-16:10 part-hour (JNO) just before
+  the summary - 5 instead of 10, and none after 16:10. Three of those four hours had no
+  pass; they go because they list screen-outs by name (PCI, LF1, MHC, AMD no trades by
+  10:30; AXL, NVQ, CMX, PAR no quote), where before they were only a count. The 7 after
+  16:10 (PEN to RCT, all "no trades") would wait for the next trading day's first digest:
+  the evening report lists neither passes nor screen-outs, so dropping them would lose
+  them. Found on the way, not changed: SGR's "The Star Gold Coast Licence Suspension
+  Deferred" was screened out at 15:58 as a halt notice, because its headline
+  contains "suspension".
 
 - **24 Sep 19:50** - Headless job. (1) Logs off Google Drive: `asxbot.log`, the warm-up,
   evening and filter-cost launcher logs and `watchdog.log` now live in
