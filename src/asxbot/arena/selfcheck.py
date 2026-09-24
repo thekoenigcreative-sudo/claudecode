@@ -249,8 +249,7 @@ def check_pending_orders(arena, pb, now: datetime) -> Check:
     first have filled is stuck."""
     limit = timedelta(minutes=arena.broker.resolve_after_minutes) + timedelta(hours=1)
     stuck = []
-    for kind in ("agent", "bot"):
-        acct = arena.account(pb, kind)
+    for acct in _books(arena, pb):
         for o in acct.orders.values():
             if o.status != "pending_fill":
                 continue
@@ -291,8 +290,7 @@ def check_fills_after_orders(arena, pb) -> Check:
     are checked; a legacy order corrected by a script gets it and is checked from then on.
     """
     bad = []
-    for kind in ("agent", "bot"):
-        acct = arena.account(pb, kind)
+    for acct in _books(arena, pb):
         for o in acct.orders.values():
             if not o.filled_qty or not o.data_as_of or not o.fill_minute:
                 continue  # part-filled orders count too: every slice must be after the order
@@ -316,6 +314,16 @@ def check_fills_after_orders(arena, pb) -> Check:
         count=len(bad),
         items=bad,
     )
+
+
+def _books(arena, pb) -> list:
+    """Both books of every enabled playbook (from 2026-09-24 the watcher runs more than
+    one); just `pb`'s for a test double without playbooks."""
+    try:
+        pbs = [pb, *[p for p in arena.playbooks() if p.key != pb.key]]
+    except Exception:  # noqa: BLE001
+        pbs = [pb]
+    return [arena.account(p, kind) for p in pbs for kind in ("agent", "bot")]
 
 
 def check_short_universe(cfg) -> Check:

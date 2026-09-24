@@ -24,6 +24,10 @@ class Level:
     daily_loss_limit_pct: float
     holding: str
     wake_sensitivity: str
+    # Added 2026-09-24 (Level 1, Rick's brief): a dollar cap per position and a cap on new
+    # positions a day. None where a level does not set them.
+    max_position_aud: float | None = None
+    max_new_positions_per_day: int | None = None
 
     def leverage(self, market: str) -> float:
         return self.leverage_crypto if market == "crypto" else self.leverage_asx
@@ -46,6 +50,13 @@ def load_level(cfg: Config, number: int) -> Level:
         daily_loss_limit_pct=float(raw["daily_loss_limit_pct"]),
         holding=str(raw["holding"]),
         wake_sensitivity=str(raw["wake_sensitivity"]),
+        max_position_aud=(
+            float(raw["max_position_aud"]) if raw.get("max_position_aud") is not None else None
+        ),
+        max_new_positions_per_day=(
+            int(raw["max_new_positions_per_day"])
+            if raw.get("max_new_positions_per_day") is not None else None
+        ),
     )
 
 
@@ -61,12 +72,47 @@ class Playbook:
     raw: dict
 
     @property
+    def accounts_prefix(self) -> str:
+        """The accounts' name stem. A new version gets new accounts (config `accounts`), so
+        its record starts clean and the old version's books are kept as they were."""
+        return str(self.raw.get("accounts") or self.key)
+
+    @property
     def agent_account(self) -> str:
-        return f"{self.key}__agent"
+        return f"{self.accounts_prefix}__agent"
 
     @property
     def bot_account(self) -> str:
-        return f"{self.key}__bot"
+        return f"{self.accounts_prefix}__bot"
+
+    @property
+    def version(self) -> int:
+        return int(self.raw.get("version", 1))
+
+    @property
+    def risk_per_trade_pct(self) -> float:
+        """The playbook's own risk cap if it sets one (the day trader: 0.5%), else the
+        level's. Never above the level's."""
+        own = self.raw.get("risk_per_trade_pct")
+        if own is None:
+            return self.level.risk_per_trade_pct
+        return min(float(own), self.level.risk_per_trade_pct)
+
+    @property
+    def flat_at_close(self) -> bool:
+        """True when the pre-close sweep closes everything without asking (v2, day trader)."""
+        return str(self.raw.get("preclose", "")) == "flat"
+
+    @property
+    def last_entry_time(self):
+        from datetime import time
+
+        raw = self.raw.get("last_entry_time")
+        return time.fromisoformat(str(raw)) if raw else None
+
+    @property
+    def data_basis(self) -> str:
+        return str(self.raw.get("data_basis", ""))
 
     @property
     def holding(self) -> str:

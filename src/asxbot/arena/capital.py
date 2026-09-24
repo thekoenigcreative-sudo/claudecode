@@ -41,7 +41,7 @@ from zoneinfo import ZoneInfo
 from asxbot import proc as hidden
 from asxbot.arena.accounts import AccountStore
 from asxbot.arena.hours import evening_slot
-from asxbot.arena.levels import active_playbooks
+from asxbot.arena.levels import load_playbook
 from asxbot.config import Config, load_config
 from asxbot.io import write_text_atomic
 from asxbot.log import EventLog, setup_logging
@@ -171,7 +171,9 @@ def plan(cfg: Config, store: AccountStore, day: date, amount: float) -> list[Pla
     """Read every account and check it is where this change expects it."""
     expected = float(cfg.get("arena.starting_aud"))
     plans = []
-    for pb in active_playbooks(cfg):
+    # The books this one-off was written for (23 Sep): announcements v1's. Since v1 was
+    # retired on 2026-09-24 they are no longer the active playbook's, so they are named.
+    for pb in [load_playbook(cfg, "asx_announcements")]:
         for name in (pb.agent_account, pb.bot_account):
             path = store.path(name)
             if not path.exists():

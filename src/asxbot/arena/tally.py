@@ -182,14 +182,27 @@ def session_summary_text(arena, pb, now: datetime | None = None) -> str:
 
     out.append("")
     out.append("<b>Accounts</b>")
-    for b in balances(arena, pb):
-        held = ", ".join(b["holdings"]) or "no positions"
-        pending = f", {b['pending']} pending fill" if b["pending"] else ""
-        out.append(
-            f"• {b['kind'].upper()} ${b['equity']:,.2f} ({b['pnl']:+,.2f}) — "
-            f"{escape(held)}{pending}"
-        )
+    pbs = _playbooks(arena, pb)
+    for p in pbs:
+        if len(pbs) > 1:
+            out.append(f"<i>{escape(p.title)}</i>")
+        for b in balances(arena, p):
+            held = ", ".join(b["holdings"]) or "no positions"
+            pending = f", {b['pending']} pending fill" if b["pending"] else ""
+            out.append(
+                f"• {b['kind'].upper()} ${b['equity']:,.2f} ({b['pnl']:+,.2f}) — "
+                f"{escape(held)}{pending}"
+            )
     return "\n".join(out)
+
+
+def _playbooks(arena, pb) -> list:
+    """Every enabled playbook, `pb` first; just `pb` for a test double without playbooks."""
+    try:
+        others = [p for p in arena.playbooks() if p.key != pb.key]
+    except Exception:  # noqa: BLE001
+        others = []
+    return [pb, *others]
 
 
 def balances(arena, pb) -> list[dict]:

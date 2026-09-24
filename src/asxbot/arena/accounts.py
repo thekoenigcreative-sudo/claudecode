@@ -49,6 +49,9 @@ class Position:
     # The last minute bar the stop and target have been checked against. Bars are worked
     # once each, in time order (broker.work); empty means from the entry bar, as before.
     worked_through: str = ""
+    # Code's trade management (the day trader, 2026-09-24): entry, R, the best price since
+    # entry, and the rules (breakeven at +1R, half off at +2R, then trail). Empty = none.
+    manage: dict = field(default_factory=dict)
 
     @property
     def is_short(self) -> bool:
@@ -64,6 +67,8 @@ class Position:
             del d["target_past_when_armed"]
         if not d["worked_through"]:
             del d["worked_through"]
+        if not d["manage"]:
+            del d["manage"]
         return d
 
 
@@ -138,6 +143,11 @@ class ArenaOrder:
     # Set when the order would have joined an opening auction that had no price the arena
     # trusts (TRACKER #28): why it filled at the first traded minute after it instead.
     open_note: str = ""
+    # A day order that stops filling at this minute, before its session ends: the day
+    # trader's stale-setup limit and the intraday playbooks' last entry (2026-09-24).
+    good_till: str = ""
+    # Trade management to give the position this order opens (Position.manage).
+    manage: dict = field(default_factory=dict)
 
     @property
     def remaining(self) -> int:
@@ -157,7 +167,7 @@ class ArenaOrder:
             del d["rests_from"]
         for k, blank in (
             ("order_type", "limit"), ("fills", []), ("worked_through", ""),
-            ("trigger_price", None), ("open_note", ""),
+            ("trigger_price", None), ("open_note", ""), ("good_till", ""), ("manage", {}),
         ):  # fmt: skip
             if d[k] == blank:
                 del d[k]

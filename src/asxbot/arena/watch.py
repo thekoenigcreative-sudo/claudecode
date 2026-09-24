@@ -549,6 +549,11 @@ def handle_announcement(
         },  # fmt: skip
     )
 
+    if pb.version >= 2:
+        # Announcements v2 (frozen 2026-09-24): its rule bot decides at 10:30 on the minute
+        # bars, not when an announcement arrives, and the agent trades the reaction.
+        return _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_agent)
+
     # -- the yardstick bot: plain rule, no model ----------------------------
     if run_bot:
         bot_acct = arena.account(pb, "bot")
@@ -766,6 +771,133 @@ def handle_announcement(
     return out
 
 
+def reaction_day(released: datetime) -> date:
+    """The session that first trades an announcement: its release day, or the next session
+    when it came out at or after the 16:10 close or on a day the ASX did not trade."""
+    from asxbot.announcements.live import is_trading_day
+
+    local = released if released.tzinfo else released.replace(tzinfo=SYD)
+    local = local.astimezone(SYD)
+    day = local.date()
+    if local.time() >= time_cls(16, 10):
+        day += timedelta(days=1)
+    while day.weekday() >= 5 or not is_trading_day(day):
+        day += timedelta(days=1)
+    return day
+
+
+def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_agent=True) -> dict:
+    """Announcements v2 on arrival: the v2 screen; every stock that passes is queued for its
+    reaction look; the reader writes its summary now; overnight news also gets the decider's
+    pre-open look (only if the reader calls it trade-worthy, as in v1)."""
+    from asxbot.arena import v2_flow
+    from asxbot.arena.reaction_v2 import enqueue, log_no_quote, screen_v2
+
+    cfg = arena.cfg
+    q_provider = quotes or arena.quote_provider()
+    seen_at = arena.broker.clock()
+    size = pb.level.max_position_aud or 5000.0
+    quote = q_provider.quote(a.code)
+    verdict = screen_v2(a, quote, arena.daily_lookup()(a.code), pb, size)
+    out["screen"] = {"ok": verdict.ok, "why": verdict.why, "test": verdict.test}
+    record(
+        "arena_screened",
+        {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline, "ok": verdict.ok,
+         "test": verdict.test, "why": verdict.why, "turnover": verdict.turnover,
+         "tick_pct": verdict.tick_pct, "v2": True},
+    )  # fmt: skip
+    if not verdict.ok:
+        if verdict.test == "no_quote" and not test:
+            log_no_quote(cfg.data_dir, now.date(), a.code, a.ids_id, a.headline)
+        log.info("v2 screened out %s before any model call: %s", a.code, verdict.why)
+        if alert and not test and worth_reading(verdict, a):
+            alert.screened_out(a.code, a.headline, verdict.why, now)
+        return out
+
+    day = reaction_day(a.released_at)
+    if not test:
+        enqueue(cfg.data_dir, day, a, verdict.why)
+        out["reaction_look"] = f"queued for {day.isoformat()}"
+    if not run_agent:
+        return out
+    if day < now.astimezone(SYD).date():
+        # Caught up after its reaction day: there is no reaction left to trade.
+        log.info("v2: %s's reaction day %s has passed; not read", a.code, day)
+        return {**out, "skipped": f"reaction day {day.isoformat()} has passed"}
+
+    why_no_text = ""
+    if not text:
+        _ensure_pdf(arena, a)
+        text, why_no_text = pdf_text_why(cfg.data_dir, a)
+    pre_open = now.astimezone(SYD) < datetime.combine(day, SESSION_OPEN, tzinfo=SYD)
+    ctx = {
+        "dossier": dossier(arena, a.code),
+        "reaction": {
+            "available": False,
+            "why": ("the market has not traded this news yet" if pre_open else
+                    "measured at the reaction look, once the market has traded the news "
+                    "for 10 minutes"),
+            "last_quote": None if quote is None else quote.last,
+            "previous_close_quote": None if quote is None else quote.prev_close,
+            "data_label": pb.data_basis,
+        },  # fmt: skip
+        "text": text,
+    }
+    try:
+        reader = call_agent(
+            READER, reader_packet(arena, a, ctx), expect_model=READER_MODEL,
+            data_dir=cfg.data_dir, purpose=f"read {a.code} {a.ids_id}",
+        )  # fmt: skip
+    except AgentCallFailed as e:
+        log.error("trader-reader failed: %s", e)
+        record("arena_decisions", {"ticker": a.code, "outcome": "reader_failed", "why": str(e)})
+        return {**out, "agent": {"stage": "reader", "error": str(e)}}
+    worthy, why = parse_verdict(reader.text)
+    can_size, size_why = parse_can_size(reader.text)
+    out["reader"] = {"model": reader.model, "trade_worthy": worthy, "why": why,
+                     "can_size_and_exit": can_size, "summary": reader.text}  # fmt: skip
+    record(
+        "arena_decisions",
+        {"stage": "reader", "ticker": a.code, "ids_id": a.ids_id, "model": reader.model,
+         "model_expected": READER_MODEL, "trade_worthy": worthy, "why": why,
+         "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
+         "v2": True},
+    )  # fmt: skip
+    if why_no_text:
+        out["no_pdf_text_why"] = why_no_text
+    if not pre_open:
+        log.info("v2: %s read; its reaction look follows once the market has traded it", a.code)
+        return out
+    if not (worthy and pb.raw.get("pre_open_look", True)):
+        log.info("v2: no pre-open look for %s (%s); the reaction look follows", a.code, why)
+        return out
+    out["decider"] = v2_flow.pre_open_decider(arena, pb, a, ctx, reader.text, now, seen_at)
+    return out
+
+
+_VIEW: dict = {}
+
+
+def day_view(arena: Arena, now: datetime):
+    """Today's MarketView, shared by the v2 reaction look, the v2 rule bot and the day
+    trader, so they all see the same bars. Rebuilt each day."""
+    from asxbot.arena.intraday import MarketView, make_feed
+
+    day = now.astimezone(SYD).date()
+    if _VIEW.get("day") != day:
+        cfg = arena.cfg
+        conf = cfg.get("arena.intraday_data") or {}
+        feed = make_feed(cfg, arena.broker.minutes)
+        _VIEW.update(
+            day=day, feed=feed,
+            view=MarketView(
+                arena.broker.minutes, day, feed, str(cfg.get("backtest.index_ticker", "^AXJO")),
+                int(conf.get("baseline_sessions", 5)), int(conf.get("baseline_min_sessions", 3)),
+            ),
+        )  # fmt: skip
+    return _VIEW["view"]
+
+
 # --------------------------------------------------------------------------
 # the loop
 # --------------------------------------------------------------------------
@@ -775,8 +907,13 @@ def watch(
     once: bool = False,
     interval_s: float | None = None,
     until: str | None = None,
+    others: tuple = (),
 ) -> None:
     """Poll for announcements and work each new one. Also resolves fills and stops.
+
+    `pb` is the announcements playbook; `others` are the other enabled playbooks run in the
+    same loop (from 2026-09-24, the day trader). Every playbook's fills, stops and flat
+    sweep are worked every cycle.
 
     `until` is an HH:MM Sydney time to stop at, so the scheduled task starts a fresh
     process each morning rather than leaving one running for days.
@@ -894,18 +1031,15 @@ def watch(
             # placed later in the cycle (ARN-000002: decided 10:37:41, stamped 10:29:46).
             now = datetime.now(SYD)
 
-            # The yardstick's entries: once a day, before the open.
-            try:
-                yardstick_entries(arena, pb, now)
-            except Exception as e:  # noqa: BLE001
-                log.exception("the yardstick's entries failed: %s", e)
+            # The yardstick's entries (v1): once a day, before the open.
+            if pb.version < 2:
+                try:
+                    yardstick_entries(arena, pb, now)
+                except Exception as e:  # noqa: BLE001
+                    log.exception("the yardstick's entries failed: %s", e)
 
-            # Fills, stops and targets, every cycle.
-            now = datetime.now(SYD)
-            for kind in ("agent", "bot"):
-                acct = arena.account(pb, kind)
-                arena.broker.apply_exits(acct, now)
-                arena.broker.resolve_pending(acct, now)
+            # Fills, stops and targets, every cycle, for every playbook.
+            _work_all(arena, (pb, *others))
 
             # Keep the short universe current. Stale means the arena starts refusing shorts in
             # real index members, silently, which is how TUA was refused twice on 23 September.
@@ -923,9 +1057,16 @@ def watch(
             except Exception as e:  # noqa: BLE001
                 log.exception("the horizon exit failed: %s", e)
 
-            # One second look each, once the opening auction has settled.
+            # Intraday work on the minute bars (from 2026-09-24): announcements v2's rule bot
+            # and reaction looks, and the day trader's scan. Each in its own try: one failing
+            # must never stop the others, the fills or the sweep.
+            _intraday(arena, pb, others)
+
+            # One second look each, once the opening auction has settled (v1 only; v2's
+            # reaction look replaces it).
             now = datetime.now(SYD)
-            if now.astimezone(SYD).time() >= relook_time(cfg):
+            relooks_on = pb.version < 2 and pb.raw.get("relook", True) is not False
+            if relooks_on and now.astimezone(SYD).time() >= relook_time(cfg):
                 try:
                     again = do_relooks(arena, pb, now)
                     if again:
@@ -935,12 +1076,15 @@ def watch(
                 except Exception as e:  # noqa: BLE001
                     log.exception("the re-look failed: %s", e)
 
-            # Before the close, settle the day's Level 1 positions.
+            # Before the close, settle the day's Level 1 positions. A flat-at-close playbook
+            # (v2, the day trader) is closed by code from the sweep time on, every cycle, so
+            # a fill the delayed feed shows late is still closed when it is seen.
             now = datetime.now(SYD)
             sweep_at, deadline = preclose_window(cfg)
-            if sweep_at <= now.astimezone(SYD).time() < deadline:
+            if sweep_at <= now.astimezone(SYD).time() < deadline and not pb.flat_at_close:
                 for r in sweep_before_close(arena, pb, now):
                     log.info("pre-close %s: %s", r["ticker"], r["action"])
+            _flat_sweeps(arena, (pb, *others), now)
 
             # The close itself: one message with the day's totals. Once a day, after the
             # pre-close sweep has had its say, so the balances in it are settled ones.
@@ -960,6 +1104,64 @@ def watch(
     finally:
         if hb is not None:
             hb.stop(ended)
+
+
+def _work_all(arena: Arena, pbs) -> None:
+    now = datetime.now(SYD)
+    for p in pbs:
+        for kind in ("agent", "bot"):
+            try:
+                acct = arena.account(p, kind)
+                arena.broker.apply_exits(acct, now)
+                arena.broker.resolve_pending(acct, now)
+            except Exception as e:  # noqa: BLE001 - one book failing must not stop the rest
+                log.exception("working %s %s failed: %s", p.key, kind, e)
+
+
+def _intraday(arena: Arena, pb: Playbook, others) -> None:
+    from asxbot.arena import v2_flow
+
+    now = datetime.now(SYD)
+    try:
+        view = day_view(arena, now)
+    except Exception as e:  # noqa: BLE001
+        log.exception("could not build today's market view: %s", e)
+        return
+    if pb.version >= 2:
+        if _VIEW.get("seeded") != view.day:
+            _VIEW["seeded"] = view.day  # once a watcher-day, even if it fails
+            try:
+                v2_flow.seed_queue(arena, pb, view.day, datetime.now(SYD))
+            except Exception as e:  # noqa: BLE001
+                log.exception("seeding today's reaction looks failed: %s", e)
+        try:
+            v2_flow.v2_bot_cycle(arena, pb, view, datetime.now(SYD))
+        except Exception as e:  # noqa: BLE001
+            log.exception("the v2 rule bot failed: %s", e)
+        try:
+            v2_flow.reaction_looks(arena, pb, view, datetime.now(SYD))
+        except Exception as e:  # noqa: BLE001
+            log.exception("the v2 reaction looks failed: %s", e)
+    for other in others:
+        if other.key == "asx_daytrader":
+            try:
+                from asxbot.arena import daytrader
+
+                daytrader.cycle(arena, other, view, datetime.now(SYD))
+            except Exception as e:  # noqa: BLE001
+                log.exception("the day trader's cycle failed: %s", e)
+
+
+def _flat_sweeps(arena: Arena, pbs, now: datetime) -> None:
+    from asxbot.arena import v2_flow
+
+    for p in pbs:
+        if not p.flat_at_close:
+            continue
+        try:
+            v2_flow.flatten(arena, p, now)
+        except Exception as e:  # noqa: BLE001
+            log.exception("the flat sweep for %s failed: %s", p.key, e)
 
 
 def _sleep(seconds: float, why: str) -> None:

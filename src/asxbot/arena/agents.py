@@ -95,6 +95,7 @@ def call_agent(
     timeout_s: int = 600,
     data_dir: Path | None = None,
     purpose: str = "",
+    process_timeout_s: int | None = None,
 ) -> AgentReply:
     """Run one turn of an OpenClaw agent and return its text plus the model that ran it."""
     fd, path = tempfile.mkstemp(suffix=".md", prefix=f"{agent}-", text=True)
@@ -107,9 +108,12 @@ def call_agent(
     try:
         # A model call can legitimately run to its timeout with nothing logged; say so, so
         # the watchdog does not report a quiet log as a dead watcher.
-        with quiet(timeout_s + 120, f"waiting on {agent}"):
+        # The process is given a minute beyond the agent's own timeout, unless the caller
+        # needs a hard answer time (the day trader: 60 s, plus start-up).
+        wait = int(process_timeout_s) if process_timeout_s is not None else timeout_s + 60
+        with quiet(wait + 60, f"waiting on {agent}"):
             proc = hidden.run(
-                cmd, capture_output=True, text=True, timeout=timeout_s + 60, encoding="utf-8"
+                cmd, capture_output=True, text=True, timeout=wait, encoding="utf-8"
             )
     except hidden.TimeoutExpired as e:
         raise AgentCallFailed(f"{agent} timed out after {timeout_s}s") from e

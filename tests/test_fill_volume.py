@@ -13,12 +13,12 @@ import pytest
 
 from asxbot.arena.accounts import Position
 from asxbot.arena.broker import ArenaBroker
-from asxbot.arena.levels import load_playbook
 from asxbot.arena.minutes import MinuteBars
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.backtest.costs import CostModel
 from asxbot.config import load_config
 from asxbot.io import write_parquet_atomic
+from v1_playbook import v1_playbook
 
 SYD = ZoneInfo("Australia/Sydney")
 DAY = date(2026, 1, 6)  # a Tuesday, far enough back that nothing reaches for the network
@@ -339,7 +339,7 @@ def test_the_share_comes_from_config(cfg):
 
 
 def test_an_exit_cannot_oversell_what_a_working_exit_already_covers(broker, agent, cfg):
-    pb = load_playbook(cfg, "asx_announcements")
+    pb = v1_playbook(cfg)
     bars_on(broker, "AAA", DAY, [
         (10, 0, 1.00, 1.00, 1.00, 1.00, 100_000),
         (15, 0, 0.95, 0.95, 0.85, 0.86, 1000),

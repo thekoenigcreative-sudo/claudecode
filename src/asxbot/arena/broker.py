@@ -105,6 +105,9 @@ class ArenaBroker:
         self.auction_wait_minutes = int(auction_wait_minutes)
         self.events = EventLog(data_dir)
         self.notifier = None  # set by build_arena; alerts are best effort (notify.py)
+        # callable(ticker) -> median daily dollar turnover, 20 sessions; set by arena_broker.
+        # The size-aware liquidity rule (arena/liquid.py) is checked only when it is set.
+        self.median_turnover = None
 
     def _notify(self, method: str, *args) -> None:
         if self.notifier is not None:
@@ -127,6 +130,8 @@ class ArenaBroker:
         placed_by: str = "",
         hold: str = "intraday",
         stop_pct: float | None = None,
+        good_till: datetime | None = None,
+        manage: dict | None = None,
     ) -> ArenaOrder:
         """Record an order. It is NOT filled here - fills happen in resolve_pending().
 
@@ -155,6 +160,14 @@ class ArenaBroker:
             placed_by=placed_by,
             hold=hold,
             message="recorded; waiting for the first traded minute after the decision",
+            good_till=(
+                good_till.astimezone(SYD).replace(second=0, microsecond=0).isoformat(
+                    timespec="minutes"
+                )
+                if good_till is not None
+                else ""
+            ),
+            manage=dict(manage or {}),
         )
         acct.orders[oid] = o
         self.store.save(acct)
@@ -321,6 +334,8 @@ class ArenaBroker:
                 and _reaches(bar, float(pos.target), "up" if long else "down")
             ):
                 out.extend(self._raise_exit(acct, pos, "target", ts, bar, live))
+            elif pos.manage:
+                self._manage(acct, pos, ts, bar, live)
 
         # 2. The bar's volume, shared: stop exit, target exit, then the rest by age. The
         # opening auction has its own share of its estimated volume.
@@ -332,6 +347,8 @@ class ArenaBroker:
                 continue
             if o.order_type == "limit" and ts.date() != _session_day(_aware(o.decided_at)):
                 continue  # outside its session; _end_sessions expires it
+            if o.good_till and ts >= _aware(o.good_till):
+                continue  # past the minute it stops filling; _end_sessions ends it
             o.worked_through = minute
             raw = self._bar_price(o, ts, bar)
             if raw is None:
@@ -446,6 +463,8 @@ class ArenaBroker:
             decided = _aware(o.decided_at)
             day = _session_day(decided)
             close = datetime.combine(day, SESSION_CLOSE, tzinfo=SYD)
+            if o.good_till and _aware(o.good_till) < close:
+                close = _aware(o.good_till)  # it stops filling before its session ends
             if now < close + timedelta(minutes=self.resolve_after_minutes):
                 continue
             if o.filled_qty:
@@ -474,6 +493,86 @@ class ArenaBroker:
                 self._notify("expired", o)
             out.append(FillOutcome(o.order_id, o.status, o.message))
         return out
+
+    # -- trade management, bar by bar (the day trader, 2026-09-24) -----------
+    def _manage(self, acct: Account, pos: Position, ts: datetime, bar, live: list) -> None:
+        """Move the stop and take half off by the position's rules, from THIS bar's range,
+        effective from the NEXT bar. The stop was already looked at for this bar, so a bar
+        that makes a new best and falls back is never stopped at a level it set itself. The
+        stop only ever tightens.
+
+        R = |entry - the stop it opened with|. The best price since entry reaching +1R
+        moves the stop to breakeven; reaching +2R rests a take-profit for half the shares at
+        +2R (filled like any target - in this bar, since this bar reached it) and starts a
+        trail 1R behind the best price. The multiples come from config
+        (arena.playbooks.asx_daytrader.manage).
+        """
+        m = pos.manage
+        long = pos.qty > 0
+        entry, r = float(m.get("entry", pos.avg_cost)), float(m.get("r", 0.0))
+        if r <= 0:
+            return
+        hi, lo = float(bar["high"]), float(bar["low"])
+        prior = float(m.get("best", entry))
+        best = max(prior, hi) if long else min(prior, lo)
+        m["best"] = round(best, 6)
+        gained = (best - entry) / r if long else (entry - best) / r
+        sign = 1 if long else -1
+
+        half_at = m.get("half_at_r")
+        if (
+            half_at is not None
+            and not m.get("half_done")
+            and gained >= float(half_at)
+            and abs(pos.qty) >= 2
+            and not any(o.order_type == "stop" for o in live)
+        ):
+            level = round(entry + sign * float(half_at) * r, 4)
+            self._raise_partial(acct, pos, abs(pos.qty) // 2, level, ts, bar)
+            m["half_done"] = True
+
+        new = pos.stop
+        if m.get("breakeven_at_r") is not None and gained >= float(m["breakeven_at_r"]):
+            new = _tighter(new, entry, long)
+        if m.get("trail_at_r") is not None and gained >= float(m["trail_at_r"]):
+            trail = best - sign * float(m.get("trail_distance_r", 1.0)) * r
+            new = _tighter(new, trail, long)
+        if new is not None and round(float(new), 4) != pos.stop:
+            old = pos.stop
+            pos.stop = round(float(new), 4)
+            self.events.append(
+                "arena_orders",
+                {"account": acct.name, "ticker": pos.ticker, "event": "stop_moved",
+                 "from": old, "to": pos.stop, "bar": ts.isoformat(timespec="minutes"),
+                 "best": m["best"], "r_gained": round(gained, 2),
+                 "effective_from": (ts + timedelta(minutes=1)).isoformat(timespec="minutes")},
+            )  # fmt: skip
+            log.info(
+                "arena %s %s: stop %s -> %.4f after the %s bar (best %.4f, %+.2fR)",
+                acct.name, pos.ticker, old, pos.stop, ts.strftime("%H:%M"), best, gained,
+            )  # fmt: skip
+
+    def _raise_partial(
+        self, acct: Account, pos: Position, qty: int, level: float, ts: datetime, bar
+    ) -> None:
+        """A resting take-profit for part of the position, reached in bar `ts`."""
+        long = pos.qty > 0
+        half = pos.manage.get("half_at_r")
+        o = ArenaOrder(
+            order_id=self.store.next_order_id(), account=acct.name, ticker=pos.ticker,
+            side="sell" if long else "cover", qty=int(qty), limit=level,
+            **self._resting_times(ts, pos.opened_at), order_type="target",
+            trigger_price=_gap_price(bar, level, worse=False, sell=long),
+            reason=f"HALF at +{half}R ({level:.4f})",
+            model="code (trade management, not the agent)", placed_by="code", hold=pos.hold,
+            message=f"half at +{half}R reached in the {ts:%Y-%m-%d %H:%M} bar; working",
+        )  # fmt: skip
+        acct.orders[o.order_id] = o
+        self.events.append("arena_orders", {**o.to_dict(), "event": "half_reached"})
+        log.info(
+            "arena %s %s %s half at %.4f reached in the %s bar: %s %d working",
+            acct.name, o.order_id, pos.ticker, level, ts.strftime("%H:%M"), o.side, qty,
+        )  # fmt: skip
 
     def _fill_slice(
         self, acct: Account, o: ArenaOrder, qty: int, price: float, raw: float, ts: datetime,
@@ -514,7 +613,7 @@ class ArenaBroker:
                     opened_at=ts.isoformat(timespec="minutes"), stop=o.stop, target=o.target,
                     thesis=o.reason, opened_by=o.placed_by, model=o.model,
                     last_borrow_day=ts.date().isoformat(), hold=o.hold,
-                    target_from=_target_from(o, ts),
+                    target_from=_target_from(o, ts), manage=_managed(o, price),
                 )  # fmt: skip
             else:
                 total = abs(pos.qty) + qty
@@ -524,6 +623,10 @@ class ArenaBroker:
                     pos.stop = o.stop
                 if first_slice:
                     _move_target(pos, o, ts)
+                if o.manage and pos.manage:
+                    # A later slice of the same entry: the entry and R follow the average.
+                    pos.manage = {**pos.manage, **_managed(o, pos.avg_cost),
+                                  "best": pos.manage.get("best", pos.avg_cost)}  # fmt: skip
         else:
             if o.side == "sell":
                 acct.cash += qty * price - fee
@@ -821,6 +924,26 @@ def _stop_rescaled_to_fill(o: ArenaOrder, price: float) -> ArenaOrder:
     ).strip("; ")
     o.stop = round(new_stop, 4)
     return o
+
+
+def _managed(o: ArenaOrder, entry: float) -> dict:
+    """The management a new position gets from its opening order: the rules, the price it
+    filled at, and R = |entry - stop|."""
+    if not o.manage or o.stop is None:
+        return {}
+    return {
+        **o.manage,
+        "entry": round(float(entry), 6),
+        "r": round(abs(float(entry) - float(o.stop)), 6),
+        "best": round(float(entry), 6),
+    }
+
+
+def _tighter(stop: float | None, candidate: float, long: bool) -> float:
+    """The tighter of two stops: the higher for a long, the lower for a short."""
+    if stop is None:
+        return candidate
+    return max(float(stop), candidate) if long else min(float(stop), candidate)
 
 
 def _bar_name(ts: datetime) -> str:

@@ -33,7 +33,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from asxbot.arena.accounts import Account
-from asxbot.arena.broker import CLOSING_SIDES, OPENING_SIDES, ArenaBroker
+from asxbot.arena.broker import CLOSING_SIDES, OPENING_SIDES, SESSION_CLOSE, ArenaBroker
 from asxbot.arena.hours import order_window
 from asxbot.arena.levels import Playbook
 from asxbot.config import Config
@@ -67,6 +67,8 @@ def arena_place_order(
     universe: set[str] | None = None,
     short_universe: set[str] | None = None,
     now: datetime | None = None,
+    good_till: datetime | None = None,
+    manage: dict | None = None,
 ):
     decided = broker.clock()
     data_as_of = now or decided
@@ -159,6 +161,14 @@ def arena_place_order(
             raise refuse(
                 f"outside arena hours {start:%H:%M}-{end:%H:%M} Sydney (now {local:%H:%M})"
             )
+        last_entry = playbook.last_entry_time
+        # Only late in the session: an order recorded after the 16:10 close is for the next
+        # session's opening auction, and an intraday playbook may place it (a pre-open look).
+        if last_entry is not None and last_entry < local.time() < SESSION_CLOSE:
+            raise refuse(
+                f"no new positions after {last_entry:%H:%M} in this intraday playbook: a later "
+                "fill could not be seen by the pre-close sweep on the delayed feed"
+            )
         if universe is not None and ticker not in universe:
             raise refuse(f"{ticker} is not in the allowed universe")
         if side == "short":
@@ -225,12 +235,51 @@ def arena_place_order(
             raise refuse(f"account equity is {equity:,.2f}; no new positions")
 
         risk = abs(limit - stop) * qty
-        risk_cap = equity * lvl.risk_per_trade_pct / 100.0
+        risk_pct = playbook.risk_per_trade_pct
+        risk_cap = equity * risk_pct / 100.0
         if risk > risk_cap + 1e-6:
             raise refuse(
-                f"risk {risk:,.2f} (distance to stop x size) exceeds the level {lvl.number} "
-                f"cap of {lvl.risk_per_trade_pct}% of equity ({risk_cap:,.2f})"
+                f"risk {risk:,.2f} (distance to stop x size) exceeds the "
+                + (f"level {lvl.number}" if risk_pct == lvl.risk_per_trade_pct else "playbook's")
+                + f" cap of {risk_pct}% of equity ({risk_cap:,.2f})"
             )
+
+        # Level caps added 2026-09-24 (Rick's brief): dollars per position, new a day.
+        if lvl.max_position_aud is not None:
+            held = abs(pos.qty) * pos.avg_cost if pos is not None else 0.0
+            if held + value > lvl.max_position_aud + 1e-6:
+                raise refuse(
+                    f"position value {held + value:,.2f} would exceed the level {lvl.number} "
+                    f"cap of {lvl.max_position_aud:,.2f} per position"
+                )
+        if lvl.max_new_positions_per_day is not None:
+            opened_today = sum(
+                1 for o in acct.orders.values()
+                if o.side in OPENING_SIDES and o.placed_by != "code"
+                and o.decided_at[:10] == local.date().isoformat()
+                and (o.filled_qty > 0 or o.working)
+            )  # fmt: skip
+            if opened_today >= lvl.max_new_positions_per_day:
+                raise refuse(
+                    f"already {opened_today} new positions today; the level {lvl.number} limit "
+                    f"is {lvl.max_new_positions_per_day} a day"
+                )
+
+        # The size-aware liquidity rule (announcements v2, the day trader): our order must be
+        # under a set share of the stock's median daily dollar turnover.
+        from asxbot.arena.liquid import size_rule
+
+        rule = size_rule(playbook)
+        lookup = getattr(broker, "median_turnover", None)
+        if rule is not None and lookup is not None:
+            turnover = lookup(ticker)
+            if not turnover:
+                raise refuse(f"no turnover history for {ticker}: the size rule cannot be checked")
+            if value > rule.max_order(turnover) + 1e-6:
+                raise refuse(
+                    f"order value {value:,.2f} is more than {rule.share:.0%} of {ticker}'s median "
+                    f"daily turnover ({turnover:,.0f}): at most {rule.max_order(turnover):,.2f}"
+                )
 
         max_pct = playbook.guidance("max_position_pct_of_equity")
         if max_pct is not None and value > equity * float(max_pct) / 100.0 + 1e-6:
@@ -273,6 +322,8 @@ def arena_place_order(
         model=model,
         placed_by=placed_by,
         hold=hold,
+        good_till=good_till,
+        manage=manage,
     )
     events.append("arena_orders", {**req, "outcome": "accepted", "order_id": o.order_id})
     return o

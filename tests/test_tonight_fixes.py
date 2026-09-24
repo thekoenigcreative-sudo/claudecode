@@ -68,9 +68,9 @@ def test_a_watcher_started_after_the_open_records_the_miss_as_a_warning(cfg, cap
     import logging
 
     from asxbot.arena import watch as W
-    from asxbot.arena.levels import load_playbook
+    from v1_playbook import v1_playbook
 
-    pb = load_playbook(cfg, "asx_announcements")
+    pb = v1_playbook(cfg)
     pb = dataclasses.replace(pb, raw={**pb.raw, "warmup_start": None})
 
     class _Arena:
@@ -111,10 +111,10 @@ def test_the_decider_packet_gives_the_dated_list_and_forbids_overruling_it(cfg, 
     the September 2025 rebalance. Fails on ceefbfe, whose packet had no date or rule."""
     from asxbot.arena import watch as W
     from asxbot.arena.broker import ArenaBroker
-    from asxbot.arena.levels import load_playbook
     from asxbot.arena.minutes import MinuteBars
     from asxbot.backtest.costs import CostModel
     from test_arena import _ann, _FakeArena, _offline_price
+    from v1_playbook import v1_playbook
 
     _offline_price(monkeypatch)
     _members_csv(cfg, {"BBB", "ORA", "TUA"})
@@ -123,7 +123,7 @@ def test_the_decider_packet_gives_the_dated_list_and_forbids_overruling_it(cfg, 
     acct = broker.store.open("t__agent", "asx_announcements", "agent", 1, 20_000.0)
     arena = _FakeArena(cfg, broker, acct)
     arena.short_universe = {"BBB", "ORA", "TUA"}
-    pb = load_playbook(cfg, "asx_announcements")
+    pb = v1_playbook(cfg)
     at = datetime(2026, 9, 23, 10, 32, tzinfo=SYD)
     ctx = {"dossier": {}, "reaction": {}, "text": ""}
     packet = W.decider_packet(arena, pb, acct, _ann(code="NUF"), ctx, "s", at)
@@ -174,15 +174,15 @@ def _yardstick_setup(cfg):
 
     from asxbot.arena.bots.announcement_drift import AnnouncementDriftBot
     from asxbot.arena.broker import ArenaBroker
-    from asxbot.arena.levels import load_playbook
     from asxbot.arena.minutes import MinuteBars
     from asxbot.backtest.costs import CostModel
     from test_arena import T0, _ann_frame, _index_daily, _stock_daily
+    from v1_playbook import v1_playbook
 
     broker = ArenaBroker(cfg.data_dir, CostModel.from_config(cfg), MinuteBars(cfg.data_dir),
                          lambda t: 2e6)  # fmt: skip
     acct = broker.store.open("t__bot", "asx_announcements", "bot", 1, 20_000.0)
-    pb = load_playbook(cfg, "asx_announcements")
+    pb = v1_playbook(cfg)
     # Yahoo's daily index: flat, and its "open" is the previous close, as on most days.
     frames = {"^AXJO": _index_daily(), "AAA": _stock_daily(5.5, 4)}
 

@@ -271,15 +271,30 @@ def cmd_report(args) -> int:
     return rc
 
 
+def watch_playbooks(arena) -> tuple:
+    """What the scheduled watcher runs: every enabled playbook in one loop (from
+    2026-09-24). The announcements playbook drives the announcement poll; the others (the
+    day trader) run beside it."""
+    pbs = arena.playbooks()
+    ann = [p for p in pbs if p.key.startswith("asx_announcements")]
+    if not ann:
+        raise SystemExit("no announcements playbook is enabled in config.yaml")
+    return ann[0], tuple(p for p in pbs if p is not ann[0])
+
+
 def cmd_watch(args) -> int:
     from asxbot.arena.watch import watch
 
     cfg, log, arena = _arena()
-    pb = _pb(arena, args.playbook)
+    if args.playbook:
+        pb, others = _pb(arena, args.playbook), ()
+    else:
+        pb, others = watch_playbooks(arena)
     if not pb.enabled:
         print(f"playbook {pb.key} is not enabled in config.yaml")
         return 2
-    watch(arena, pb, once=args.once, interval_s=args.interval, until=args.until)
+    log.info("watching: %s", ", ".join(p.key for p in (pb, *others)))
+    watch(arena, pb, once=args.once, interval_s=args.interval, until=args.until, others=others)
     return 0
 
 
@@ -350,6 +365,22 @@ def cmd_fake(args) -> int:
         acct = arena.account(pb, kind)
         for t, pos in acct.positions.items():
             print(f"{acct.name} holds {t} {pos.qty:+d} @ {pos.avg_cost:.4f} stop {pos.stop}")
+    return 0
+
+
+def cmd_replay(args) -> int:
+    """The plumbing replay of the v2 and day-trader rule bots (never the agent)."""
+    from datetime import date as date_cls
+
+    from asxbot.arena.replay import run
+
+    cfg = load_config()
+    setup_logging(cfg.logs_dir)
+    days = [date_cls.fromisoformat(d) for d in args.days.split(",")]
+    delays = [int(x) for x in args.delays.split(",")]
+    md = run(cfg, days, delays, cfg.root / "reports")
+    print(f"written: {md}")
+    print("PLUMBING REPLAY - plumbing test, not a go/no-go")
     return 0
 
 
@@ -607,6 +638,13 @@ def add_parsers(sub) -> None:
     hr = a.add_parser("hours", help="today's announcement window (daylight-saving aware)")
     hr.add_argument("--day")
     hr.set_defaults(fn=cmd_hours)
+
+    rp = a.add_parser(
+        "replay", help="plumbing replay of the v2 and day-trader rule bots on cached bars"
+    )
+    rp.add_argument("--days", required=True, help="comma-separated YYYY-MM-DD")
+    rp.add_argument("--delays", default="20,0", help="feed delays in minutes, e.g. 20,0")
+    rp.set_defaults(fn=cmd_replay)
 
     a.add_parser(
         "evening-due", help="exit 0 if now is today's evening-report slot"

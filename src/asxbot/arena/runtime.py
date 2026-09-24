@@ -128,6 +128,16 @@ def arena_broker(cfg: Config) -> ArenaBroker:
             return None
         return float((d["close"] * d["volume"]).tail(20).mean())
 
+    def median_turnover(ticker: str):
+        """Median daily dollar turnover over 20 sessions: the size-aware liquidity rule."""
+        from asxbot.live.quotes import median_turnover_20d
+
+        try:
+            d = data_store.get(ticker, start, max_age_days=5)
+        except Exception:  # noqa: BLE001
+            return None
+        return median_turnover_20d(d)
+
     fill = cfg.get("arena.fill") or {}
     minutes = MinuteBars(cfg.data_dir, str(fill.get("minute_price", "close")))
     broker = ArenaBroker(
@@ -144,6 +154,7 @@ def arena_broker(cfg: Config) -> ArenaBroker:
         auction_volume_share=float(fill.get("auction_volume_share", 0.20)),
         auction_wait_minutes=int(fill.get("auction_wait_minutes", 30)),
     )
+    broker.median_turnover = median_turnover
     return broker
 
 

@@ -15,13 +15,13 @@ import pytest
 from asxbot.arena.accounts import AccountStore, Mark
 from asxbot.arena.agents import parse_decision, parse_verdict
 from asxbot.arena.broker import ArenaBroker
-from asxbot.arena.levels import load_playbook
 from asxbot.arena.minutes import MinuteBars, NoTradeYet
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.scoreboard import score
 from asxbot.backtest.costs import CostModel
 from asxbot.config import load_config
 from asxbot.io import write_parquet_atomic
+from v1_playbook import v1_playbook
 
 SYD = ZoneInfo("Australia/Sydney")
 # A weekday well in the past, so the minute store never reaches for the network.
@@ -159,7 +159,7 @@ def setup(cfg, bars):
         cfg.data_dir, CostModel.from_config(cfg), bars, lambda t: 2_000_000.0,
         resolve_after_minutes=0, clock=Clock(datetime(2026, 1, 6, 12, 0, tzinfo=SYD)),
     )  # fmt: skip
-    pb = load_playbook(cfg, "asx_announcements")
+    pb = v1_playbook(cfg)
     acct = broker.store.open("t__agent", "asx_announcements", "agent", 1, 10_000.0)
     return cfg, broker, pb, acct
 
@@ -1016,9 +1016,9 @@ def test_before_the_open_zero_volume_is_not_a_halt():
 
 # -- the 10-session horizon and the 10:20 re-look (23 Sep) ------------------
 def test_the_playbook_holding_overrides_the_level(cfg):
-    from asxbot.arena.levels import load_playbook
+    from v1_playbook import v1_playbook
 
-    pb = load_playbook(cfg, "asx_announcements")
+    pb = v1_playbook(cfg)
     assert pb.level.holding == "intraday"  # the level is unchanged
     assert pb.holding == "days" and pb.hold_sessions == 10  # the playbook is not
 

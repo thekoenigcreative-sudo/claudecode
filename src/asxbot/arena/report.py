@@ -24,6 +24,84 @@ from asxbot.log import EventLog
 SYD = ZoneInfo("Australia/Sydney")
 
 
+def test_day(pb, day: date) -> str:
+    """Where the playbook is in its Level 1 test: "day N of 10 (v2)" (PLAN.md; the clock
+    for v2 and the day trader starts 25 Sep 2026)."""
+    from asxbot.announcements.live import is_trading_day
+
+    start = pb.raw.get("test_start")
+    if not start:
+        return ""
+    first = date.fromisoformat(str(start))
+    n = int(pb.raw.get("test_days", 10))
+    if day < first:
+        return f"not started: day 1 of {n} (v{pb.version}) is {first:%a %d %b}"
+    k, d = 0, first
+    while d <= day:
+        if d.weekday() < 5 and is_trading_day(d):
+            k += 1
+        d = date.fromordinal(d.toordinal() + 1)
+    if k > n:
+        return f"day {k} (v{pb.version}): past the {n}-day test, checkpoint due"
+    return f"day {k} of {n} (v{pb.version})"
+
+
+def playbook_facts(arena: Arena, day: date) -> list[dict]:
+    return [
+        {
+            "key": pb.key, "title": pb.title, "version": pb.version, "level": pb.level.number,
+            "test": test_day(pb, day), "data": pb.data_basis or "",
+            "accounts": [pb.agent_account, pb.bot_account],
+        }
+        for pb in arena.playbooks()
+    ]  # fmt: skip
+
+
+def v2_facts(cfg, day: date) -> dict:
+    """Announcements v2 today: the reaction looks and the rule bot, from their files."""
+    from asxbot.arena.reaction_v2 import load_bot_state, load_queue
+
+    q = {k: v for k, v in load_queue(cfg.data_dir, day).items() if not k.startswith("_")}
+    by: dict[str, int] = {}
+    for v in q.values():
+        by[v.get("status", "?")] = by.get(v.get("status", "?"), 0) + 1
+    bot = load_bot_state(cfg.data_dir, day)
+    return {
+        "stocks_with_news_queued": len(q),
+        "reaction_looks_by_outcome": by,
+        "looked": [
+            {"ticker": k, "outcome": v.get("outcome"), "reaction": v.get("reaction")}
+            for k, v in q.items() if v.get("status") == "looked"
+        ],
+        "rule_bot": {
+            "status": bot.get("status"), "why": bot.get("why"),
+            "signals": [c for c in bot.get("candidates", []) if c.get("signal")],
+            "orders": bot.get("orders", []),
+        },
+    }  # fmt: skip
+
+
+def daytrader_facts(cfg, day: date) -> dict:
+    from asxbot.arena.daytrader import load_state
+
+    st = load_state(cfg.data_dir, day)
+    sig = st.get("signals", [])
+    by: dict[str, int] = {}
+    for x in sig:
+        by[x["setup"]] = by.get(x["setup"], 0) + 1
+    agent = [x.get("agent") or {} for x in sig]
+    return {
+        "universe": len(st.get("universe", [])),
+        "setups_found": len(sig),
+        "by_setup": by,
+        "bot_orders": sum(1 for x in sig if (x.get("bot") or {}).get("order_id")),
+        "agent_took": sum(1 for a in agent if a.get("order_id")),
+        "agent_rejected": sum(1 for a in agent if "rejected" in a),
+        "agent_not_asked": sum(1 for a in agent if a.get("skipped")),
+        "rejections": [a.get("rejected") for a in agent if "rejected" in a][:8],
+    }
+
+
 def gather(arena: Arena, day: date | None = None) -> dict:
     """Every fact the report is allowed to use. No model involved."""
     cfg = arena.cfg
@@ -92,8 +170,12 @@ def gather(arena: Arena, day: date | None = None) -> dict:
     alerts_today = today_rows("arena_alerts")
     signals_today = today_rows("signals")
 
+    keys = {pb.key for pb in arena.playbooks()}
     return {
         "day": iso,
+        "playbooks": playbook_facts(arena, day),
+        "announcements_v2_today": v2_facts(cfg, day) if "asx_announcements_v2" in keys else None,
+        "daytrader_today": daytrader_facts(cfg, day) if "asx_daytrader" in keys else None,
         "broker_mode": cfg.broker,
         "data_label": cfg.data_label(),
         "money": "FAKE money (arena). No real order can be placed from here.",
@@ -156,6 +238,27 @@ def render_plain(facts: dict) -> str:
         f"<b>ASX arena - {facts['day']}</b>",
         f"{facts['money']}",
         f"Data: {facts['data_label']}",
+        "",
+    ]
+    for p in facts.get("playbooks", []):
+        lines.append(f"<b>{p['title']}</b>: {p['test']}" + (f" - {p['data']}" if p["data"] else ""))
+    dt = facts.get("daytrader_today")
+    if dt:
+        lines.append(
+            f"- day trader: {dt['setups_found']} setups found in {dt['universe']} stocks "
+            f"({', '.join(f'{k} {v}' for k, v in dt['by_setup'].items()) or 'none'}); "
+            f"bot orders {dt['bot_orders']}; agent took {dt['agent_took']}, rejected "
+            f"{dt['agent_rejected']}"
+        )
+    v2 = facts.get("announcements_v2_today")
+    if v2:
+        lines.append(
+            f"- announcements v2: {v2['stocks_with_news_queued']} stocks with news; reaction "
+            f"looks {v2['reaction_looks_by_outcome'] or 'none'}; rule bot "
+            f"{v2['rule_bot']['status'] or 'did not run'}, "
+            f"{len(v2['rule_bot']['signals'])} signal(s)"
+        )
+    lines += [
         "",
         "<b>Scoreboard</b>",
         f"<pre>{format_table(facts['score_objects'])}</pre>",
@@ -233,7 +336,14 @@ def agent_brief(facts: dict) -> str:
         "from memory that a company is or is not an index member, or that a membership flag "
         "'looks wrong'. If you believe a dated fact is wrong, add one last line starting "
         "'Flag for Claude:', worded as a question to check - never as a fact in the report.\n"
-        "- Keep it under 2500 characters. Plain text with simple HTML tags "
+        "- There are playbooks in FACTS playbooks. Report each separately, each against its "
+        "own yardstick bot. Head each with its title and its `test` value word for word "
+        "(for example 'day 1 of 10 (v2)'), and its `data` label word for word - 'delayed data "
+        "- rehearsal until IBKR live prices' - so no one mistakes a rehearsal for a result.\n"
+        "- For the day trader say how many setups the scan found, how many you took and "
+        "rejected, and what the rule bot did (FACTS daytrader_today). For announcements v2 "
+        "say what the reaction looks and the rule bot did (FACTS announcements_v2_today).\n"
+        "- Keep it under 3000 characters. Plain text with simple HTML tags "
         "(<b>, <i>, <pre>) only.\n\n"
         f"FACTS (JSON):\n{json.dumps(payload, indent=2, default=str)}\n"
     )
