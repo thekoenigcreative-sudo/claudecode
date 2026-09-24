@@ -356,7 +356,7 @@ def test_model_change_is_recorded_in_config_yaml_and_committed(env):
     assert ag["effort"]["decider"] == "max" and len(ag["history"]) == 2
     assert ag["history"][1]["setting"] == "effort" and ag["history"][1]["old"] == "high"
     env.app.on_update(msg("/model decider default"))
-    assert env.tg.texts()[-1] == "the Trader's decider already uses Sonnet 5."
+    assert env.tg.texts()[-1] == "The Trader's decider already uses Sonnet 5."
 
 
 def test_model_change_waits_for_uncommitted_config_edits_or_a_building_change(env):

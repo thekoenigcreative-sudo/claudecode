@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BOTCTL_VERSION = "2026-09-24.2"
+BOTCTL_VERSION = "2026-09-24.3"
 
 CHANGES_DIR = Path(os.environ.get("CC_CHANGES_DIR") or r"C:\Users\Richa\.cc-jobs\changes")
 OPENCLAW_JSON = Path(
@@ -961,6 +961,8 @@ class BotCtl:
 
     # ---------------------------------------------------------------- helpers
     def say(self, text: str, buttons: list[tuple[str, str]] | None = None) -> None:
+        if text.startswith(self.ad.name):  # "the Trader ..." starting a sentence
+            text = text[:1].upper() + text[1:]
         if buttons:
             self.ad.send(text, buttons)
         else:
