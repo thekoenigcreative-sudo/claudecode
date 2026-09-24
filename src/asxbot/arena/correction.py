@@ -327,7 +327,7 @@ ALLOWED = {"cash", "fees_paid", "realised_pnl", "orders", "positions"}
 
 
 def run(cfg: Config, now: datetime, dry_run: bool, checks: bool = True, broker=None) -> int:
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     store = AccountStore(cfg.data_dir)
     events = EventLog(cfg.data_dir)
 
@@ -344,7 +344,7 @@ def run(cfg: Config, now: datetime, dry_run: bool, checks: bool = True, broker=N
             if not dry_run:
                 raise
             blocked = str(e)
-    print(log_confirms(cfg.data_dir / "logs"))
+    print(log_confirms(cfg.logs_dir))
 
     if broker is None:
         from asxbot.arena.runtime import arena_broker

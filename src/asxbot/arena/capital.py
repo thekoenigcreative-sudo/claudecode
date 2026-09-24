@@ -15,7 +15,7 @@ It refuses to run, and writes nothing, unless:
   * no arena process is running - not the watcher, not the evening routine, not any
     `asxbot arena` command - and neither scheduled task reports itself Running;
   * the evening routine for the latest session has finished: its report step has returned
-    in data/arena_evening.log, and every account has that day's mark;
+    in arena_evening.log (in the local logs folder), and every account has that day's mark;
   * every account is where this change expects it: starting cash plus the amount equals
     `arena.starting_aud`. A second run therefore refuses, rather than adding it twice.
 
@@ -219,7 +219,7 @@ def only_these_changed(before: dict, after: dict, keys: set[str]) -> list[str]:
 
 
 def run(cfg: Config, now: datetime, amount: float, dry_run: bool, checks: bool = True) -> int:
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     store = AccountStore(cfg.data_dir)
     day = evening_day(now)
 
@@ -231,7 +231,7 @@ def run(cfg: Config, now: datetime, amount: float, dry_run: bool, checks: bool =
             states = task_status(task)
             if any(s.lower() == "running" for s in states):
                 raise Refused(f"the scheduled task {task!r} is running")
-        evening_log = cfg.data_dir / "arena_evening.log"
+        evening_log = cfg.logs_dir / "arena_evening.log"
         text = evening_log.read_text(encoding="utf-8-sig") if evening_log.exists() else ""
         why = evening_finished(text, day, evening_slot(cfg, day))
         if why:

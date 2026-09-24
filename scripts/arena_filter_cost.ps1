@@ -14,7 +14,11 @@ if (-not (Test-Path $repo)) {
     exit 1
 }
 Set-Location $repo
-$log = "$repo\data\arena_filter_cost.log"
+# The log is on a local disk, not Google Drive: on 24 Sep 2026 Drive silently cut off the
+# watcher's long-open log handles (src\asxbot\log.py). Same folder as asxbot.log.
+$logDir = if ($env:ASXBOT_LOG_DIR) { $env:ASXBOT_LOG_DIR } else { "$env:LOCALAPPDATA\asx-bot\logs" }
+New-Item -ItemType Directory -Force $logDir | Out-Null
+$log = "$logDir\arena_filter_cost.log"
 
 function Write-Log { param([string]$Text) $Text | Out-File -Append -Encoding utf8 $log }
 

@@ -20,13 +20,14 @@ from asxbot.alerts import ACCESS_REFUSED, Alerts
 from asxbot.announcements.http import AccessRefused, PacedClient
 from asxbot.announcements.model import Announcement, to_frame
 from asxbot.announcements.parser import ParseError, parse_today
-from asxbot.io import safe_stem, write_parquet_atomic
+from asxbot.io import safe_stem, write_parquet_atomic, write_text_atomic
 from asxbot.log import EventLog, get_logger
 
 log = get_logger("asxbot.announcements.live")
 
 TODAY_URL = "https://www.asx.com.au/asx/v2/statistics/todayAnns.do"
 SYD = ZoneInfo("Australia/Sydney")
+PAGES_KEPT_PER_DAY = 5
 
 
 def pdf_path(data_dir: Path, a: Announcement) -> Path:
@@ -94,8 +95,14 @@ class LivePoller:
         try:
             items = parse_today(html)
         except ParseError as e:
-            self.alerts.raise_alert("collector_parse_error", f"today page: {e}")
+            kept = self._keep_page(html, "unparsed", now)
+            self.alerts.raise_alert("collector_parse_error", f"today page: {e}; {kept}")
             raise
+        if not items:
+            # Before the ASX posts anything (07:30 on 24 Sep) the page has no announcements
+            # table. That is zero, not a fault; parse_today tells it from a changed layout.
+            kept = self._keep_page(html, "empty", now)
+            log.info("today page: the ASX has posted no announcements yet; %s", kept)
         new = [a for a in items if a.ids_id not in self.seen]
         if new:
             self.seen.update(a.ids_id for a in new)
@@ -111,6 +118,29 @@ class LivePoller:
                         self.on_sensitive(a)
         log.info("poll: %d on page, %d new, %d seen today", len(items), len(new), len(self.seen))
         return new
+
+    def _keep_page(self, html: str, kind: str, now: datetime) -> str:
+        """Keep the page as evidence: the first empty one of the day, and the first
+        PAGES_KEPT_PER_DAY pages that could not be parsed. Never read back by the poller.
+
+        On 24 Sep neither shape was kept, so the empty page's test fixture had to be built
+        by hand. Returns where it went, for the log line.
+        """
+        d = self.data_dir / "announcements" / "pages"
+        day = now.astimezone(SYD).strftime("%Y-%m-%d")
+        if kind == "empty":
+            p = d / f"todayAnns_empty_{day}.html"
+            if p.exists():
+                return f"first empty page of the day already kept in {p.name}"
+        else:
+            if len(list(d.glob(f"todayAnns_{kind}_{day}_*.html"))) >= PAGES_KEPT_PER_DAY:
+                return f"page not kept ({PAGES_KEPT_PER_DAY} already kept today)"
+            p = d / f"todayAnns_{kind}_{day}_{now.astimezone(SYD):%H%M%S}.html"
+        try:
+            write_text_atomic(html, p)
+        except OSError as e:
+            return f"page could not be kept: {e}"
+        return f"page kept as {p}"
 
     def _fetch_pdf(self, a: Announcement) -> Path | None:
         return self.fetch_pdf(a, stage="poll")

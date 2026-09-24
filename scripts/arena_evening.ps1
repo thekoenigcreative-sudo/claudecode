@@ -17,7 +17,11 @@ if (-not (Test-Path $repo)) {
     exit 1
 }
 Set-Location $repo
-$log = "$repo\data\arena_evening.log"
+# The log is on a local disk, not Google Drive: on 24 Sep 2026 Drive silently cut off the
+# watcher's long-open log handles (src\asxbot\log.py). Same folder as asxbot.log.
+$logDir = if ($env:ASXBOT_LOG_DIR) { $env:ASXBOT_LOG_DIR } else { "$env:LOCALAPPDATA\asx-bot\logs" }
+New-Item -ItemType Directory -Force $logDir | Out-Null
+$log = "$logDir\arena_evening.log"
 
 # Every write goes through here, so the log stays one encoding. PowerShell 5.1's `*>>`
 # redirection and Out-File do not agree, and mixing them makes the file unreadable.

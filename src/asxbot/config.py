@@ -58,6 +58,13 @@ class Config:
         return d if d.is_absolute() else self.root / d
 
     @property
+    def logs_dir(self) -> Path:
+        """Log files: a local folder outside Google Drive (asxbot.log.logs_dir)."""
+        from asxbot.log import logs_dir
+
+        return logs_dir()
+
+    @property
     def position_size_aud(self) -> float:
         return float(self.get("capital.starting_aud")) / int(self.get("capital.max_positions"))
 

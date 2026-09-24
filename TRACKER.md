@@ -4,7 +4,7 @@ Living plan. Reviewed and updated by Claude every time a Claude Code output come
 before the next prompt is handed over. Every line here is either verified against a file,
 a log or a command output, or labelled as unverified.
 
-**Last reviewed:** 2026-09-23 22:30 AEST (Claude Code, record-only job: Rick's #28 confirmations, headless)
+**Last reviewed:** 2026-09-24 19:50 AEST (Claude Code, headless: logs off Drive, log_silent check, empty announcements page)
 **Visual version:** https://claude.ai/artifact/Pg5TsxMqKkbbwz2aFF3UqZ — republished to the
 same link whenever this file changes.
 
@@ -18,7 +18,7 @@ same link whenever this file changes.
 | Screen | Working; `max_tick_pct` 3.0, turnover floor $250k | config.yaml |
 | Reader / decider | Sonnet 5 medium / Opus 5.5 high (from the evening of 23 Sep; Sonnet 5 low / Opus 5 high before), confirmed per call | `agent_mismatch` self-check |
 | Broker, orders, fills, stops | Fills volume-aware since 24 Sep (20% of a bar); bars used only once final; orders before 09:59 fill at the opening auction (Yahoo's daily open, 20% of its estimated volume) from 24 Sep | `broker.work`, `minutes.final_bars`, `minutes.opening_auction`, tests/test_fill_volume.py, tests/test_opening_auction.py |
-| Self-checks | 7 checks every cycle, loud on failure | `selfcheck.py`, live log |
+| Self-checks | 10 checks every cycle, loud on failure (`log_silent` added 24 Sep) | `selfcheck.run_checks`, live log |
 | ASX 200 short universe | Real constituent list, 200 codes, dated | `asxbot universe asx200` |
 | Arena position | None open. A1M bought 10:41 (ARN-000002, 0.8358 after the #24 correction, applied 19:40) and sold by its 0.90 target (ARN-000003, re-priced by the #25 correction, applied 20:31: 15:58 bar first, 0.9159, backup `correct_arn000003_20260923_203115`). Agent cash 20,227.09, bot 20,000.00. Both books topped up to $20,000 starting cash at 19:40. No arena order has ever filled at the open | account files read 23 Sep ~21:50 (read-only, hashes unchanged), `data/arena/backups/` |
 | Strategy with an edge | **None** | reports/phase1.md |
@@ -98,6 +98,8 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 32 | **Every scheduled launch flashed a window.** uv 0.10.2 made `C:\venvs\asx-bot\Scripts\pythonw.exe` a CONSOLE program, byte for byte the same as its `python.exe`, which then started the base interpreter's console `python.exe`. So the Warmup (07:30), Evening (19:30) and Watchdog (every 5 min) tasks each opened a console window (conhost) titled with the launcher's path: the flash Rick saw every 5 minutes on 23 Sep. `pythonw` was trusted by name (#19, #23) and never checked | High | **Fixed 23 Sep 20:35.** The venv's `pythonw.exe` is now CPython's own GUI venv launcher (`<base>\Lib\venv\scripts\nt\pythonw.exe`, what `python -m venv` installs), which starts the base `pythonw.exe` inside the venv; uv's is kept as `pythonw.exe.uv-console-bak-20260923`. Task command lines unchanged. Proof: a process + window recorder at 20:37 on 23 Sep, with the same probe run through a task each way. The old launcher gave conhost and a visible ConsoleWindowClass window. The new launcher and interpreter are GUI: no conhost, no window. The real Watchdog task was the same (20:38:02, result 0). The watcher's own child (`asxbot.exe`, a console program) still gets a conhost, windowless through CREATE_NO_WINDOW, as before. Watchdog detection was re-tested through the new chain: live gives ok, killed gives one DOWN, restarted gives BACK UP. New self-check `console_launcher`; `scripts/install_gui_launcher.py` puts it right if uv rebuilds the venv. etf-agent's venv had the same launcher and got the same fix |
 | 33 | Yahoo's 1-minute bars show no trace of the ASX's staggered open (five groups, 10:00 to ~10:09): the first traded minute is 10:01 on 242 and 10:00 on 82 of 348 stock-days across all groups, S-Z included. Either the bars are not stamped with trade times or the stagger is not what we think. Every minute-bar time in the first ten minutes is uncertain by that much. The auction is stamped 09:59 for every group, so it is not affected | Low | **Not yet queued** - check against a broker's course of sales once IBKR data starts |
 | 34 | The opening-auction price is Yahoo's daily open: **checked, not confirmed** against the ASX (#28, `reports/auction_open_check.md`). Accepted by Rick on that basis 23 Sep 22:20 until IBKR live data starts | Medium | **Tied to IBKR live data (milestone 8)** - once it starts, confirm the auction price against a broker trade record (course of sales / IBKR fill) for the same stock-days; until then every auction fill stays labelled "checked, not confirmed" |
+| 35 | **The watcher's logs went silent while it ran, twice on 24 Sep.** Google Drive silently cut off the long-open append handles on `data/logs/asxbot.log` and `data/arena_warmup.log`: at 08:14 (noticed; restarted 08:23), and again at 12:14:04 until the watcher stopped at 19:25 (not noticed until the logs were moved that evening). Files written whole or opened per write kept updating, so the heartbeat looked healthy; `errors_logged` read a dead file for 7 hours | High | **Fixed 24 Sep evening** - every log in `%LOCALAPPDATA%\asx-bot\logs` (daily rotation kept), copied to `data/logs/` whole after each evening run; new `log_silent` self-check (a log 5+ min behind the watcher's last line), Telegram once an hour. Old logs copied over and checked byte for byte. First real run 07:30 25 Sep, **not yet verified** |
+| 36 | The 07:30 poll logged ERROR "no announcements table with a Headline column found" (07:30:05, 07:31:24 on 24 Sep): before the ASX posts anything the page has no table | Low | **Fixed 24 Sep evening** - an ASX page with no announcement links is zero, at INFO; anything else is still an ERROR. The empty-page fixture is built by hand (no real one was kept); the poller now keeps the first empty page of each day in `data/announcements/pages/` to replace it. First real empty page 07:30 25 Sep, **not yet seen** |
 
 ---
 
@@ -118,6 +120,14 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 ---
 
 ## Review log
+
+- **24 Sep 19:50** - Headless job. (1) Logs off Google Drive: `asxbot.log`, the warm-up,
+  evening and filter-cost launcher logs and `watchdog.log` now live in
+  `%LOCALAPPDATA%\asx-bot\logs`, rotated daily and copied to `data/logs/` whole after each
+  evening run (#35). Found while doing it: the log went silent a second time, 12:14 to
+  19:25, unnoticed. (2) `log_silent` self-check. (3) An empty announcements page is zero,
+  not an ERROR (#36). No scheduled task needed re-registering: their actions are unchanged,
+  and the scripts they run hold the new paths.
 
 - **23 Sep 22:30** - Headless record-only job, no behaviour change. Rick confirmed on 23 Sep 22:20 AEST, in chat, the #28 defaults: (1) `arena.fill.auction_volume_share` 0.20 confirmed, value unchanged, dated in config.yaml; (2) the auction price from Yahoo's daily open accepted as **checked, not confirmed** until IBKR live data starts, then to be confirmed against a broker trade record (#34, LEARNINGS 18); (3) auction fills keep the 0.10% slippage base, matching the frozen backtest; (4) the two documented simplifications accepted as-is: an order recorded 09:59:00-10:00 misses the auction and fills at the first traded minute, and the staggered open (five groups, 10:00 to ~10:09) is not modelled - every auction is stamped 09:59 (#33).
 

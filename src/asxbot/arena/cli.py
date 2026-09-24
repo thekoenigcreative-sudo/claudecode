@@ -22,7 +22,7 @@ def _arena():
     from asxbot.arena.runtime import build_arena
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     return cfg, log, build_arena(cfg)
 
 
@@ -358,7 +358,7 @@ def cmd_hours(args) -> int:
     from asxbot.arena.hours import describe
 
     cfg = load_config()
-    setup_logging(cfg.data_dir)
+    setup_logging(cfg.logs_dir)
     day = datetime.fromisoformat(args.day).date() if args.day else None
     print(describe(cfg, day))
     return 0
@@ -370,7 +370,7 @@ def cmd_evening_due(args) -> int:
     from asxbot.arena.hours import evening_slot, is_dst, is_evening_slot
 
     cfg = load_config()
-    setup_logging(cfg.data_dir)
+    setup_logging(cfg.logs_dir)
     now = datetime.now(SYD)
     if is_evening_slot(cfg, now):
         print(f"due: today's slot is {evening_slot(cfg, now.date()):%H:%M} Sydney")
@@ -501,7 +501,7 @@ def cmd_telegram(args) -> int:
     from asxbot.telegram import TelegramError, load_bot, pair
 
     cfg = load_config()
-    setup_logging(cfg.data_dir)
+    setup_logging(cfg.logs_dir)
     try:
         if args.tg_cmd == "whoami":
             bot = load_bot(cfg)

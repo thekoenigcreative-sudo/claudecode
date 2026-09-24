@@ -16,6 +16,9 @@ All arithmetic and file checks. No judgement, no model, nothing that needs inter
   fill_before_order  a filled order whose fill bar does not start strictly after the order
                      was recorded (or, for a stop or target, after it began resting)
   errors_logged      an ERROR line in the last hour
+  log_silent         the watcher logged something 5+ minutes after the last line in
+                     asxbot.log (or the launcher's arena_warmup.log): the file is not being
+                     written. Google Drive did exactly this at 08:14 on 24 Sep 2026
   short_universe     the ASX 200 list is short, stale, or not a constituent list at all
   console_launcher   the venv's pythonw.exe, which every scheduled task starts, is a console
                      program, so each start flashes a window (scripts/install_gui_launcher.py)
@@ -28,6 +31,7 @@ and a Telegram message. The same failure is not repeated more often than
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -372,7 +376,7 @@ def check_errors_logged(cfg, now: datetime) -> Check:
     """
     since = now - timedelta(hours=1)
     hits = []
-    for line in tail_lines(cfg.data_dir / "logs" / "asxbot.log"):
+    for line in tail_lines(cfg.logs_dir / "asxbot.log"):
         m = ERROR_LINE.match(line)
         if not m:
             continue
@@ -390,6 +394,65 @@ def check_errors_logged(cfg, now: datetime) -> Check:
         f"{len(hits)} ERROR line(s) in the last hour: " + " | ".join(hits[-3:]),
         count=len(hits),
         items=hits,
+    )
+
+
+LOG_SILENT_AFTER = timedelta(minutes=5)
+STAMPED_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ ")
+
+
+def last_stamp(path: Path) -> datetime | None:
+    """The time on the last timestamped line of a log, or None if it has none."""
+    for line in reversed(tail_lines(path)):
+        m = STAMPED_LINE.match(line)
+        if m:
+            return datetime.fromisoformat(m.group(1)).replace(tzinfo=SYD)
+    return None
+
+
+def check_log_growing(cfg, hb: dict | None = None, stdout_log: str | None = None) -> Check:
+    """The watcher is logging, but its log files are not receiving the lines.
+
+    At 08:14 on 24 Sep 2026 Google Drive cut off the watcher's long-open append handles.
+    The watcher kept trading and logging, both asxbot.log and the launcher's copy of its
+    output stopped growing, and the heartbeat (rewritten whole) looked healthy - so the
+    watchdog saw nothing wrong. This holds each log's last line to the heartbeat's
+    `last_record`, the last line the watcher handed its log: 5 minutes apart is a log that
+    is not being written.
+    """
+    from asxbot.arena import heartbeat
+
+    hb = hb if hb is not None else (heartbeat.current() or heartbeat.read(cfg.data_dir))
+    if not hb or hb.get("state") != "running":
+        return Check("log_silent", True, "no running watcher to hold the logs to")
+    record = hb.get("last_record")
+    if not record:
+        return Check("log_silent", True, "the watcher has logged nothing yet")
+    record = datetime.fromisoformat(record).astimezone(SYD)
+    stdout_log = stdout_log if stdout_log is not None else os.environ.get("ASXBOT_STDOUT_LOG")
+    logs = [cfg.logs_dir / "asxbot.log"] + ([Path(stdout_log)] if stdout_log else [])
+    stale, facts = [], {"last_record": record.isoformat(timespec="seconds")}
+    # A log with no line yet is measured from the watcher's start, not called silent at once.
+    started = datetime.fromisoformat(hb.get("started") or record.isoformat()).astimezone(SYD)
+    for p in logs:
+        last = last_stamp(p)
+        facts[p.name] = last.isoformat(timespec="seconds") if last else None
+        if record - (last or started) >= LOG_SILENT_AFTER:
+            said = f"last line {last:%H:%M:%S}" if last else "no timestamped line at all"
+            stale.append(f"{p} ({said})")
+    if not stale:
+        return Check("log_silent", True, f"the logs are keeping up (last record {record:%H:%M:%S})",
+                     facts=facts)  # fmt: skip
+    return Check(
+        "log_silent",
+        False,
+        f"the watcher logged at {record:%H:%M:%S} but its log is not being written: "
+        + "; ".join(stale)
+        + ". It is still trading; only its record is lost. On 24 Sep 2026 a restart of the "
+        "watcher through its scheduled task (ASXBot Arena Warmup) brought the log back",
+        count=len(stale),
+        facts=facts,
+        items=stale,
     )
 
 
@@ -443,6 +506,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("stuck_pending", lambda: check_pending_orders(arena, pb, now)),
         ("fill_before_order", lambda: check_fills_after_orders(arena, pb)),
         ("errors_logged", lambda: check_errors_logged(cfg, now)),
+        ("log_silent", lambda: check_log_growing(cfg)),
         ("short_universe", lambda: check_short_universe(cfg)),
         ("console_launcher", check_gui_launcher),
     ]

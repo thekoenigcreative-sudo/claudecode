@@ -9,6 +9,10 @@ every minute with:
   * pid, started, stop_at - which process this is, and when it means to stop;
   * beat          - the thread's own clock: the process is alive and not suspended;
   * last_activity - the watcher's last log line, or the end of a wait it announced;
+  * last_record   - the watcher's last log line only: when it last handed the log something
+    to write. The log_silent self-check holds the log file to it, because at 08:14 on
+    24 Sep 2026 the watcher kept logging and the file kept nothing (Drive had cut off the
+    handle);
   * quiet_until / quiet_why - a wait the watcher announced in advance (a sleep, or a model
     call that may take up to its timeout), during which a silent log is expected;
   * state         - running | stopped (reached its stop time) | crashed.
@@ -58,7 +62,9 @@ class _Activity(logging.Handler):
         self.hb = hb
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.hb.last_activity = datetime.fromtimestamp(record.created, SYD)
+        at = datetime.fromtimestamp(record.created, SYD)
+        self.hb.last_activity = at
+        self.hb.last_record = at
 
 
 class Heartbeat:
@@ -69,6 +75,7 @@ class Heartbeat:
         self.stop_at = stop_at
         self.beat_s = float(beat_s)
         self.last_activity = self.started
+        self.last_record: datetime | None = None
         self.quiet_until: datetime | None = None
         self.quiet_why = ""
         self.state = "running"
@@ -87,6 +94,7 @@ class Heartbeat:
             "stop_at": iso(self.stop_at),
             "beat": iso(now or _now()),
             "last_activity": iso(self.last_activity),
+            "last_record": iso(self.last_record),
             "quiet_until": iso(self.quiet_until),
             "quiet_why": self.quiet_why,
             "state": self.state,
@@ -148,6 +156,13 @@ def quiet(seconds: float, why: str):
         return
     with hb.quiet(seconds, why):
         yield
+
+
+def current() -> dict | None:
+    """This process's heartbeat as it stands now (not as last written), or None if this
+    process is not a running watcher."""
+    hb = _current
+    return hb.payload() if hb is not None else None
 
 
 def _now() -> datetime:

@@ -6,8 +6,16 @@ Started by the Windows scheduled task "ASXBot Arena Warmup" at 07:30 Sydney, wee
 
 (scripts/schedule_watcher_hidden.ps1 points the task here). It does what arena_warmup.ps1
 does - run `asxbot arena watch --until auto` from the repo folder and append everything it
-prints to data/arena_warmup.log between the same start and finish lines - without a
-console window.
+prints to arena_warmup.log between the same start and finish lines - without a console
+window.
+
+The log is in the local logs folder (%LOCALAPPDATA%/asx-bot/logs), not on Google Drive. At
+08:14 on 24 Sep 2026 Drive silently cut off this launcher's long-open handle on
+data/arena_warmup.log, and the watcher's on data/logs/asxbot.log, while the watcher went on
+trading: nothing reached either log until it was restarted at 08:23. The watcher is told
+the same folder (ASXBOT_LOG_DIR) and where its printed output goes (ASXBOT_STDOUT_LOG), so
+its log_silent self-check can see this file stop growing. The log is rotated daily
+(arena_warmup.log.<date>, 30 kept); the evening routine copies it to data/logs/.
 
 Why: on 23 Sep 2026 the watcher ran in a visible console window, which was closed at
 13:32 (exit 0xC000013A, "console closed / Ctrl+C") and took the watcher with it, mid-poll
@@ -29,7 +37,20 @@ from pathlib import Path
 
 VENV = Path(r"C:\venvs\asx-bot\Scripts")
 REPO = Path(__file__).resolve().parents[1]
-LOG = REPO / "data" / "arena_warmup.log"
+
+
+def logs_dir() -> Path:
+    """asxbot.log.logs_dir(), worked out here because asxbot lives on G: (a test holds the
+    two to the same answer)."""
+    override = os.environ.get("ASXBOT_LOG_DIR")
+    if override:
+        return Path(override)
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "asx-bot" / "logs"
+
+
+LOG_DIR = logs_dir()
+LOG = LOG_DIR / "arena_warmup.log"
 FAILURES = Path(r"C:\venvs\asx-bot\task-failures.log")
 
 
@@ -53,7 +74,15 @@ def main() -> int:
                      "is not mounted, which usually means nobody is logged in.\n")  # fmt: skip
         return 1
     os.chdir(REPO)
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1",
+           "ASXBOT_LOG_DIR": str(LOG_DIR), "ASXBOT_STDOUT_LOG": str(LOG)}  # fmt: skip
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        from asxbot.log import rotate_daily
+
+        rotate_daily(LOG)
+    except OSError:
+        pass  # a log that could not be rotated is still a log; carry on appending
     with open(LOG, "a", encoding="utf-8", buffering=1) as log:
         log.write(f"\n=== warm-up starting {stamp()} (hidden) ===\n")
         try:
@@ -70,8 +99,8 @@ def main() -> int:
             log.write(f"=== warm-up finished {stamp()} (exit 1) ===\n")
             return 1
         for raw in proc.stdout:
-            # Keep draining even if a write fails (Drive can hold the file for a moment):
-            # a launcher that stopped reading would block the watcher on a full pipe.
+            # Keep draining even if a write fails: a launcher that stopped reading would
+            # block the watcher on a full pipe.
             write(log, raw.decode("utf-8", errors="replace").rstrip("\r\n"))
         code = proc.wait()
         write(log, f"=== warm-up finished {stamp()} (exit {code}) ===")

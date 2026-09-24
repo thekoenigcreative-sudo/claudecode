@@ -30,3 +30,16 @@ def config_file(tmp_path, base_config):
         return p
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def local_logs(tmp_path, monkeypatch) -> Path:
+    """Every test logs to its own folder, never to the real one in %LOCALAPPDATA%.
+
+    ASXBOT_LOG_DIR is what asxbot.log.logs_dir() and the scripts/ launchers both read, and
+    a launcher run as a subprocess inherits it.
+    """
+    d = tmp_path / "local_logs"
+    monkeypatch.setenv("ASXBOT_LOG_DIR", str(d))
+    monkeypatch.delenv("ASXBOT_STDOUT_LOG", raising=False)
+    return d

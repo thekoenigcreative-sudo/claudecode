@@ -29,7 +29,8 @@ uv pip install -e ".[norgate]"  # when the Norgate Data Updater is installed on 
 |---|---|
 | `config.yaml` | All settings. Strategy, baseline, cost and universe parameters were frozen on 2026-09-22. |
 | `.env` | Secrets and the live-trading confirmation. Gitignored. Template in `.env.example`. |
-| `data/` | Prices, announcements, events, logs. Gitignored. Copy by hand when moving PCs. |
+| `data/` | Prices, announcements, events. Gitignored. Copy by hand when moving PCs. |
+| `%LOCALAPPDATA%\asx-bot\logs` | The logs (`asxbot.log`, the launchers' logs, the watchdog's), rotated daily. On a local disk because Google Drive cuts off long-open files (LEARNINGS #19). The evening routine copies them to `data/logs/`, which is a copy, not the live log. |
 | `reports/` | Backtest reports (`phase1.md`). |
 | `src/asxbot/` | The package. |
 | `tests/` | pytest. Parser tests run against saved sample pages. |

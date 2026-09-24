@@ -20,8 +20,9 @@ pythonw, so it has no window. Each run is one check:
 
 One Telegram message when an outage is first seen, and one when the watcher is back.
 If a message cannot be sent it is tried again on the next run. The outage is kept in
-data/arena/watchdog_state.json; transitions and failures go to data/logs/watchdog.log,
-never to asxbot.log, whose silence is one of the things being measured.
+data/arena/watchdog_state.json; transitions and failures go to watchdog.log in the local
+logs folder (asxbot.log.logs_dir, off Google Drive), never to asxbot.log, whose silence is
+one of the things being measured.
 
 Plain code: it only reads the heartbeat and sends a message. It never starts, stops or
 restarts anything. The watcher is only ever started through its scheduled task.
@@ -219,17 +220,17 @@ def run_once(cfg, now: datetime, send, hb_reader=None, alive=pid_alive, sleep=ti
                 result = f"{v.problem}: alert sent"
             else:
                 result = f"{v.problem}: alert NOT sent, will retry"
-            _log(data_dir, f"{v.problem.upper()}: {v.detail} [{result}]")
+            _log(cfg.logs_dir, f"{v.problem.upper()}: {v.detail} [{result}]")
         else:
             result = f"{v.problem}: already reported at {outage['alerted_at']}"
     elif v.expected and outage:
         if send(up_message(v, outage, now, hb)):
-            _log(data_dir, f"BACK UP: pid {v.pid}; outage since {outage.get('since')} closed")
+            _log(cfg.logs_dir, f"BACK UP: pid {v.pid}; outage since {outage.get('since')} closed")
             outage = None
             result = "back up: message sent"
         else:
             result = "back up: message NOT sent, will retry"
-            _log(data_dir, "BACK UP, but the message could not be sent; will retry")
+            _log(cfg.logs_dir, "BACK UP, but the message could not be sent; will retry")
 
     state = {"last_check": now.isoformat(timespec="seconds"), "last_result": result,
              "outage": outage}  # fmt: skip
@@ -237,8 +238,8 @@ def run_once(cfg, now: datetime, send, hb_reader=None, alive=pid_alive, sleep=ti
     return result
 
 
-def _log(data_dir: Path, text: str) -> None:
-    p = data_dir / "logs" / LOG_FILE
+def _log(log_dir: Path, text: str) -> None:
+    p = Path(log_dir) / LOG_FILE
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(f"{datetime.now(SYD):%Y-%m-%d %H:%M:%S} {text}\n")
@@ -255,7 +256,7 @@ def main() -> int:
     try:
         run_once(cfg, datetime.now(SYD), notifier.send)
     except Exception as e:  # noqa: BLE001 - leave a trace; pythonw has nowhere to print
-        _log(Path(cfg.data_dir), f"the watchdog itself failed: {type(e).__name__}: {e}")
+        _log(cfg.logs_dir, f"the watchdog itself failed: {type(e).__name__}: {e}")
         return 1
     return 0
 

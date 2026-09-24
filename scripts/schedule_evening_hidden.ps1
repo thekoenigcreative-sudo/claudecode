@@ -5,7 +5,9 @@
 #         died exactly that way at 13:32 on 23 Sep 2026.
 # After:  C:\venvs\asx-bot\Scripts\pythonw.exe scripts\arena_evening.pyw - no window at all.
 #         Same steps (evening-due, then resolve, mark, report --agent --send), same repo
-#         folder, same log (data\arena_evening.log, plus data\logs\asxbot.log as always).
+#         folder, same log (arena_evening.log and asxbot.log - since 24 Sep 2026 in the local
+#         folder %LOCALAPPDATA%\asx-bot\logs, not on Google Drive; copied to data\logs after
+#         each evening run).
 #
 # Only the action changes. The triggers (19:30 and 20:30 Mon-Fri), the settings (45 min
 # limit, one instance, restart on failure, start when available, wake to run) and the

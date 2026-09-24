@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -9,6 +10,7 @@ from asxbot.announcements.model import classify_headline, to_frame
 from asxbot.announcements.parser import ParseError, parse_company, parse_today
 
 FIX = Path(__file__).parent / "fixtures"
+SYD = ZoneInfo("Australia/Sydney")
 
 
 def _read(name: str) -> str:
@@ -304,3 +306,98 @@ def test_an_oversized_reply_is_refused(tmp_path, monkeypatch):
     c, _ = _client(tmp_path, monkeypatch, [REAL_PDF] * 4)
     with pytest.raises(H.PdfFetchFailed, match="too large"):
         c.get_bytes("https://www.asx.com.au/announcement", tmp_path / "AAA_1.pdf")
+
+
+# -- the today page's three shapes (24 Sep 2026) ----------------------------
+# At 07:30:05 and 07:31:24 the poll logged ERROR "no announcements table with a Headline
+# column found": before the ASX posts anything the page has no table. That is zero, not a
+# fault. A page that is neither that nor the populated page must still fail loudly.
+def test_the_populated_page_of_24_sep_parses():
+    items = parse_today(_read("todayAnns_2026-09-24.html"))
+    assert len(items) == 40  # the fixture keeps the first 40 of the 751 rows fetched
+    first = items[0]
+    assert (first.code, first.ids_id, first.headline) == (
+        "RND", "03143646", "Annual Report to shareholders"
+    )  # fmt: skip
+    assert first.released_at == datetime(2026, 9, 24, 19, 24)
+    assert first.pages == 61 and first.size == "2.7MB"
+    assert len({a.ids_id for a in items}) == 40
+
+
+def test_the_empty_page_before_anything_is_posted_is_zero_not_an_error():
+    # Built by hand from the populated page (no real empty page was kept); see its header.
+    assert parse_today(_read("todayAnns_empty.html")) == []
+
+
+def test_a_changed_layout_with_announcement_links_but_no_table_is_still_an_error():
+    with pytest.raises(ParseError, match="Headline column"):
+        parse_today(_read("todayAnns_layout_changed.html"))
+
+
+def test_a_page_that_is_not_the_asx_today_page_is_still_an_error():
+    block = (
+        "<html><head><title>Request unsuccessful. Incapsula incident ID: 0-1234</title></head>"
+        "<body>Request unsuccessful.</body></html>"
+    )
+    with pytest.raises(ParseError, match="Incapsula"):
+        parse_today(block)
+    with pytest.raises(ParseError):
+        parse_today("<html><body>nothing here</body></html>")
+
+
+class _PageClient:
+    def __init__(self, html):
+        self.html = html
+
+    def get(self, url, use_cache=True):
+        return self.html
+
+
+def _poller(tmp_path, html):
+    from asxbot.announcements.live import LivePoller
+
+    al = Alerts(tmp_path)
+    return LivePoller(tmp_path, _PageClient(html), al, {"RND"}, fetch_pdfs=False), al
+
+
+def test_the_poller_counts_an_empty_page_as_zero_at_info_and_keeps_one_copy(tmp_path):
+    import logging
+
+    records = []
+    catch = logging.Handler()
+    catch.emit = records.append
+    root = logging.getLogger("asxbot")  # does not propagate once logging is set up
+    root.addHandler(catch)
+    level = root.level
+    root.setLevel(logging.INFO)
+    try:
+        poller, al = _poller(tmp_path, _read("todayAnns_empty.html"))
+        now = datetime(2026, 9, 25, 7, 30, 5, tzinfo=SYD)
+        assert poller.poll_once(now) == []
+        assert poller.poll_once(now.replace(minute=31)) == []
+    finally:
+        root.removeHandler(catch)
+        root.setLevel(level)
+    assert not [r for r in records if r.levelno >= logging.WARNING]
+    assert any("posted no announcements yet" in r.getMessage() for r in records)
+    assert al.active() == []
+    kept = list((tmp_path / "announcements" / "pages").iterdir())
+    assert [p.name for p in kept] == ["todayAnns_empty_2026-09-25.html"]  # once a day
+
+
+def test_the_poller_still_fails_loudly_on_a_page_it_cannot_read(tmp_path):
+    poller, al = _poller(tmp_path, _read("todayAnns_layout_changed.html"))
+    now = datetime(2026, 9, 25, 9, 0, tzinfo=SYD)
+    for minute in range(7):
+        with pytest.raises(ParseError):
+            poller.poll_once(now.replace(minute=minute))
+    assert [k for k, _ in al.active()] == ["collector_parse_error"]
+    kept = sorted(p.name for p in (tmp_path / "announcements" / "pages").iterdir())
+    assert len(kept) == 5 and kept[0] == "todayAnns_unparsed_2026-09-25_090000.html"
+
+
+def test_the_poller_reads_the_populated_page(tmp_path):
+    poller, al = _poller(tmp_path, _read("todayAnns_2026-09-24.html"))
+    new = poller.poll_once(datetime(2026, 9, 24, 19, 35, tzinfo=SYD))
+    assert len(new) == 40 and al.active() == []
+    assert not (tmp_path / "announcements" / "pages").exists()

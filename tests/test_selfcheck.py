@@ -229,7 +229,7 @@ def test_a_pre_open_order_is_timed_from_the_open_not_from_its_decision(cfg):
 
 # -- 6. an ERROR in the log ------------------------------------------------
 def _log_line(cfg, when: datetime, level: str, msg: str, logger: str = "asxbot.arena.watch"):
-    p = cfg.data_dir / "logs" / "asxbot.log"
+    p = cfg.logs_dir / "asxbot.log"
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(f"{when:%Y-%m-%d %H:%M:%S},123 {level} {logger}: {msg}\n")
@@ -397,3 +397,125 @@ def test_a_new_error_inside_the_same_hour_is_still_reported(cfg, monkeypatch):
     # and it is not repeated either
     S.report(arena, None, NOW + timedelta(minutes=12))
     assert len(arena.sent) == 2
+
+
+# -- 8. a log that has stopped being written (24 Sep 2026, 08:14) ----------
+# Google Drive cut off the watcher's long-open append handles. The watcher went on trading
+# and logging; asxbot.log and the launcher's arena_warmup.log both stopped at 08:14:12, and
+# the heartbeat (rewritten whole) stayed fresh, so nothing noticed until 08:23.
+T0814 = datetime(2026, 9, 24, 8, 14, 12, tzinfo=SYD)
+
+
+def _beat(record: datetime | None, state: str = "running") -> dict:
+    return {
+        "pid": 130492, "started": datetime(2026, 9, 24, 7, 30, 1, tzinfo=SYD).isoformat(),
+        "beat": (record or T0814).isoformat(), "last_activity": (record or T0814).isoformat(),
+        "last_record": record.isoformat() if record else None, "state": state,
+    }  # fmt: skip
+
+
+def _stamped(path, when: datetime, msg: str = "asxbot.data.yf: yfinance batch 1-150 of 381"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(f"{when:%Y-%m-%d %H:%M:%S},835 INFO {msg}\n")
+
+
+def test_the_08_14_failure_is_caught_once_the_log_is_5_minutes_behind(cfg, tmp_path):
+    log = cfg.logs_dir / "asxbot.log"
+    _stamped(log, T0814)
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write("Traceback (most recent call last):\n  a line with no stamp\n")
+    out = tmp_path / "arena_warmup.log"
+    _stamped(out, T0814)
+
+    # Still logging a few minutes later: not yet 5 minutes behind.
+    near = T0814 + timedelta(minutes=4, seconds=59)
+    assert S.check_log_growing(cfg, _beat(near), str(out)).ok
+
+    c = S.check_log_growing(cfg, _beat(T0814 + timedelta(minutes=5)), str(out))
+    assert not c.ok and c.count == 2
+    assert "asxbot.log (last line 08:14:12)" in c.detail
+    assert "arena_warmup.log (last line 08:14:12)" in c.detail
+    assert "logged at 08:19:12" in c.detail
+
+
+def test_a_log_that_keeps_up_is_fine_and_either_file_alone_is_caught(cfg, tmp_path):
+    later = T0814 + timedelta(minutes=9)
+    _stamped(cfg.logs_dir / "asxbot.log", later)
+    out = tmp_path / "arena_warmup.log"
+    _stamped(out, later - timedelta(seconds=2))
+    assert S.check_log_growing(cfg, _beat(later), str(out)).ok
+
+    _stamped(out, T0814)  # an older line appended last: the file's last line is what counts
+    c = S.check_log_growing(cfg, _beat(later), str(out))
+    assert not c.ok and c.items == [f"{out} (last line 08:14:12)"]
+
+
+def test_nothing_to_hold_the_log_to_is_not_a_failure(cfg):
+    assert S.check_log_growing(cfg, _beat(None)).ok  # a heartbeat without last_record
+    stopped = _beat(T0814 + timedelta(hours=1), state="stopped")
+    assert S.check_log_growing(cfg, stopped).ok  # the watcher has stopped
+    assert S.check_log_growing(cfg, {}).ok  # no heartbeat at all
+    # A log with no line yet is measured from the watcher's start (07:30:01).
+    assert S.check_log_growing(cfg, _beat(datetime(2026, 9, 24, 7, 33, tzinfo=SYD))).ok
+    c = S.check_log_growing(cfg, _beat(datetime(2026, 9, 24, 7, 36, tzinfo=SYD)))
+    assert not c.ok and "no timestamped line at all" in c.detail
+
+
+def test_the_check_reads_the_heartbeat_file_and_the_launcher_log_it_is_told_of(
+    cfg, tmp_path, monkeypatch
+):
+    from asxbot.arena import heartbeat as H
+    from asxbot.io import write_text_atomic
+
+    beat = _beat(T0814 + timedelta(minutes=6))
+    write_text_atomic(json.dumps(beat), H.heartbeat_path(cfg.data_dir))
+    _stamped(cfg.logs_dir / "asxbot.log", T0814 + timedelta(minutes=6))
+    out = tmp_path / "arena_warmup.log"
+    _stamped(out, T0814)
+    assert S.check_log_growing(cfg).ok  # not told of the launcher's log: only asxbot.log
+    monkeypatch.setenv("ASXBOT_STDOUT_LOG", str(out))
+    c = S.check_log_growing(cfg)
+    assert not c.ok and "arena_warmup.log" in c.detail
+    checks = S.run_checks(_FakeArena(cfg, _acct_with_pending(NOW)), None, NOW)
+    assert [k.ok for k in checks if k.key == "log_silent"] == [False]  # it runs every cycle
+
+
+def test_a_silent_log_is_shouted_to_telegram_once(cfg, monkeypatch):
+    from asxbot.alerts import Alerts
+
+    _stamped(cfg.logs_dir / "asxbot.log", T0814)
+    beat = {"at": T0814 + timedelta(minutes=6)}
+    monkeypatch.setattr(
+        S, "run_checks", lambda a, p, n: [S.check_log_growing(cfg, _beat(beat["at"]), "")]
+    )
+    arena = _Alerting(cfg, _acct_with_pending(NOW))
+    for minute in range(6, 12):  # every watcher cycle, still silent
+        beat["at"] = T0814 + timedelta(minutes=minute)
+        S.report(arena, None, beat["at"])
+    assert len(arena.sent) == 1
+    assert "SELF-CHECK: log_silent" in arena.sent[0] and "08:14:12" in arena.sent[0]
+    assert Alerts(cfg.data_dir).is_active("log_silent")
+
+    _stamped(cfg.logs_dir / "asxbot.log", T0814 + timedelta(minutes=12))  # written again
+    beat["at"] = T0814 + timedelta(minutes=12)
+    assert S.report(arena, None, beat["at"]) == []
+    assert not Alerts(cfg.data_dir).is_active("log_silent") and len(arena.sent) == 1
+
+
+def test_the_heartbeat_records_the_last_log_line_apart_from_waits(cfg):
+    import logging
+
+    from asxbot.arena import heartbeat as H
+
+    hb = H.Heartbeat(cfg.data_dir, beat_s=3600)
+    assert hb.payload()["last_record"] is None
+    line = logging.LogRecord("asxbot.x", logging.INFO, __file__, 1, "hi", None, None)
+    line.created -= 60  # a minute ago
+    hb._handler.emit(line)
+    first = hb.last_record
+    assert first is not None and hb.payload()["last_record"] == first.isoformat(timespec="seconds")
+    with hb.quiet(1, "a model call"):
+        pass
+    assert hb.last_record == first  # the end of a wait is activity, not a line in the log
+    assert hb.last_activity > first

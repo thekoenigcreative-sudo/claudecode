@@ -83,9 +83,40 @@ def _find_table(soup: BeautifulSoup) -> Tag:
     raise ParseError("no announcements table with a Headline column found")
 
 
+def _title(soup: BeautifulSoup) -> str:
+    return " ".join(soup.title.get_text(" ", strip=True).split()) if soup.title else ""
+
+
+def is_empty_today_page(soup: BeautifulSoup) -> bool:
+    """todayAnns.do before the ASX has posted anything that day.
+
+    At 07:30:05 and 07:31:24 on 24 Sep 2026 the page had no announcements table at all, and
+    the poll logged it as an ERROR. It is the ASX's own page (its title) with not one link
+    to an announcement. A page with announcement links but no table we can read is a changed
+    layout; a page with another title is something else (a block page, an error page). Both
+    stay errors. Whether the real empty page has some other table is not known, so a table
+    is not held against it: the links are what would be lost.
+
+    No copy of the real empty page was saved on 24 Sep; tests/fixtures/todayAnns_empty.html
+    is the populated page with its table cut out. The poller now keeps the first empty page
+    of each day (data/announcements/pages/), so the real one can replace it.
+    """
+    if not re.match(r"today.s announcements\b", _title(soup), re.I):
+        return False
+    return not any(_ANY_LINK.search(a.get("href", "")) for a in soup.find_all("a"))
+
+
 def parse_today(html: str) -> list[Announcement]:
     soup = BeautifulSoup(html, "lxml")
-    table = _find_table(soup)
+    try:
+        table = _find_table(soup)
+    except ParseError:
+        if is_empty_today_page(soup):
+            return []
+        raise ParseError(
+            f"no announcements table with a Headline column found (page title: {_title(soup)!r},"
+            f" {len(html):,} chars)"
+        ) from None
     out: list[Announcement] = []
     for tr in table.find_all("tr"):
         tds = tr.find_all("td")

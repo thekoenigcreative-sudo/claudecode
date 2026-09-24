@@ -155,7 +155,7 @@ def test_an_outage_is_reported_once_and_its_recovery_once(cfg, monkeypatch):
     assert "pid 5151" in phone.sent[1] and "13:35:00" in phone.sent[1]
     state = json.loads((cfg.data_dir / "arena" / W.STATE_FILE).read_text(encoding="utf-8"))
     assert state["outage"] is None and state["last_result"] == "ok"
-    log = (cfg.data_dir / "logs" / W.LOG_FILE).read_text(encoding="utf-8")
+    log = (cfg.logs_dir / W.LOG_FILE).read_text(encoding="utf-8")
     assert "DOWN:" in log and "BACK UP:" in log
 
 

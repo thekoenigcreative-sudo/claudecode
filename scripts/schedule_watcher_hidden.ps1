@@ -5,7 +5,8 @@
 #         (Last Result 0xC000013A, console closed / Ctrl+C).
 # After:  C:\venvs\asx-bot\Scripts\pythonw.exe scripts\arena_warmup.pyw - no window at all.
 #         Same command (asxbot arena watch --until auto), same repo folder, same log
-#         (data\arena_warmup.log, plus data\logs\asxbot.log as always).
+#         (arena_warmup.log and asxbot.log - since 24 Sep 2026 in the local folder
+#         %LOCALAPPDATA%\asx-bot\logs, not on Google Drive; copied to data\logs each evening).
 #
 # Only the action changes. The triggers (07:30 Mon-Fri), the settings (13 h limit, one
 # instance, start when available) and the account it runs as are kept exactly as they are.

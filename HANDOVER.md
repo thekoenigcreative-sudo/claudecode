@@ -159,6 +159,14 @@ it unless a reason to hold is written.
 that exists only inside his session, so signing out removes the repo from the machine's
 view entirely. Locking the screen is fine. Sleep and hibernate are already disabled.
 
+**The logs are not on G: (24 Sep).** They are in `%LOCALAPPDATA%\asx-bot\logs`:
+`asxbot.log` (rotated at midnight), `arena_warmup.log`, `arena_evening.log` (both rotated
+daily), `arena_filter_cost.log` and `watchdog.log`. Google Drive twice cut off the
+watcher's long-open log files on 24 Sep (08:14, and 12:14 to 19:25) without a word. After
+each evening run the files are copied to `data/logs/` whole: read that copy on the other PC,
+the local folder on this one. The `log_silent` self-check fires if the watcher is logging
+but a log file is not growing.
+
 ## The terms gate (23 Sep — needs Rick's decision, not the code's)
 
 asx.com.au does not serve an announcement PDF at its link. It serves an "Access to this
@@ -273,7 +281,9 @@ when one fails (CRITICAL log line, `arena_selfcheck` event, alerts flag, one mes
 hour per fault, and a message when it clears): a saved "PDF" that is not a PDF, a PDF fetch
 failure in the last hour, one screen test rejecting more than 80% of the day, an agent call
 whose model or effort level is not what config asks for, an order pending past its resolve
-window plus an hour, and any ERROR logged in the last hour. `asxbot arena selfcheck` runs
+window plus an hour, and any ERROR logged in the last hour. Since then: an ASX 200 list
+that is short or stale, a console `pythonw.exe`, and (24 Sep) `log_silent`, a log file
+that has stopped growing while the watcher is still logging. `asxbot arena selfcheck` runs
 them by hand. On the first run it immediately surfaced the re-look crash from 10:22.
 
 `arena/filtercost.py` measures what the screen threw away: every rejection, grouped by the

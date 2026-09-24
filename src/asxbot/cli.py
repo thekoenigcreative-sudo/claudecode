@@ -12,7 +12,7 @@ from asxbot.log import setup_logging
 
 def cmd_check(args: argparse.Namespace) -> int:
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     log.info("asxbot %s  broker=%s  provider=%s", __version__, cfg.broker, cfg.get("data.provider"))
     log.info(
         "capital=%s max_positions=%s position_size=%.2f",
@@ -28,7 +28,7 @@ def cmd_universe(args: argparse.Namespace) -> int:
     from asxbot.data.universe import build_universes
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
     for u in (a, b):
         log.info("%s: %d codes as of %s  source: %s", u.name, len(u.codes), u.as_of, u.source)
@@ -42,7 +42,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     from asxbot.data.universe import build_universes
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     store = get_store(cfg)
     start = cfg.get("data.price_history_start")
     log.info("provider=%s  label=%s", store.provider.name, store.provider.label)
@@ -71,7 +71,7 @@ def cmd_data_status(args: argparse.Namespace) -> int:
     from asxbot.data.factory import get_store
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     store = get_store(cfg)
     ts = store.cached_tickers()
     log.info("%s cache: %d tickers in %s", store.provider.name, len(ts), store.dir)
@@ -97,7 +97,7 @@ def cmd_ann_history(args: argparse.Namespace) -> int:
     from asxbot.data.universe import build_universes, fetch_directory
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     client, alerts = _collector(cfg)
     a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
     codes = {"asx300": a.codes, "small": b.codes, "all": a.codes + b.codes}[args.universe]
@@ -125,7 +125,7 @@ def cmd_ann_poll(args: argparse.Namespace) -> int:
     from asxbot.data.universe import build_universes
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     client, alerts = _collector(cfg)
     a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
     poller = LivePoller(
@@ -152,7 +152,7 @@ def cmd_ann_status(args: argparse.Namespace) -> int:
     from asxbot.announcements.history import status
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     log.info("history: %s", status(cfg.data_dir))
     for key, msg in Alerts(cfg.data_dir).active():
         log.warning("ACTIVE ALERT %s: %s", key, msg.replace("\n", " | "))
@@ -163,7 +163,7 @@ def cmd_alerts_clear(args: argparse.Namespace) -> int:
     from asxbot.alerts import Alerts
 
     cfg = load_config()
-    setup_logging(cfg.data_dir)
+    setup_logging(cfg.logs_dir)
     Alerts(cfg.data_dir).clear(args.key)
     return 0
 
@@ -173,7 +173,7 @@ def cmd_asx200(args: argparse.Namespace) -> int:
     from asxbot.data.universe import asx200_status, refresh_asx200
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     ua = cfg.get("collector.user_agent")
     if args.refresh:
         try:
@@ -197,7 +197,7 @@ def cmd_shorts(args: argparse.Namespace) -> int:
     from asxbot.backtest.shorts import run_shorts
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     log.info("done: %s", run_shorts(cfg))
     return 0
 
@@ -206,7 +206,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     from asxbot.backtest.run import run_phase1
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     out = run_phase1(
         cfg, universes=args.universe or None, in_sample_only=args.in_sample_only
     )
@@ -303,7 +303,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     from asxbot.announcements.live import LivePoller
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     _alert_banner(cfg, log)
     client, alerts = _collector(cfg)
     sc = _scanner(cfg)
@@ -348,7 +348,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_proposals(args: argparse.Namespace) -> int:
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     _alert_banner(cfg, log)
     sc = _scanner(cfg)
     for p in sc.list(None if args.all else "pending"):
@@ -365,7 +365,7 @@ def cmd_place_order(args: argparse.Namespace) -> int:
     from asxbot.broker.orders import Limits, OrderRefused, place_order
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     _alert_banner(cfg, log)
     broker = _broker(cfg)
     limits = Limits.from_config(cfg, _universe_set(cfg))
@@ -387,7 +387,7 @@ def cmd_place_order(args: argparse.Namespace) -> int:
 
 def cmd_positions(args: argparse.Namespace) -> int:
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     _alert_banner(cfg, log)
     broker = _broker(cfg)
     print(f"broker={broker.mode} cash={broker.cash():.2f}")
@@ -404,7 +404,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     from asxbot.log import EventLog
 
     cfg = load_config()
-    setup_logging(cfg.data_dir)
+    setup_logging(cfg.logs_dir)
     mm = reconcile(_broker(cfg), EventLog(cfg.data_dir), Alerts(cfg.data_dir))
     for m in mm:
         print(f"MISMATCH {m.ticker}: broker {m.broker_qty} vs log {m.log_qty}")
@@ -419,7 +419,7 @@ def cmd_daily_report(args: argparse.Namespace) -> int:
     from asxbot.log import EventLog
 
     cfg = load_config()
-    setup_logging(cfg.data_dir)
+    setup_logging(cfg.logs_dir)
     ev = EventLog(cfg.data_dir)
     broker = _broker(cfg)
     alerts = Alerts(cfg.data_dir)
@@ -461,7 +461,7 @@ def cmd_dryrun(args: argparse.Namespace) -> int:
     from asxbot.log import EventLog
 
     cfg = load_config()
-    log = setup_logging(cfg.data_dir)
+    log = setup_logging(cfg.logs_dir)
     if cfg.broker != "sim":
         print("dryrun only runs with broker: sim")
         return 2

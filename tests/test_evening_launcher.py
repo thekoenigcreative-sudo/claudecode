@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from asxbot.arena import capital as C
+from asxbot.log import logs_dir
 
 LAUNCHER = Path(__file__).resolve().parents[1] / "scripts" / "arena_evening.pyw"
 HEADER = re.compile(r"^=== evening report \d{4}-\d\d-\d\d \d\d:\d\d ===$")
@@ -85,8 +86,13 @@ def load(root: Path):
     return mod
 
 
+def evening_log(root: Path) -> Path:
+    """Where the launcher logs: the local logs folder (conftest points it at the test's)."""
+    return root.parent / "local_logs" / "arena_evening.log"
+
+
 def log_lines(root: Path) -> list[str]:
-    return (root / "data" / "arena_evening.log").read_text(encoding="utf-8").splitlines()
+    return evening_log(root).read_text(encoding="utf-8").splitlines()
 
 
 def calls(root: Path) -> list[str]:
@@ -124,6 +130,10 @@ def test_the_routine_runs_every_step_in_order_and_logs_as_the_powershell_did(rep
     # The top-up's check reads this log and sees a finished evening.
     text = "\n".join(lines)
     assert C.evening_finished(text, date.today(), time(0, 0)) is None
+    # Nothing on Drive is held open: the log is local, and copied to data/logs/ whole.
+    mirrored = repo / "data" / "logs" / "arena_evening.log"
+    assert mirrored.read_bytes() == evening_log(repo).read_bytes()
+    assert not (repo / "data" / "arena_evening.log").exists()
 
 
 def test_a_failed_step_does_not_stop_the_next_and_the_task_still_gets_0(repo, monkeypatch):
@@ -141,7 +151,7 @@ def test_no_repo_writes_to_the_local_failures_log_and_exits_1(repo):
     assert load(repo).main() == 1
     failures = (repo.parent / "task-failures.log").read_text(encoding="utf-8")
     assert "ABORTED (evening)" in failures
-    assert not (repo / "data" / "arena_evening.log").exists()
+    assert not evening_log(repo).exists()
 
 
 def test_asxbot_missing_is_logged_and_exits_1(repo):
@@ -166,7 +176,7 @@ def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
         [sys.executable, str(repo / "scripts" / "arena_evening.pyw")], env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )  # fmt: skip
-    log = repo / "data" / "arena_evening.log"
+    log = evening_log(repo)
     try:
         deadline = clock.monotonic() + 60
         while clock.monotonic() < deadline:
@@ -192,3 +202,24 @@ def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
     assert lines[-2:] == ["--- asxbot arena report --agent --send ---", "the report, first line"]
     why = C.evening_finished("\n".join(lines), date.today(), time(0, 0))
     assert why is not None and "not returned" in why
+
+
+def test_the_launchers_log_where_asxbot_logs_and_not_on_drive(monkeypatch, tmp_path):
+    """The launchers work the folder out for themselves (asxbot lives on G:); it must be the
+    same folder asxbot.log uses, and never inside the repo."""
+    root = Path(__file__).resolve().parents[1]
+    for name in ("arena_evening.pyw", "arena_warmup.pyw"):
+        for env in (str(tmp_path / "elsewhere"), None):
+            if env:
+                monkeypatch.setenv("ASXBOT_LOG_DIR", env)
+            else:
+                monkeypatch.delenv("ASXBOT_LOG_DIR", raising=False)
+                monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+            path = str(root / "scripts" / name)
+            loader = importlib.machinery.SourceFileLoader(f"launcher_{name[:-4]}", path)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            assert mod.LOG_DIR == logs_dir()
+            assert mod.LOG.parent == logs_dir() and root not in mod.LOG.parents
+    assert logs_dir() == tmp_path / "AppData" / "Local" / "asx-bot" / "logs"

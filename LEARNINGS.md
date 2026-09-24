@@ -454,6 +454,39 @@ open is not modelled (every auction is stamped 09:59, TRACKER #33).
 
 ---
 
+## 19. The log that Drive let go
+
+At 08:14 on 24 Sep the watcher's log stopped. The watcher did not: it went on polling,
+screening and calling the agents. Google Drive had cut off its long-open append handle on
+`data/logs/asxbot.log`, and the launcher's on `data/arena_warmup.log`, silently. Files that
+are rewritten whole (the heartbeat) or opened, appended and closed each time (the event log)
+kept updating, so the watchdog saw a healthy watcher. It was noticed and restarted at 08:23.
+
+Then it happened again, and nobody noticed. The restarted watcher's two logs stopped at
+12:14:04 and stayed silent until it stopped at 19:25: seven hours with no log, found only
+while moving the logs that evening. The event log shows it kept working (announcements
+recorded to 19:23). For those seven hours the `errors_logged` self-check was reading a file
+that no longer received anything, so it could not have seen an error.
+
+- **Nothing is held open on Drive.** The logs live in `%LOCALAPPDATA%\asx-bot\logs`
+  (`asxbot.log.logs_dir`), with the same daily rotation. The evening routine copies them to
+  `data/logs/` whole, for the record and the other PC. Anything on Drive is written whole
+  or opened and closed per write.
+- **A check that reads a file is only as good as the file.** `log_silent` now holds each
+  log's last line to the last line the watcher handed it (`last_record` in the heartbeat):
+  five minutes apart is a log that is not being written.
+- **A healthy heartbeat said nothing about the log.** The heartbeat's "last activity" was
+  the time the watcher *logged*, not the time the file *grew*. Measure the artefact.
+
+The same morning's other ERROR was not a fault. At 07:30:05 and 07:31:24 the poll logged
+"no announcements table with a Headline column found": before the ASX posts anything the
+page has no table. An empty page is now zero, at INFO. A page that is neither empty nor
+readable is still an ERROR. The empty-page test fixture was built by hand, because nobody
+kept the page. The poller now keeps the first empty page of each day, and every page it
+cannot read (5 a day), in `data/announcements/pages/`.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not
