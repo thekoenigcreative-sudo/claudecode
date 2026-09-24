@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BOTCTL_VERSION = "2026-09-24.1"
+BOTCTL_VERSION = "2026-09-24.2"
 
 CHANGES_DIR = Path(os.environ.get("CC_CHANGES_DIR") or r"C:\Users\Richa\.cc-jobs\changes")
 OPENCLAW_JSON = Path(
@@ -400,8 +400,8 @@ def interpret(ad: Adapter, words: str, answer: tuple[str, str] | None = None) ->
     prompt = INTERPRET.format(name=ad.name, about=ad.about, abilities=ad.abilities,
                               limits=limits, words=words, answer=extra, question_rule=qrule)
     cmd = [claude_bin(), "-p", prompt, "--model", "claude-sonnet-5", "--tools", "",
-           "--safe-mode", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json",
-           "--json-schema", json.dumps(SCHEMA, separators=(",", ":"))]
+           "--safe-mode", "--strict-mcp-config", "--no-session-persistence",
+           "--output-format", "json", "--json-schema", json.dumps(SCHEMA, separators=(",", ":"))]
     rc, out, err = RUN(cmd, 180)
     try:
         data = json.loads(out)
@@ -661,8 +661,9 @@ def abort_turn(t: Turn) -> None:
     key = re.sub(r"[^A-Za-z0-9:._-]", "", t.key)
     if len(key) < 8:
         return
+    pat = r'--session-key\s+"?' + re.escape(key) + r'"?(\s|$)'
     ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'node.exe','cmd.exe' "
-          f"-and $_.CommandLine -like '*{key}*' }} | ForEach-Object {{ Stop-Process -Id "
+          f"-and $_.CommandLine -match '{pat}' }} | ForEach-Object {{ Stop-Process -Id "
           "$_.ProcessId -Force -ErrorAction SilentlyContinue }")
     RUN(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], 60)
 
@@ -717,7 +718,8 @@ class Conveyor:
                            if stopped else None)
                 elif len(self.pending) >= q["cap"]:
                     if q["drop"] == "new":
-                        return "I'm still on the last one and the queue is full, so I've dropped that message."
+                        return ("I'm still on the last one and the queue is full, so I've "
+                                "dropped that message.")
                     old = self.pending.pop(0)[1]
                     if q["drop"] == "summarize":
                         self.summaries.append(old[:120])
@@ -935,7 +937,8 @@ class BotCtl:
                 set_status(rec, "cancelled", "Rick tapped Cancel before it started")
                 self.say(f"Cancelled {short(rid)} before it started. Nothing will change.")
             else:
-                self.say(f"{short(rid)} is already {STATUS_WORDS.get(rec['status'], rec['status'])}.")
+                word = STATUS_WORDS.get(rec["status"], rec["status"])
+                self.say(f"{short(rid)} is already {word}.")
             return True
         if act == "b":
             self._build_tapped(rec)
@@ -1038,6 +1041,13 @@ class BotCtl:
             # Not a change after all: hand it back to the bot as ordinary chat.
             if rec is None and self._handoff:
                 self._handoff(words)
+            return
+        if answer and not res.get("is_change"):
+            if rec:
+                set_status(rec, "cancelled", "not a change after the answer")
+            hint = f" {res['runtime_hint']}" if res.get("runtime_hint") else ""
+            self.say("Thanks. That doesn't need a change to how I work, so I haven't queued "
+                     f"anything.{hint}")
             return
         rule = off_limits(self.ad.bot, words, res.get("summary", "")) or (
             str(res["off_limits"]) if res.get("off_limits") else None)
@@ -1195,7 +1205,9 @@ class BotCtl:
         running = TURNS.running()
         if not running or not self.conveyor:
             if self.conveyor:
-                self.conveyor.submit(arg)
+                line = self.conveyor.submit(arg)
+                if line:
+                    self.say(line)
             else:
                 self.say("Nothing is running to steer; just send it as a message.")
             return
@@ -1323,8 +1335,9 @@ class BotCtl:
             if len(self.ad.agents) > 1:
                 names = ", ".join(a.target for a in self.ad.agents)
                 if len(toks) == 1:
-                    self.say(f"{self.ad.name} has {len(self.ad.agents)} parts with their own model ({names}). Say "
-                             f"which: e.g. {cmdname} {self.ad.agents[-1].target} {toks[0]}")
+                    self.say(f"{self.ad.name} has {len(self.ad.agents)} parts with their own "
+                             f"model ({names}). Say which: e.g. {cmdname} "
+                             f"{self.ad.agents[-1].target} {toks[0]}")
                 else:
                     self.say(f"I don't know '{toks[0]}'. Say one of: {names}.")
                 return
@@ -1333,10 +1346,14 @@ class BotCtl:
         else:
             value_word = " ".join(toks[1:])
         if not value_word:
-            self.say("\n".join(l for l in self.model_lines(cfg) if l.startswith(agent.target))
+            self.say("\n".join(x for x in self.model_lines(cfg) if x.startswith(agent.target))
                      or "\n".join(self.model_lines(cfg)))
             return
-        old_m, old_t = effective(cfg, agent.agent_id)
+        try:
+            old_m, old_t = effective(cfg, agent.agent_id)
+        except KeyError:
+            self.say(f"{self._who(agent)} isn't set up on this PC, so there's nothing to change.")
+            return
         old = old_m if fld == "model" else old_t
         vw = value_word.strip().lower()
         if fld == "model":
@@ -1421,8 +1438,9 @@ class BotCtl:
         self._fresh("reset", arg)
 
     def _fresh(self, reason: str, arg: str) -> None:
+        old_keys = self.ad.session_keys() if self.ad.session_keys else []
         cleared = self.ad.new_session(reason) if self.ad.new_session else ""
-        for key in (self.ad.session_keys() if self.ad.session_keys else []):
+        for key in old_keys:
             agent = key.split(":")[1] if key.startswith("agent:") else ""
             params = {"key": key, "reason": reason}
             if agent:
