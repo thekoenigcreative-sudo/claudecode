@@ -31,6 +31,22 @@ Each tactic is ranked on three things: how strong the evidence is, how much the 
 6. **Crypto momentum — Weekly.** Spot, so it can go live on an ordinary exchange.
 7–10. **The fast crypto tactics with the weakest evidence,** only if still wanted: intraday breakouts, crash bounces, crowded trades, range trading.
 
+**24 Sep 2026 (Rick's brief): two Daily tests from 25 Sep.** The arena aims for profit
+every day, and the ladder stands: Daily is tested over 10 ASX trading days and only a failed
+test steps down to Weekly. Version 1 of the announcements tactic barely traded in two days,
+which is not a test, so it is retired and two playbooks start their 10-day Daily test on
+25 Sep, side by side (an exception to "one at a time", by Rick's decision):
+- **Announcements v2 — trade the reaction.** The agent still gets a pre-open look, then
+  decides on each stock with news once the market has traded it for 10-30 minutes: "over the
+  rest of today, is the move bigger than about 0.4% after costs, and where is the stop?"
+  Intraday only; $5,000 positions; a liquidity rule that scales with our order size.
+- **The day trader.** Code scans the liquid market every minute for four setups (gap-and-go,
+  opening-range breakout, VWAP reclaim, halt resumption); the agent confirms or rejects
+  each; code sizes (0.5% risk), manages (breakeven, half off, trailing stop) and is flat by
+  the close.
+Both run on Yahoo's delayed prices: a rehearsal until IBKR's live data is switched on, which
+is one line in config.yaml. Rules: config.yaml, frozen 2026-09-24 before they ran.
+
 ## Each tactic's cycle
 build (one or two evenings) → shake-down (1–2 days) → test (Daily: 10 ASX trading days or 14 crypto days; Weekly: 4 weeks; Monthly: 3 months) → checkpoint → next tactic.
 - A tactic that passes keeps running on autopilot.

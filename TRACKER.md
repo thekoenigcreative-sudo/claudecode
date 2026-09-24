@@ -4,7 +4,7 @@ Living plan. Reviewed and updated by Claude every time a Claude Code output come
 before the next prompt is handed over. Every line here is either verified against a file,
 a log or a command output, or labelled as unverified.
 
-**Last reviewed:** 2026-09-24 19:50 AEST (Claude Code, headless: logs off Drive, log_silent check, empty announcements page)
+**Last reviewed:** 2026-09-24 ~21:30 AEST (Claude Code, headless: announcements v2 and the day-trader playbook, live from 25 Sep 07:30)
 **Visual version:** https://claude.ai/artifact/Pg5TsxMqKkbbwz2aFF3UqZ — republished to the
 same link whenever this file changes.
 
@@ -15,12 +15,13 @@ same link whenever this file changes.
 | Area | State | Verified how |
 |---|---|---|
 | Announcement collector | Working. Real PDFs since 09:12 | `%PDF` magic on disk |
-| Screen | Working; `max_tick_pct` 3.0, turnover floor $250k | config.yaml |
-| Reader / decider | Sonnet 5 medium / Opus 5.5 high (from the evening of 23 Sep; Sonnet 5 low / Opus 5 high before), confirmed per call | `agent_mismatch` self-check |
+| Playbooks live | **From 25 Sep 07:30: announcements v2 and the day trader**, one watcher. v1 retired (disabled, values kept). Day 1 of 10 for both is 25 Sep | config.yaml `asx_announcements_v2`, `asx_daytrader` (frozen 2026-09-24, commits 666c17e, 18ca09f); dry check 24 Sep evening |
+| Screen | v2: halt and tick (3%) kept; turnover is size-aware (our order < 5% of median daily turnover, so $100k at $5,000); no-quote tickers written to `data/arena/no_quote/`. v1's $250k floor retired with v1 | config.yaml, `arena/reaction_v2.py` |
+| Reader / decider | Sonnet 5 medium / Opus 5.5 high (from the evening of 23 Sep; Sonnet 5 low / Opus 5 high before), confirmed per call. From 25 Sep the decider also answers the day trader's setups, 60 s each | `agent_mismatch` self-check |
 | Broker, orders, fills, stops | Fills volume-aware since 24 Sep (20% of a bar); bars used only once final; orders before 09:59 fill at the opening auction (Yahoo's daily open, 20% of its estimated volume) from 24 Sep | `broker.work`, `minutes.final_bars`, `minutes.opening_auction`, tests/test_fill_volume.py, tests/test_opening_auction.py |
 | Self-checks | 10 checks every cycle, loud on failure (`log_silent` added 24 Sep) | `selfcheck.run_checks`, live log |
 | ASX 200 short universe | Real constituent list, 200 codes, dated | `asxbot universe asx200` |
-| Arena position | None open. A1M bought 10:41 (ARN-000002, 0.8358 after the #24 correction, applied 19:40) and sold by its 0.90 target (ARN-000003, re-priced by the #25 correction, applied 20:31: 15:58 bar first, 0.9159, backup `correct_arn000003_20260923_203115`). Agent cash 20,227.09, bot 20,000.00. Both books topped up to $20,000 starting cash at 19:40. No arena order has ever filled at the open | account files read 23 Sep ~21:50 (read-only, hashes unchanged), `data/arena/backups/` |
+| Arena position | **New books from 25 Sep:** `asx_announcements_v2__agent/__bot`, `asx_daytrader_v1__agent/__bot`, $20,000 each, opened 24 Sep 20:59 (by the self-check run; no order). v1's books below are kept, no longer traded. v1: none open. A1M bought 10:41 (ARN-000002, 0.8358 after the #24 correction, applied 19:40) and sold by its 0.90 target (ARN-000003, re-priced by the #25 correction, applied 20:31: 15:58 bar first, 0.9159, backup `correct_arn000003_20260923_203115`). Agent cash 20,227.09, bot 20,000.00. Both books topped up to $20,000 starting cash at 19:40. No arena order has ever filled at the open | account files read 23 Sep ~21:50 (read-only, hashes unchanged), `data/arena/backups/` |
 | Strategy with an edge | **None** | reports/phase1.md |
 | Trustworthy data | **No** — survivorship-biased | yfinance, current listings only |
 
@@ -101,6 +102,12 @@ Pontiff, 97 predictors). Assume under half of any paper's figure.
 | 35 | **The watcher's logs went silent while it ran, twice on 24 Sep.** Google Drive silently cut off the long-open append handles on `data/logs/asxbot.log` and `data/arena_warmup.log`: at 08:14 (noticed; restarted 08:23), and again at 12:14:04 until the watcher stopped at 19:25 (not noticed until the logs were moved that evening). Files written whole or opened per write kept updating, so the heartbeat looked healthy; `errors_logged` read a dead file for 7 hours | High | **Fixed 24 Sep evening** - every log in `%LOCALAPPDATA%\asx-bot\logs` (daily rotation kept), copied to `data/logs/` whole after each evening run; new `log_silent` self-check (a log 5+ min behind the watcher's last line), Telegram once an hour. Old logs copied over and checked byte for byte. First real run 07:30 25 Sep, **not yet verified** |
 | 36 | The 07:30 poll logged ERROR "no announcements table with a Headline column found" (07:30:05, 07:31:24 on 24 Sep): before the ASX posts anything the page has no table | Low | **Fixed 24 Sep evening** - an ASX page with no announcement links is zero, at INFO; anything else is still an ERROR. The empty-page fixture is built by hand (no real one was kept); the poller now keeps the first empty page of each day in `data/announcements/pages/` to replace it. First real empty page 07:30 25 Sep, **not yet seen** |
 | 37 | **The hourly digest was noise.** On 24 Sep the Trader sent "nothing passed this hour" every hour from 11:33 to 18:35, eight times after the last pass (10:32), and four digests after the 16:10 session summary (16:34, 17:35, 18:35, and 19:25 when the watcher stopped). The quiet-hour digest was meant to show the watcher alive; the watchdog and `log_silent` do that now | Low | **Fixed 24 Sep evening** - a digest only for an hour with a pass, an order, or a screen-out worth reading (no quote, no history, or no trades by 10:30 on a non-halt announcement, listed by name); the last part-hour goes just before the 16:10 summary if it had anything; after the summary no digest that day, forced or not. A test replays 24 Sep's passes and quiet hours: one digest (10:32) and the summary. With 24 Sep's real screen-outs, 5 digests instead of 10 (review log). First real day 25 Sep, **not yet seen** |
+| 38 | `live/quotes.py` reads `fi.get("last_volume")`, which returns None on yfinance 1.7.0: every quote's volume is 0 (24 Sep day review). v1's screen and packets used it | Medium | **Not fixed (needs Rick's OK)** - v2 and the day trader never read it: volume comes from minute bars. Still read by v1 (retired) and the real-money scanner (`live/scanner.py`) |
+| 39 | Yahoo's 10:00 minute bar holds the opening auction's volume on some stock-days and none on others (171 vs 892, 17-24 Sep) | Medium | **Handled before any run** - every v2 and day-trader volume measure counts from 10:01 (`intraday.VOLUME_FROM`), dated in config.yaml (18ca09f). LEARNINGS #20 |
+| 40 | The day trader's scan asks Yahoo for up to 90 stocks a cycle (~5,400 an hour). Yahoo's limit is unknown; a refusal would also stall fills | Medium | **Watch 25 Sep** - a refused or mostly empty batch halves the budget and logs an ERROR (self-check alert). The backfill of 633 stocks x 6 days in 3 minutes on 24 Sep was not refused |
+| 41 | The decider is asked about every day-trader setup the agent's book can take (60 s each). The replay found dozens of setups a day | Medium | **Watch plan usage 25 Sep** - calls stop when the book is full (3 open / 6 new) and a setup older than 5 bars (including time spent on earlier calls) is not asked about |
+| 42 | On the free feed every decision is ~20 minutes behind the market: the v2 rule bot's "10:31" entry is ~10:52, a setup is entered ~20 minutes after its trigger bar | High (for meaning, not for code) | **By design until IBKR live data** - every report says "delayed data - rehearsal until IBKR live prices"; `arena.intraday_data.provider: ibkr_live` switches it (not connected yet) |
+| 43 | v1's yardstick signal OFX (for the 25 Sep open, day review) will not be traded: v1 is retired | Low | Recorded, not a defect |
 
 ---
 
@@ -121,6 +128,19 @@ ETF track runs separately: research and monitoring only, no broker, Rick execute
 ---
 
 ## Review log
+
+- **24 Sep ~21:30** - Headless build from Rick's brief (24 Sep evening). **Announcements v2**
+  (trade the reaction) and **the day trader** frozen in config.yaml before any run (666c17e),
+  one pre-run correction (volume from 10:01, #39, 18ca09f), code, tests and a plumbing replay
+  (328246a and the next commit). Level 1: $5,000 a position, 3 open, 6 new a day (dated;
+  real-money `limits:` unchanged). v1 retired, its books and values kept. Tests: 388 passed,
+  1 skipped; ruff clean. Dry check (scratch books, no agent, no order): the scheduled command
+  runs v2 + the day trader on the Yahoo delayed feed; 5 stocks with news after 24 Sep's close
+  queue for 25 Sep's reaction looks (LKE, MOT, MRE, MXT, PEN); the live batch feed held 20
+  stocks in memory and wrote nothing to Drive; nothing runs before the open. Self-checks 10/10
+  ok. Scheduled task unchanged (`arena_warmup.pyw` -> `arena watch --until auto`), next run
+  25 Sep 07:30. **Not verified until 25 Sep:** Yahoo's tolerance of the scan (#40), decider
+  load (#41), the first reaction look and v2 rule-bot day, the end-of-day minute write.
 
 - **24 Sep 20:30** - Headless job, no strategy change. The hourly digest now goes only for
   an hour with a pass, an order or a screen-out worth reading, and never after the 16:10

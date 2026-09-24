@@ -485,6 +485,33 @@ readable is still an ERROR. The empty-page test fixture was built by hand, becau
 kept the page. The poller now keeps the first empty page of each day, and every page it
 cannot read (5 a day), in `data/announcements/pages/`.
 
+## 20. The auction was sometimes in the first bar
+
+Announcements v2 and the day trader measure volume against "the usual volume by this
+minute", from a week of Yahoo's 1-minute bars. The rule was written on the belief (#18) that
+the minute feed leaves the opening auction out. Checked before anything ran, on 17-24 Sep for
+300 codes: the 10:00 bar held nothing on 892 stock-days and a huge print on 171 (over 10x
+the next ten bars' median, a median 3.9% of the whole day's volume), day by day and stock by
+stock. So "usual first-30-minute volume" would have depended on which days Yahoo happened to
+fold the auction in, and a 3x test would have fired or not for that reason.
+
+- Every volume measure counts from the 10:01 bar (`arena/intraday.py` `VOLUME_FROM`), on
+  both sides of the ratio. Dated in config.yaml as a correction made before any run.
+- #18's belief was true of the stocks it was checked on (BHP, CBA, A1M) and not of the feed.
+  A property of a data source is checked across the source, not on the three stocks at hand.
+
+## 21. Two days of a design that barely trades is not a test
+
+v1 of the announcements playbook traded once in two days: a screen that read a volume the
+quote never returned, a decider asked whether news was mispriced before the market had
+traded it, and a yardstick that waited on one Yahoo series. Rick's call on 24 Sep: the
+ladder stands (Daily is tested over 10 trading days; only a failed test steps down), but the
+test has to be of something that trades. v2 asks the question a day's trade depends on - is
+the rest-of-day move bigger than the costs, and where is the stop - once the market has
+shown its reaction; the day trader looks for setups instead of waiting for news. Both were
+frozen in config.yaml before they ran, and a plumbing replay on past bars is labelled as
+plumbing: a few days on Yahoo data measure the machinery, not an edge.
+
 ---
 
 ## Standing rules

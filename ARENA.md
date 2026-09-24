@@ -106,6 +106,32 @@ Starting guidance and yardstick rules are fixed before each playbook goes live a
 4. **Crowded trades (funding).** Trigger: funding in the top 5% of a coin's own history with open interest rising, checked around each funding settlement. The agent judges whether the crowd is about to be squeezed and decides. Yardstick: trade against the crowd, stop 8%, exit within 24 hours at Level 1.
 5. **New listings, first days.** Trigger: each new major-exchange listing. The agent trades the first days' swings intraday, long or short, judging valuation, float, backers, hype and category (meme coins can squeeze shorts hard). Yardstick: from day 3, short on a close below the day-1 low; stop 25% above entry; exit on day 30.
 
+**2a. ASX announcements, version 2 (from 25 Sep 2026; v1 above retired 24 Sep).** Trade the
+reaction, not the news. News before the open gets the pre-open look as before; then every
+stock with price-sensitive news gets ONE reaction look once the market has traded the news
+for 10 minutes and before it has traded it for 40 (for overnight news: 10:10-10:40 in market
+time). The decider sees the move against the ASX 200, the volume against the stock's usual
+volume over the same minutes, the auction price and the news, and answers: over the rest of
+today, is the expected move bigger than about 0.4% after costs, and where is the stop?
+Intraday only, flat at 15:50 by code; positions up to $5,000, 3 open, 6 new a day; a stock
+is tradeable if our order is under 5% of its median daily turnover. Yardstick (v2 rule
+bot): news since the last close, at 10:30 up >= 3% against the ASX 200 on >= 3x the usual
+first-30-minute volume, bought at 10:31 with a stop at the 10:00-10:30 low and sold at
+15:55 (mirror short for ASX 200 members). Exact rules: config.yaml `asx_announcements_v2`.
+
+**2b. ASX day trader (from 25 Sep 2026).** Code scans the liquid ASX 300 every minute:
+movers against the index, volume against the same time of day, new highs and lows, halt
+resumptions, news stocks. Four setups, each an exact rule: gap-and-go, opening-range
+breakout, VWAP reclaim or loss, halt-resumption continuation (shorts only in the ASX 200).
+The agent confirms or rejects each setup in one call, within 60 seconds; the rule bot takes
+every one. Code sizes at 0.5% risk, enforces the stop at the setup's invalidation, moves it
+to breakeven at +1R, takes half at +2R and trails 1R behind, allows one re-entry per stock
+per day, and is flat at 15:50. Exact rules: config.yaml `asx_daytrader`.
+
+Both run on Yahoo's delayed bars: decisions use only bars that were final when they were
+made, fills come from the first bar after the order, and every report says "delayed data -
+rehearsal until IBKR live prices". `arena.intraday_data.provider` switches to IBKR.
+
 ### Start at Level 2 — Weekly (these are weekly by nature)
 6. **Crypto momentum.** Trigger: the daily ranking of the top 30 coins by 2–4 week return, at 00:00 UTC when daily candles close. The agent picks and sizes up to 5 holdings, checking news, upcoming unlocks and themes, and rebalances weekly (the signal plays out over 1–4 weeks, so daily churn only pays fees). If BTC closes below its 200-day average, it decides whether to move to stablecoins. Yardstick: top 5, weekly rebalance, stablecoins when BTC is below its 200-day average.
 7. **Token unlocks.** Trigger: upcoming team or investor unlocks of at least 2% of circulating supply, about 30 days out. The agent researches who receives the tokens, whether they are likely to sell or have hedged, liquidity and sentiment, then decides whether and when to short and when to cover. Ecosystem unlocks average slightly positive, so the default is to skip them. Yardstick: short 30 days before, cover 14 days after, stop 20% above entry. Needs an unlock calendar: find a free source; if none exists, flag it.

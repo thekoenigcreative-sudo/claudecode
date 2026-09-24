@@ -34,6 +34,8 @@ Every figure carries its source in brackets. Figures from `reports/phase1.md` ar
 | S1 | Short after an earnings miss | **Tested: loses** | Archive + prices, ASX 200 | Not tuned. Only a rerun of the same rules on survivorship-free data |
 | S2 | Short ahead of placement shares | **Tested: loses** | Archive + prices, ASX 200 | Not tuned. Not worth a holdout run |
 | Baseline | 12-1 momentum | Keep as baseline only | Prices | Rerun on survivorship-free data |
+| V2 | Announcement reaction at 10:30 (arena yardstick) | **New, live 25 Sep** | Live minute bars + announcements | Forward only: 10-day Level 1 test; a few days of plumbing replay exist, not a result |
+| DT | Day-trader setups (arena yardstick) | **New, live 25 Sep** | Live minute bars | Forward only: 10-day Level 1 test; plumbing replay only |
 
 ### A — announcement gap: DROPPED
 492 trades across 155 companies: +0.05% per trade at 1× slippage and −0.33% at 2× (`reports/phase1.md`). The rule is also misspecified: it triggers on a 5% gap and uses the announcement only as a filter, so it tests gap continuation, not drift after surprise. Keep running live only as a machinery test.

@@ -152,8 +152,10 @@ Daylight saving is handled in code (`arena/hours.py`), so nothing needs changing
 
 This PC's clock is AUS Eastern, identical to Sydney. Nothing trades before
 `arena.playbooks.asx_announcements.warmup_start` (2026-09-23 07:30) — the watcher waits and
-says so. At 15:50 the pre-close sweep asks the decider about each open position and closes
-it unless a reason to hold is written.
+says so. From 25 Sep both live playbooks are flat at the close: at 15:50 code closes every
+agent position without asking (the v2 rule bot at 15:55, its own exit), and no new position
+is opened after 15:40. v1's sweep, which asked the decider for a reason to hold, is retired
+with v1.
 
 **The PC must stay on AND Rick must stay logged in.** `G:\My Drive` is a Google Drive mount
 that exists only inside his session, so signing out removes the repo from the machine's
@@ -166,6 +168,29 @@ watcher's long-open log files on 24 Sep (08:14, and 12:14 to 19:25) without a wo
 each evening run the files are copied to `data/logs/` whole: read that copy on the other PC,
 the local folder on this one. The `log_silent` self-check fires if the watcher is logging
 but a log file is not growing.
+
+## From 25 Sep: announcements v2 and the day trader (built 24 Sep evening)
+
+The 07:30 watcher runs every enabled playbook in one loop (`arena/cli.py watch_playbooks`):
+`asx_announcements_v2` drives the announcement poll and `asx_daytrader` runs beside it. v1
+(`asx_announcements`) is disabled with its values kept; its books are no longer traded.
+Rules: config.yaml, frozen 2026-09-24 before they ran. Both start their 10-trading-day
+Level 1 test on 25 Sep; the evening report says "day N of 10 (v2)" / "(v1)".
+
+| Piece | Where |
+|---|---|
+| Intraday data (Yahoo delayed now; `arena.intraday_data.provider: ibkr_live` later) | `arena/intraday.py` - batched fetches held in memory, whole sessions written to the minute cache once at 16:40 |
+| Size-aware liquidity rule | `arena/liquid.py` (order < 5% of median daily turnover; also in `arena_place_order`) |
+| v2 screen, reaction, queue, rule bot arithmetic | `arena/reaction_v2.py` |
+| v2 decider packet, reaction looks, v2 rule bot day, flat sweep | `arena/v2_flow.py` |
+| Day trader: universe, four setups, scan, agent call, sizing | `arena/daytrader.py` |
+| Trade management (breakeven, half at +2R, trail) | `arena/broker.py` `_manage`, bar by bar |
+| Plumbing replay | `asxbot arena replay --days ... --delays 20,0` (`arena/replay.py`), rule bots only |
+
+Where to look during a day: `data/arena/reaction/<day>.json` (each stock's look and why),
+`data/arena/v2bot/<day>.json` (the v2 rule at 10:30), `data/arena/daytrader/<day>.json`
+(every setup, what the bot and the agent did), events `daytrader_scan` (each cycle's top
+lists), `v2_reaction`, `v2_bot`, `daytrader_setups`, `intraday_feed` (a refusal).
 
 ## The terms gate (23 Sep — needs Rick's decision, not the code's)
 
