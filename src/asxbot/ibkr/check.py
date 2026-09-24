@@ -7,8 +7,10 @@ failure with what to do about it:
   1. Gateway accepts the API connection on the configured port;
   2. Gateway is connected to IBKR (not "connectivity broken", code 2110 / 1100);
   3. a quote for BHP: bid/ask/last and sizes, open, previous close, halt flag, auction
-     fields, and its market data type - real-time in market hours; out of hours "frozen"
-     (the last real-time value) proves the real-time subscription, "delayed-frozen" does not;
+     fields, and its market data type. It asks for real-time (1) from the pre-open to the
+     closing auction and frozen (2) otherwise, and reports what it asked for and what came
+     back: frozen is the last real-time value, so out of hours it proves the real-time
+     subscription (without one IBKR sends nothing, and the check fails);
   4. BHP's 1-minute bars for the latest session, compared bar by bar with Yahoo's cached
      bars for the same day where the cache has them (prices and volumes);
   5. the ASX 200 index (XJO): a quote and its 1-minute bars - every scan measures moves
@@ -61,6 +63,7 @@ def run_check(cfg, out=print, gateway: Gateway | None = None, now: datetime | No
     s = settings_from_config(cfg)
     s = dataclasses.replace(s, client_id=int(s.client_id) + 1)
     gw = gateway or Gateway(s)
+    gw.wall = lambda: now  # the market data type asked for follows the check's clock
     res: dict = {"at": now.isoformat(timespec="seconds"), "port": s.port, "steps": {}}
     in_hours = _hours(now)
 
@@ -103,10 +106,21 @@ def run_check(cfg, out=print, gateway: Gateway | None = None, now: datetime | No
     # 3. BHP quote
     q = gw.quote("BHP")
     res["steps"]["bhp_quote"] = q
+    asked = gw.health.requested_data_type
+    asked_kind = MARKET_DATA_TYPES.get(asked or 0, "unknown")
+    res["requested_market_data"] = asked_kind
     if q is None:
-        return done(False, "no quote for BHP came back (see the Gateway log / error messages)")
+        err = gw.health.last_request_error
+        return done(
+            False,
+            f"no quote for BHP came back (asked for {asked_kind} data"
+            + (f"; Gateway said {err}" if err else "")
+            + ")",
+        )
     mdt = q.get("market_data_type")
     kind = MARKET_DATA_TYPES.get(mdt or 0, "unknown")
+    res["received_market_data"] = kind
+    out(f"  market data: asked for {asked_kind} ({asked}), got {kind} ({mdt})")
     out(
         f"  BHP quote: {kind} | bid {q['bid']} x {q['bid_size']}  ask {q['ask']} x "
         f"{q['ask_size']}  last {q['last']} x {q['last_size']} | open {q['open']}  prev close "

@@ -38,6 +38,7 @@ from asxbot.ibkr.gateway import (
     REAL_TIME_TYPES,
     Gateway,
     end_of,
+    market_hours,
     maybe_reconnect,
     seconds_since,
     shared,
@@ -50,7 +51,6 @@ log = get_logger("asxbot.ibkr.feed")
 SYD = ZoneInfo("Australia/Sydney")
 LIVE_LABEL = "live data (IBKR)"
 FALLBACK_LABEL = "delayed data (Yahoo) - IBKR unavailable"
-MARKET_OPEN, MARKET_CLOSE = time_cls(10, 0), time_cls(16, 10)
 PROBE_EVERY = timedelta(minutes=10)
 STATUS_EVERY = timedelta(minutes=5)
 
@@ -67,17 +67,6 @@ def read_status(data_dir: Path) -> dict:
         return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-
-
-def market_hours(now: datetime) -> bool:
-    from asxbot.announcements.live import is_trading_day
-
-    now = now.astimezone(SYD)
-    return (
-        now.weekday() < 5
-        and is_trading_day(now.date())
-        and MARKET_OPEN <= now.time() < MARKET_CLOSE
-    )
 
 
 class IBKRLiveFeed(IntradayFeed):
@@ -277,6 +266,15 @@ class FailoverFeed(IntradayFeed):
                         False,
                         f"IBKR sent {MARKET_DATA_TYPES.get(mdt or 0, 'unknown')} data for "
                         f"{gw.s.probe_code}, not real-time: is the ASX subscription active?",
+                        now,
+                    )
+                elif q is None and gw.health.permission_denied:
+                    # real-time is asked for in hours; without the subscription nothing comes
+                    self._switch(
+                        False,
+                        f"IBKR refused real-time data for {gw.s.probe_code} "
+                        f"({gw.health.last_request_error or 'no subscription'}): is the ASX "
+                        "subscription active?",
                         now,
                     )
         elif maybe_reconnect(gw):

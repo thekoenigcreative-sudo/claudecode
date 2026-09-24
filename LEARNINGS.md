@@ -522,6 +522,20 @@ real-time rather than delayed. The data layer checks each one (`ibkr/gateway.py`
 `live_data` self-check, `asxbot ibkr check`), bounds every request with a timeout, and falls
 back to Yahoo, labelled, when any is missing.
 
+## 23. The fake accepted what the library refuses
+
+24 Sep, 21:32: the first check with Gateway connected failed on its first request. ib_async
+will not quote a contract that has no conId, and ours were never looked up. 419 tests had
+passed, because the fake Gateway in the tests took any contract. The fake now refuses an
+unqualified contract as ib_async does. The code qualifies each code once (reqContractDetails),
+caches its conId, and refuses a match that is not an ASX primary listing in AUD.
+
+- A fake is only as good as the refusals it copies. When a test double stands in for a
+  library, it has to fail where the library fails. A fake that accepts everything is a test
+  of our own code talking to itself.
+- The first request to the real thing is the test. Until then, "built and tested" means
+  "built".
+
 ---
 
 ## Standing rules

@@ -24,6 +24,16 @@ IBKR's limits, and how they are kept (TWS API "Historical Data Limitations", rea
     every three minutes, and a stock being decided on is fetched on the spot.
   * a pacing violation (error 162 with "pacing", or 420) halves the per-scan budget for the
     rest of the day and is logged as an ERROR.
+
+Every contract is QUALIFIED before use (reqContractDetails, through ib_async's
+qualifyContracts): ib_async refuses a quote for a contract with no conId (the check at 21:32
+on 24 Sep 2026 failed exactly so). Each code is qualified once per process and cached with
+its conId; a stock must come back as an ASX primary listing in AUD, the index as XJO on ASX.
+
+Market data type (reqMarketDataType) follows the ASX clock: real-time (1) from the pre-open
+to the closing auction on a trading day, frozen (2) otherwise - frozen is the last real-time
+value, so it still proves the real-time subscription out of hours, where delayed-frozen (4)
+would hide a missing one.
 """
 
 from __future__ import annotations
@@ -34,6 +44,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from datetime import time as time_cls
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -52,11 +63,34 @@ NOT_CONNECTED = {502, 504}
 PACING = {420}
 NO_PERMISSION = {354, 10089, 10090, 10167, 10168, 10186, 10187}  # delayed / not subscribed
 NO_SECURITY = {200}
-# reqMarketDataType: 1 real-time, 2 frozen, 3 delayed, 4 delayed-frozen. We ask for 4, which
-# still delivers real-time data (1, or 2 after the close) wherever the account is subscribed;
-# the type each quote actually came back with is what is checked.
+# reqMarketDataType: 1 real-time, 2 frozen, 3 delayed, 4 delayed-frozen. We ask for 1 in the
+# live window below and 2 outside it (live_data_type); the type each quote actually came back
+# with is what is checked.
 MARKET_DATA_TYPES = {1: "real-time", 2: "frozen", 3: "delayed", 4: "delayed-frozen"}
 REAL_TIME_TYPES = {1, 2}
+MARKET_OPEN, MARKET_CLOSE = time_cls(10, 0), time_cls(16, 10)
+# Real-time is asked for from the pre-open (07:00) to past the closing auction (16:10-16:12).
+LIVE_FROM, LIVE_TO = time_cls(7, 0), time_cls(16, 15)
+QUALIFY_RETRY_S = 3600.0  # a code IBKR could not qualify is not asked about again for an hour
+
+
+def _trading_day(now: datetime) -> bool:
+    from asxbot.announcements.live import is_trading_day
+
+    return now.weekday() < 5 and is_trading_day(now.date())
+
+
+def market_hours(now: datetime) -> bool:
+    """The continuous session, 10:00 to the closing auction, on an ASX trading day."""
+    now = now.astimezone(SYD)
+    return _trading_day(now) and MARKET_OPEN <= now.time() < MARKET_CLOSE
+
+
+def live_data_type(now: datetime) -> int:
+    """The market data type to ask for: 1 (real-time) from the pre-open to the end of the
+    closing auction on a trading day, else 2 (frozen)."""
+    now = now.astimezone(SYD)
+    return 1 if _trading_day(now) and LIVE_FROM <= now.time() < LIVE_TO else 2
 
 
 @dataclass
@@ -154,6 +188,9 @@ class Health:
     server_ok: bool = False  # Gateway's own link to IBKR (codes 1100 / 2110 break it)
     refused: bool = False  # the last connect attempt was refused: Gateway down or logged out
     market_data_type: int | None = None  # of the last quote
+    requested_data_type: int | None = None  # what reqMarketDataType last asked for
+    last_request_error: str = ""  # the last error Gateway sent about one request
+    permission_denied: bool = False  # a request was refused for want of a subscription
     last_error: str = ""
     last_ok_at: str = ""
     pacing_hits: int = 0
@@ -166,6 +203,10 @@ class Health:
             "refused": self.refused,
             "market_data_type": self.market_data_type,
             "market_data": MARKET_DATA_TYPES.get(self.market_data_type or 0, "unknown"),
+            "requested_data_type": self.requested_data_type,
+            "requested_data": MARKET_DATA_TYPES.get(self.requested_data_type or 0, "unknown"),
+            "last_request_error": self.last_request_error,
+            "permission_denied": self.permission_denied,
             "last_error": self.last_error,
             "last_ok_at": self.last_ok_at,
             "pacing_hits": self.pacing_hits,
@@ -183,10 +224,17 @@ class Gateway:
     """The one connection. Every call is synchronous and never raises for a data problem:
     a failed request is an empty answer plus a note in `health`."""
 
-    def __init__(self, settings: GatewaySettings, ib_factory=_make_ib, clock=time.monotonic):
+    def __init__(
+        self, settings: GatewaySettings, ib_factory=_make_ib, clock=time.monotonic,
+        wall=lambda: datetime.now(SYD),
+    ):  # fmt: skip
         self.s = settings
         self.ib_factory = ib_factory
         self.clock = clock
+        self.wall = wall
+        # code -> qualified contract (conId filled in); kept across reconnects (conIds last)
+        self.contracts: dict = {}
+        self._unqualified: dict[str, float] = {}  # code -> when IBKR last failed to qualify it
         self.ib = None
         self.health = Health()
         self.pacer = Pacer(settings.max_requests_per_10min)
@@ -242,7 +290,7 @@ class Gateway:
         # connectivity messages arrive during the handshake and are handled in _on_error).
         if not self.health.last_error.startswith("lost"):
             self.health.server_ok = True
-        ib.reqMarketDataType(4)
+        self._ask_data_type(force=True)
         ib.disconnectedEvent += self._on_disconnect
         log.info(
             "IB Gateway connected at %s:%s (client %s), read-only; link to IBKR %s",
@@ -288,17 +336,31 @@ class Gateway:
             self.health.last_error = f"{code}: {msg}"
         elif code in PACING or (code == 162 and "pacing" in str(msg).lower()):
             self._pacing(f"{code}: {msg}")
+        if code in NO_PERMISSION:
+            self.health.permission_denied = True
         if int(req_id) > 0:
             self._req_errors[int(req_id)] = (code, str(msg))
+            self.health.last_request_error = f"{code}: {msg}"
 
     def _pacing(self, why: str) -> None:
         self.health.pacing_hits += 1
         self.budget = max(10, self.budget // 2)
         log.error("IBKR pacing violation (%s); %d requests a scan from now on", why, self.budget)
 
+    def _ask_data_type(self, force: bool = False) -> int:
+        """Ask for real-time (1) in the live window, frozen (2) outside it; only when it
+        changes. Returns the type asked for."""
+        want = live_data_type(self.wall())
+        if force or self.health.requested_data_type != want:
+            self.ib.reqMarketDataType(want)
+            self.health.requested_data_type = want
+        return want
+
     # -- contracts ----------------------------------------------------------
     @staticmethod
     def contract(code: str):
+        """The UNQUALIFIED contract for a code; use `qualified` / `_qualify` before any
+        request."""
         from ib_async import Index, Stock
 
         if code.startswith("^"):
@@ -306,7 +368,55 @@ class Gateway:
                 raise ValueError(f"no IBKR index mapped for {code}")
             return Index("XJO", "ASX", "AUD")
         # ASX exchange, not SMART: bars and volumes are the ASX's own, like Yahoo's .AX
-        return Stock(code.upper(), "ASX", "AUD")
+        return Stock(code.upper(), "ASX", "AUD", primaryExchange="ASX")
+
+    @staticmethod
+    def _accept(code: str, c) -> str | None:
+        """Why a qualified contract is not the one meant, or None if it is."""
+        if c is None or not int(getattr(c, "conId", 0) or 0):
+            return "IBKR returned no single matching contract"
+        if getattr(c, "currency", "") != "AUD":
+            return f"currency {c.currency!r}, not AUD"
+        if code.startswith("^"):
+            if (c.secType, c.symbol, c.exchange) != ("IND", "XJO", "ASX"):
+                return f"got {c.secType} {c.symbol} on {c.exchange}, not the XJO index on ASX"
+        elif (c.secType, getattr(c, "primaryExchange", "")) != ("STK", "ASX"):
+            return f"got {c.secType} with primary exchange {c.primaryExchange!r}, not ASX"
+        return None
+
+    async def _qualify(self, code: str):
+        """The qualified contract for a code (from the cache after the first time), or None.
+        Raises ValueError for a code with no IBKR mapping."""
+        code = code.upper()
+        if code in self.contracts:
+            return self.contracts[code]
+        failed = self._unqualified.get(code)
+        if failed is not None and self.clock() - failed < QUALIFY_RETRY_S:
+            return None
+        c = self.contract(code)
+        try:
+            got = await asyncio.wait_for(
+                self.ib.qualifyContractsAsync(c), timeout=float(self.s.request_timeout_s)
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("IBKR could not qualify %s: %r", code, e)
+            return None  # a timeout or a broken link: not cached, tried again next time
+        q = got[0] if got else None
+        why = self._accept(code, q)
+        if why:
+            self._unqualified[code] = self.clock()
+            log.warning("IBKR contract for %s refused (%s); not asked again for an hour", code, why)
+            return None
+        self._unqualified.pop(code, None)
+        self.contracts[code] = q
+        log.debug("IBKR contract %s qualified: conId %s", code, q.conId)
+        return q
+
+    def qualified(self, code: str):
+        """`_qualify` from synchronous code."""
+        if self.ib is None:
+            return None
+        return self.ib.run(self._qualify(code))
 
     # -- bars ---------------------------------------------------------------
     def room(self) -> int:
@@ -328,11 +438,13 @@ class Gateway:
 
         async def one(code: str):
             dur, end = requests[code]
-            try:
-                c = self.contract(code)
-            except ValueError:
-                return code, None
             async with sem:
+                try:
+                    c = await self._qualify(code)
+                except ValueError:
+                    return code, None
+                if c is None:
+                    return code, None
                 try:
                     got = await self.ib.reqHistoricalDataAsync(
                         c, end or "", dur, "1 min", "TRADES", False, formatDate=2,
@@ -372,12 +484,18 @@ class Gateway:
         if not self.ready or self._lines >= min(self.s.max_quote_lines, self.s.market_data_lines):
             return None
         try:
-            c = self.contract(code)
+            c = self.qualified(code)
         except ValueError:
+            return None
+        except Exception as e:  # noqa: BLE001
+            log.warning("IBKR contract for %s failed: %r", code, e)
+            return None
+        if c is None:
             return None
         self._lines += 1
         tk = None
         try:
+            self._ask_data_type()
             tk = self.ib.reqMktData(c, "" if code.startswith("^") else self.s.generic_ticks)
             deadline = self.clock() + float(self.s.quote_wait_s)
             while self.clock() < deadline:
@@ -411,6 +529,8 @@ class Gateway:
         if q["last"] is None and q["prev_close"] is None:
             return None
         self.health.market_data_type = q["market_data_type"]
+        if q["market_data_type"] in REAL_TIME_TYPES:
+            self.health.permission_denied = False
         self.health.last_ok_at = datetime.now(SYD).isoformat(timespec="seconds")
         return q
 
@@ -479,5 +599,6 @@ def maybe_reconnect(gw: Gateway) -> bool:
 
 __all__ = [
     "Gateway", "GatewaySettings", "Health", "Pacer", "bars_frame", "disable_orders",
-    "end_of", "maybe_reconnect", "seconds_since", "settings_from_config", "shared",
+    "end_of", "live_data_type", "market_hours", "maybe_reconnect", "seconds_since",
+    "settings_from_config", "shared",
 ]  # fmt: skip

@@ -192,7 +192,7 @@ Where to look during a day: `data/arena/reaction/<day>.json` (each stock's look 
 (every setup, what the bot and the agent did), events `daytrader_scan` (each cycle's top
 lists), `v2_reaction`, `v2_bot`, `daytrader_setups`, `intraday_feed` (a refusal).
 
-## IBKR live prices (built 24 Sep evening; not switched on yet)
+## IBKR live prices (built 24 Sep evening; switched on 24 Sep for 25 Sep)
 
 Rick's IBKR account is live, ASX Total real-time data subscribed (A$25/month). There is no
 paper account, so IB Gateway 10.50 (`%LOCALAPPDATA%\Programs\ibgateway`) is logged in to the
@@ -207,10 +207,15 @@ LIVE account with **Read-Only API on**. The arena reads market data from it and 
 | No-order test | `tests/test_ibkr_no_orders.py` fails the build if the data layer names an order call |
 | Self-check | `live_data`: fell back to Yahoo, or status stale in market hours. A Gateway that needs a login gets ONE Telegram line per outage |
 
-**To switch on:** with Gateway logged in and connected, run the check. If it passes (ideally
-in market hours, where "real-time" is proven rather than "frozen"), set
-`data.live_provider: ibkr`, commit, and the next 07:30 watcher uses it. Nothing else changes:
-if Gateway is down that morning the watcher runs on Yahoo and says so.
+**Switched on** (`data.live_provider: ibkr`) after the check passed at 21:35 and 21:40 on
+24 Sep. To switch off, set it back to `yfinance`. If Gateway is down in the morning the
+watcher runs on Yahoo by itself and says so.
+
+Every contract is qualified (reqContractDetails) before any request and cached with its
+conId: ib_async refuses a quote for a contract without one, which is what failed the first
+live check (21:32). A stock must come back with ASX as primary exchange and in AUD; the index
+as XJO (IND) on ASX. Market data type: real-time (1) from 07:00 to 16:15 on a trading day,
+frozen (2) otherwise; the check prints what it asked for and what it got.
 
 How the ~250-stock scan fits IBKR's limits: bars never hold a market data line; the universe
 is rotated through 1-minute historical requests, 90 a scan (stalest first, ~every 3 min
@@ -220,12 +225,26 @@ one at a time, cancelled on answer (cap 20 of 100). A pacing violation halves th
 "Usual volume" and the previous close come from IBKR's own prior sessions when IBKR is the
 feed (fetched pre-open), so today's volume is never divided by Yahoo's.
 
-**Not verified yet (24 Sep 21:25):** Gateway accepted the API connection but reported its
-link to IBKR broken (2110; market data and sec-def farms down) every time it was tried
-21:09-21:25, so no live quote or bar has been seen. Still to confirm on the first real
-connection: real-time type in market hours, IBKR vs Yahoo volumes per minute (the check prints
-the ratio), whether XJO index bars come with the subscription, and that the 16:10 closing
-auction appears in IBKR's bars (previous close).
+**Verified against the live Gateway, 24 Sep 21:35-21:40 (market closed):** BHP quote came
+back **frozen (2)** - the last real-time value, which IBKR sends only on a real-time
+subscription (last 61.02, open 60.48, halted 0; bid/ask empty after the close). BHP's
+1-minute bars for 24 Sep: 372, 09:59-16:10; against Yahoo's cached bars, 360 minutes compared,
+close equal to the cent on 93.6% (the rest differ by 0.5-1.5c: Yahoo prints half-cents), median
+volume ratio IBKR/Yahoo 0.973, day volume 6,918,401 vs 6,917,154. The **16:10 closing auction
+is in IBKR's bars** (61.02 x 2,485,189, same as Yahoo). XJO: 400 bars (09:50-16:29), quote
+8702.0 frozen. All 300 ASX 300 codes qualify (ASX primary, AUD) in 7.8 s; a 90-code scan
+returns 90/90 in ~20 s (the batch limit is 40 s).
+
+IBKR's bars have a different shape from Yahoo's outside 10:00-16:00: the opening auction is a
+**09:59 bar** (BHP 60.48 x 397,214), there are flat zero-volume bars 16:00-16:09, and the
+index runs 09:50-16:29. Every consumer reads `continuous()` (10:00 to before 16:00) and counts
+volume from 10:01, so none of these reaches a decision; inside that window the bars match
+Yahoo's (10:00 open 60.39 in both).
+
+**Still only provable in market hours:** that quotes come back real-time (1) - the feed probes
+BHP every 10 minutes and falls back to Yahoo on anything else, or on a 354 "not subscribed";
+that bars arrive promptly minute by minute (tonight's were read from history); the pre-open
+auction price (tick 225) live; and scan timing under a busy data farm.
 
 ## The terms gate (23 Sep — needs Rick's decision, not the code's)
 

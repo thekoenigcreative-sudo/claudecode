@@ -73,11 +73,23 @@ class FakeTicker(SimpleNamespace):
         super().__init__(**base)
 
 
+# What IBKR returns for a contract lookup: symbol -> (conId, secType, primaryExchange, currency)
+KNOWN = {"BHP": (4036812, "STK", "ASX", "AUD"), "XJO": (46610746, "IND", "", "AUD")}
+
+
 class FakeIB:
-    def __init__(self, clock, bars=None, quotes=None, refuse=False, on_connect=()):
+    """Behaves as ib_async does where it matters: a quote for a contract with no conId raises
+    (the ValueError the 21:32 check on 24 Sep 2026 hit), and qualifying fills the conId in."""
+
+    def __init__(self, clock, bars=None, quotes=None, refuse=False, on_connect=(), known=None):
         self.clock = clock
         self.bars = bars or {}
         self.quotes = quotes or {}
+        self.known = dict(KNOWN) if known is None else known
+        for sym in [*self.bars, *self.quotes]:  # any symbol a test serves is a known ASX stock
+            self.known.setdefault(sym, (1000 + len(self.known), "STK", "ASX", "AUD"))
+        self.qualified = []
+        self.mdt_calls = []
         self.refuse = refuse
         self.on_connect = on_connect
         self.errorEvent = Ev()
@@ -109,9 +121,29 @@ class FakeIB:
 
     def reqMarketDataType(self, t):
         self.mdt = t
+        self.mdt_calls.append(t)
+
+    async def qualifyContractsAsync(self, *contracts):
+        out = []
+        for c in contracts:
+            self.qualified.append(c.symbol)
+            k = self.known.get(c.symbol)
+            if k is None:
+                out.append(None)
+                continue
+            c.conId, c.secType, c.primaryExchange, c.currency = k
+            out.append(c)
+        return out
+
+    @staticmethod
+    def _need_con_id(contract):
+        if not contract.conId:
+            raise ValueError(f"Contract {contract} can't be hashed because no 'conId' value "
+                             "exists. Qualify contract to populate 'conId'.")  # fmt: skip
 
     async def reqHistoricalDataAsync(self, contract, end, dur, size, what, rth, formatDate=1,
                                      timeout=0):  # fmt: skip
+        self._need_con_id(contract)
         self.requests.append((contract.symbol, dur, end, size, what, rth, formatDate))
         return list(self.bars.get(contract.symbol, []))
 
@@ -123,6 +155,7 @@ class FakeIB:
             loop.close()
 
     def reqMktData(self, contract, generic=""):
+        self._need_con_id(contract)
         return self.quotes.get(contract.symbol, FakeTicker(marketDataType=None))
 
     def cancelMktData(self, contract):
@@ -132,11 +165,15 @@ class FakeIB:
         self.clock.t += s
 
 
-def gateway(clock=None, **kw):
+EVENING = datetime(2026, 9, 25, 21, 0, tzinfo=SYD)
+
+
+def gateway(clock=None, wall=None, **kw):
     clock = clock or Clock()
     settings = GatewaySettings(**kw.pop("settings", {}))
     fake = FakeIB(clock, **kw)
-    return Gateway(settings, ib_factory=lambda: fake, clock=clock), fake
+    gw = Gateway(settings, ib_factory=lambda: fake, clock=clock, wall=wall or (lambda: EVENING))
+    return gw, fake
 
 
 @pytest.fixture
@@ -155,7 +192,7 @@ def test_connects_read_only_with_order_methods_replaced():
     gw, fake = gateway()
     assert gw.connect() and gw.ready
     assert fake.connect_args == dict(host="127.0.0.1", port=4001, clientId=41, readonly=True)
-    assert fake.mdt == 4  # real-time where subscribed, delayed-frozen otherwise; checked per quote
+    assert fake.mdt == 2  # out of hours: frozen, which only a real-time subscription delivers
     with pytest.raises(PermissionError):
         fake.placeOrder()
     with pytest.raises(PermissionError):
@@ -240,6 +277,7 @@ def test_a_quote_gives_its_line_back_and_says_how_real_it_is():
                    open=45.0, close=44.8, volume=1.2e6, halted=0, auctionPrice=45.0,
                    auctionVolume=2e5, marketDataType=1)  # fmt: skip
     gw, fake = gateway(quotes={"BHP": q})
+    fake.known["XYZ"] = (999, "STK", "ASX", "AUD")  # a real stock that sends nothing back
     gw.connect()
     got = gw.quote("BHP")
     assert got["bid"] == 45.1 and got["ask_size"] == 800 and got["open"] == 45.0
@@ -247,6 +285,137 @@ def test_a_quote_gives_its_line_back_and_says_how_real_it_is():
     assert got["market_data_type"] == 1 and gw.health.market_data_type == 1
     assert fake.cancelled == ["BHP"] and gw._lines == 0
     assert gw.quote("XYZ") is None and fake.cancelled == ["BHP", "XYZ"]  # nothing came back
+
+
+# --------------------------------------------------------------------------
+# contracts are qualified before use
+# --------------------------------------------------------------------------
+def test_a_quote_qualifies_its_contract_first_and_caches_it():
+    """24 Sep 2026 21:32: an unqualified Stock('BHP', 'ASX', 'AUD') could not be quoted."""
+    gw, fake = gateway(quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=44.9, ask=45.1)})
+    gw.connect()
+    assert gw.quote("BHP")["last"] == 45.0
+    c = gw.contracts["BHP"]
+    assert (c.conId, c.secType, c.exchange, c.primaryExchange, c.currency) == (
+        4036812, "STK", "ASX", "ASX", "AUD",
+    )  # fmt: skip
+    gw.quote("BHP")
+    gw.bars({"BHP": ("1 D", None)})
+    assert fake.qualified == ["BHP"]  # looked up once, then from the cache
+
+
+def test_bars_for_the_rotation_and_the_index_use_qualified_contracts():
+    bars = {c: session(DAY) for c in ("AAA", "BBB")} | {"XJO": session(DAY, vol=0)}
+    gw, fake = gateway(bars=bars)
+    gw.connect()
+    got = gw.bars({"AAA": ("600 S", None), "BBB": ("600 S", None), "^AXJO": ("1 D", None)})
+    assert set(got) == {"AAA", "BBB", "^AXJO"}
+    ix = gw.contracts["^AXJO"]
+    assert (ix.secType, ix.symbol, ix.exchange, ix.currency, ix.conId) == (
+        "IND", "XJO", "ASX", "AUD", 46610746,
+    )  # fmt: skip
+    assert sorted(fake.qualified) == ["AAA", "BBB", "XJO"]
+    gw.bars({"AAA": ("600 S", None)})
+    assert sorted(fake.qualified) == ["AAA", "BBB", "XJO"]
+
+
+def test_the_auction_price_comes_through_a_qualified_contract():
+    q = FakeTicker(last=NAN, close=44.8, bid=45.0, ask=45.0, auctionPrice=45.02,
+                   auctionVolume=3e5, marketDataType=1)  # fmt: skip
+    gw, fake = gateway(quotes={"BHP": q}, wall=lambda: datetime(2026, 9, 25, 9, 58, tzinfo=SYD))
+    gw.connect()
+    got = gw.quote("BHP")
+    assert got["auction_price"] == 45.02 and got["auction_volume"] == 3e5
+    assert "BHP" in gw.contracts
+
+
+def test_a_contract_ibkr_cannot_match_is_skipped_and_asked_again_an_hour_later():
+    clock = Clock()
+    gw, fake = gateway(clock, bars={"AAA": session(DAY)}, known={"XJO": KNOWN["XJO"]})
+    del fake.known["AAA"]  # unknown to IBKR (a delisting, a code change)
+    gw.connect()
+    assert gw.bars({"AAA": ("600 S", None)}) == {} and gw.quote("AAA") is None
+    assert fake.qualified == ["AAA"] and fake.requests == []  # not re-asked within the hour
+    fake.known["AAA"] = (777, "STK", "ASX", "AUD")
+    clock.t += 3601
+    assert set(gw.bars({"AAA": ("600 S", None)})) == {"AAA"}
+
+
+@pytest.mark.parametrize(
+    "found, why",
+    [
+        ((555, "STK", "CHIXAU", "AUD"), "primary exchange"),  # not an ASX primary listing
+        ((555, "STK", "ASX", "USD"), "not AUD"),
+        ((0, "STK", "ASX", "AUD"), "no single matching"),  # no conId
+    ],
+)
+def test_a_wrong_contract_is_refused_not_used(found, why, caplog):
+    gw, fake = gateway(bars={"AAA": session(DAY)})
+    fake.known["AAA"] = found
+    gw.connect()
+    assert gw.bars({"AAA": ("600 S", None)}) == {} and fake.requests == []
+    assert "AAA" not in gw.contracts and why in caplog.text
+
+
+def test_a_lookup_that_fails_is_not_cached_as_unknown():
+    gw, fake = gateway(bars={"AAA": session(DAY)})
+    gw.connect()
+
+    async def broken(*c):
+        raise TimeoutError("contract details timed out")
+
+    real, fake.qualifyContractsAsync = fake.qualifyContractsAsync, broken
+    assert gw.bars({"AAA": ("600 S", None)}) == {}
+    fake.qualifyContractsAsync = real
+    gw.pacer.stamps.clear()
+    assert set(gw.bars({"AAA": ("600 S", None)})) == {"AAA"}  # tried again at once
+
+
+# --------------------------------------------------------------------------
+# market data type: real-time in the ASX's hours, frozen outside them
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "when, want",
+    [
+        (datetime(2026, 9, 25, 6, 59, tzinfo=SYD), 2),  # before the pre-open
+        (datetime(2026, 9, 25, 7, 0, tzinfo=SYD), 1),  # pre-open: the auction price is live
+        (datetime(2026, 9, 25, 11, 0, tzinfo=SYD), 1),
+        (datetime(2026, 9, 25, 16, 12, tzinfo=SYD), 1),  # the closing auction
+        (datetime(2026, 9, 25, 16, 15, tzinfo=SYD), 2),
+        (datetime(2026, 9, 26, 11, 0, tzinfo=SYD), 2),  # a Saturday
+    ],
+)
+def test_the_data_type_asked_for_follows_the_asx_clock(when, want):
+    from asxbot.ibkr.gateway import live_data_type
+
+    assert live_data_type(when) == want
+
+
+def test_the_data_type_is_switched_when_the_window_changes_and_only_then():
+    t = {"now": datetime(2026, 9, 25, 6, 50, tzinfo=SYD)}
+    gw, fake = gateway(quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
+                       wall=lambda: t["now"])  # fmt: skip
+    gw.connect()
+    gw.quote("BHP")
+    t["now"] = datetime(2026, 9, 25, 7, 30, tzinfo=SYD)
+    gw.quote("BHP")
+    gw.quote("BHP")
+    assert fake.mdt_calls == [2, 1]
+    assert gw.health.to_dict()["requested_data"] == "real-time"
+
+
+def test_no_subscription_in_hours_sends_the_feed_to_yahoo(tmp_path):
+    """Real-time is asked for in hours; without the subscription IBKR sends nothing (354)."""
+    now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
+    gw, fake = gateway(wall=lambda: now)
+    gw.connect()
+    fake.reqMktData = lambda c, g="": (
+        fake.errorEvent.emit(9, 354, "Requested market data is not subscribed.", c),
+        FakeTicker(marketDataType=None),
+    )[1]
+    feed, _ = _failover(tmp_path, gw, now)
+    feed.refresh(["BHP"], now)
+    assert not feed.using_primary and "354" in feed.why
 
 
 # --------------------------------------------------------------------------
@@ -487,12 +656,23 @@ def test_the_check_passes_on_live_data_and_fails_plainly_otherwise(cfg):
         "BHP": FakeTicker(bid=45.1, ask=45.12, last=45.11, close=44.8, marketDataType=2),
         "XJO": FakeTicker(last=8800.0, close=8790.0, marketDataType=2),
     }
-    gw, _ = gateway(bars={"BHP": session(DAY), "XJO": session(DAY, vol=0)}, quotes=quotes)
+    gw, fake = gateway(bars={"BHP": session(DAY), "XJO": session(DAY, vol=0)}, quotes=quotes)
     evening = datetime(2026, 9, 25, 21, 0, tzinfo=SYD)
     assert run_check(cfg, lines.append, gateway=gw, now=evening) == 0
-    assert lines[-1].startswith("PASS") and "BHP quote: frozen" in lines[3]
+    assert lines[-1].startswith("PASS") and "BHP quote: frozen" in lines[4]
+    assert "asked for frozen (2), got frozen (2)" in lines[3] and fake.mdt == 2
     saved = json.loads((cfg.data_dir / "arena" / "ibkr_check.json").read_text(encoding="utf-8"))
     assert saved["ok"] and saved["real_time_proven"]
+    assert (saved["requested_market_data"], saved["received_market_data"]) == ("frozen", "frozen")
+
+    lines.clear()  # no subscription: frozen is refused and nothing comes back
+    gw, fake = gateway(bars={"BHP": session(DAY)})
+    fake.reqMktData = lambda c, g="": (
+        fake.errorEvent.emit(9, 354, "Requested market data is not subscribed.", c),
+        FakeTicker(marketDataType=None),
+    )[1]
+    assert run_check(cfg, lines.append, gateway=gw, now=evening) == 1
+    assert "asked for frozen" in lines[-1] and "354" in lines[-1]
 
     lines.clear()
     gw, _ = gateway(refuse=True)

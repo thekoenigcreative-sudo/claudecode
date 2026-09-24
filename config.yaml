@@ -25,7 +25,11 @@ data:
   #              and each decision records which prices it used (the evening report says).
   # Fills stay simulated from the minute cache either way. Set to ibkr only after
   # `asxbot ibkr check` has passed.
-  live_provider: yfinance
+  # 2026-09-24, deliberate change (the pre-set condition, not a result): yfinance -> ibkr
+  # once `asxbot ibkr check` passed at 21:35 against the live Gateway (BHP quote frozen/2,
+  # BHP bars vs Yahoo, XJO bars; data/arena/ibkr_check.json). Real-time in market hours is
+  # re-probed by the feed every 10 minutes, falling back to Yahoo if IBKR sends anything else.
+  live_provider: ibkr
 
 # IB Gateway, market data ONLY (src/asxbot/ibkr). Added 2026-09-24. No order call exists in
 # that code (a test fails the build if one appears), the connection is read-only, and
