@@ -88,7 +88,7 @@ Rick's message:
 """
 
 OWN_HELP = """\
-The Trader chat: talk to the decider, the agent that makes the arena's trades, about the \
+The Trader's chat: talk to the decider, the agent that makes the arena's trades, about the \
 arena - what it traded and why, the playbooks, how the day went. It never places real \
 trades, and it can't place, change or approve any order from this chat. The arena is \
 fake money. The watcher runs by itself, 7:30am to 7:25pm on trading days.

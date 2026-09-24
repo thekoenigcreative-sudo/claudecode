@@ -182,7 +182,7 @@ def test_commands_never_reach_the_decider(env):
     chat.wait_idle(env.app, 10)
     assert env.decider.calls == []
     texts = env.tg.texts()
-    assert texts[0].startswith("The Trader chat: talk to the decider") and "/change" in texts[0]
+    assert texts[0].startswith("The Trader's chat: talk to the decider") and "/change" in texts[0]
     assert texts[1] == texts[0]  # /start is /help
     assert texts[2].splitlines()[1].startswith("Watcher: ")
     assert "Open fake-money positions: 0" in texts[2] and "Orders today: 0 placed" in texts[2]
