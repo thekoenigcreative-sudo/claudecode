@@ -231,3 +231,29 @@ def test_the_agent_is_not_asked_about_a_stale_setup(arena, cfg, mb, monkeypatch)
     arena.broker.clock = Clock(at(10, 35))
     out = DT.cycle(arena, pb, view, at(10, 35), refresh=False)
     assert out and out[0]["skipped"].startswith("stale")
+
+
+def test_a_working_pre_open_order_postpones_the_look_rather_than_cancelling_it(
+    arena, cfg, mb, monkeypatch
+):
+    pb = load_playbook(cfg, "asx_announcements_v2")
+    _market(mb)
+    enqueue(cfg.data_dir, DAY, _announcement(), "tradeable")
+    acct = arena.account(pb, "agent")
+    arena.broker.clock = Clock(at(8, 40))
+    o = arena.broker.submit(acct, ticker="NEWS", side="buy", qty=100, limit=0.5, stop=0.4)
+    calls = []
+    def agent(name, msg, **k):
+        calls.append(name)
+        return Reply(_decision())
+
+    monkeypatch.setattr(v2_flow, "call_agent", agent)
+    view = MarketView(mb, DAY, ReplayFeed(mb, 0), "^AXJO", 5, 3)
+    v2_flow.reaction_looks(arena, pb, view, at(10, 12))
+    assert "trader-decider" not in calls
+    assert load_queue(cfg.data_dir, DAY)["NEWS"]["status"] == "queued"
+    o.status = "expired"  # the auction never met its limit
+    arena.broker.store.save(acct)
+    arena.broker.clock = Clock(at(10, 14))
+    v2_flow.reaction_looks(arena, pb, view, at(10, 14))
+    assert "trader-decider" in calls

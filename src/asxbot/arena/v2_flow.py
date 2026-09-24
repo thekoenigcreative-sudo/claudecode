@@ -221,15 +221,15 @@ def auction_info(arena, code: str, day: date) -> dict:
 
 
 def reader_summaries(data_dir, day: date, ids: list[str]) -> list[str]:
-    out = []
+    """The reader's summaries of these announcements, whenever it wrote them (the ASX's ids
+    are unique; news after yesterday's close was read yesterday evening). The latest per id."""
+    by_id: dict[str, str] = {}
     for r in EventLog(data_dir).read("arena_decisions"):
-        if r.get("stage") != "reader" or str(r.get("ids_id")) not in ids:
-            continue
-        if str(r.get("ts", ""))[:10] != day.isoformat():
+        if r.get("stage") != "reader" or str(r.get("ids_id")) not in ids or r.get("is_test"):
             continue
         if r.get("summary"):
-            out.append(str(r["summary"]))
-    return out
+            by_id[str(r["ids_id"])] = str(r["summary"])
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def _has_exposure(acct: Account, code: str) -> bool:
@@ -343,16 +343,20 @@ def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None =
     for code, item in q.items():
         if code.startswith("_") or item.get("status") != "queued":
             continue
-        if _has_exposure(acct, code):
-            item.update(status="held", why="the agent already holds it or has an entry working")
-            ev.append("v2_reaction", {"ticker": code, **_brief(item)})
-            continue
         st = look_status(view, item, now, pb)
         if st.status == "wait":
             continue
+        # Held, or an entry working (a pre-open order is still "working" until the delayed
+        # feed shows the auction, ~10:22): no look this cycle, but no verdict either - if
+        # the order expires or the position is stopped out, the look still comes.
+        exposed = _has_exposure(acct, code)
         if st.status in ("halted", "missed"):
-            item.update(status=st.status, why=st.why)
+            held = "the agent held it or had an entry working through the window; "
+            item.update(status="held" if exposed else st.status,
+                        why=(held if exposed else "") + st.why)  # fmt: skip
             ev.append("v2_reaction", {"ticker": code, **_brief(item)})
+            continue
+        if exposed:
             continue
         r = reaction(view, code, now, st.ref, st.base)
         ok, why = wakes(r, pb)
@@ -558,11 +562,11 @@ def v2_bot_cycle(
         state.update(
             status="missed",
             why=(
-                f"the 10:29 bar was not final (feed at {data_time:%H:%M})"
-                if data_time
-                else "no index bars"
-            )
-            + f" by {latest:%H:%M}; nothing is traded late",
+                f"not decided by {latest:%H:%M}: first reached at {now:%H:%M} with the feed "
+                + (f"at {data_time:%H:%M}" if data_time else "holding no index bars")
+                + ("" if state.get("status") != "waiting" else ", still waiting for 10:29")
+                + "; nothing is traded late"
+            ),
         )
         save_bot_state(cfg.data_dir, day, state)
         log.warning("v2 rule bot missed %s: %s", day, state["why"])
