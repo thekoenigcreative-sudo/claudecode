@@ -257,3 +257,17 @@ def test_a_working_pre_open_order_postpones_the_look_rather_than_cancelling_it(
     arena.broker.clock = Clock(at(10, 14))
     v2_flow.reaction_looks(arena, pb, view, at(10, 14))
     assert "trader-decider" in calls
+
+
+def test_the_evening_report_says_day_n_of_10_and_delayed_data_for_each_playbook(arena, cfg):
+    from datetime import date
+
+    from asxbot.arena.report import agent_brief, gather, render_plain
+
+    facts = gather(arena, date(2026, 9, 25))
+    text = render_plain(facts)
+    assert "ASX announcements v2 (trade the reaction)</b>: day 1 of 10 (v2)" in text
+    assert "ASX day trader</b>: day 1 of 10 (v1)" in text
+    assert text.count("delayed data - rehearsal until IBKR live prices") >= 2
+    brief = agent_brief(facts)
+    assert "day 1 of 10 (v2)" in brief and "word for word" in brief
