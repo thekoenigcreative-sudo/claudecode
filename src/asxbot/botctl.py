@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BOTCTL_VERSION = "2026-09-24.3"
+BOTCTL_VERSION = "2026-09-24.4"
 
 CHANGES_DIR = Path(os.environ.get("CC_CHANGES_DIR") or r"C:\Users\Richa\.cc-jobs\changes")
 OPENCLAW_JSON = Path(
@@ -655,16 +655,23 @@ def node_bin() -> str:
 
 def abort_turn(t: Turn) -> None:
     """chat.abort on the gateway (what OpenClaw's own /stop does), then end the CLI process
-    if it is still there (an embedded fallback run doesn't hear chat.abort)."""
-    RUN([node_bin(), "--input-type=module", "-e", ABORT_JS, t.full_key()], 60)
-    time.sleep(2)
+    if it is still there (an embedded fallback run doesn't hear chat.abort). Only the
+    processes found BEFORE the abort are ended, so a new turn on the same session that
+    starts meanwhile is never touched."""
     key = re.sub(r"[^A-Za-z0-9:._-]", "", t.key)
-    if len(key) < 8:
+    pids: list[str] = []
+    if len(key) >= 8:
+        pat = r'--session-key\s+"?' + re.escape(key) + r'"?(\s|$)'
+        ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'node.exe','cmd.exe' "
+              f"-and $_.CommandLine -match '{pat}' }} | ForEach-Object {{ $_.ProcessId }}")
+        _, out, _ = RUN(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], 60)
+        pids = [x.strip() for x in out.split() if x.strip().isdigit()]
+    RUN([node_bin(), "--input-type=module", "-e", ABORT_JS, t.full_key()], 60)
+    if not pids:
         return
-    pat = r'--session-key\s+"?' + re.escape(key) + r'"?(\s|$)'
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'node.exe','cmd.exe' "
-          f"-and $_.CommandLine -match '{pat}' }} | ForEach-Object {{ Stop-Process -Id "
-          "$_.ProcessId -Force -ErrorAction SilentlyContinue }")
+    time.sleep(2)
+    ps = ("foreach ($p in @(" + ",".join(pids) + ")) { Stop-Process -Id $p -Force "
+          "-ErrorAction SilentlyContinue }")
     RUN(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], 60)
 
 
@@ -828,6 +835,9 @@ HANDLED = ("stop", "queue", "model", "models", "think", "reasoning", "status", "
            "undo")
 
 
+BUTTON = re.compile(r"chg:[bcsux]:")  # this module's callback data; a bot may use chg:<n>
+
+
 def parse_command(text: str) -> tuple[str, str] | None:
     """'/Think: high' -> ('think', 'high'); '/model@my_bot x' -> ('model', 'x')."""
     t = (text or "").strip()
@@ -917,7 +927,7 @@ class BotCtl:
         return True
 
     def on_button(self, data: str, from_id: str | None = None) -> bool:
-        if not data.startswith("chg:"):
+        if not BUTTON.match(data or ""):
             return False
         if from_id is not None and str(from_id) != RICK_ID:
             return True  # only Rick's tap counts
@@ -960,6 +970,15 @@ class BotCtl:
             self.conveyor.tick()
 
     # ---------------------------------------------------------------- helpers
+    def note(self, line: str) -> None:
+        """A line for the bot's own botctl.log (never sent to Rick)."""
+        path = self.ad.home / "botctl.log"
+        try:
+            old = path.read_text(encoding="utf-8")[-200_000:] if path.exists() else ""
+            WRITE(path, old + f"{_stamp()} {line}\n")
+        except OSError:
+            pass
+
     def say(self, text: str, buttons: list[tuple[str, str]] | None = None) -> None:
         if text.startswith(self.ad.name):  # "the Trader ..." starting a sentence
             text = text[:1].upper() + text[1:]
@@ -1030,9 +1049,13 @@ class BotCtl:
 
     def _offer(self, words, res, from_chat, answer, rec) -> None:
         if isinstance(res, BaseException):
+            self.note(f"change reader failed: {res}")
+            if from_chat and rec is None and self._handoff:
+                self._handoff(words)  # it may well be ordinary chat: answer it as such
+                return
             if from_chat:
-                self.say("I couldn't work out whether that was a change request (the reader "
-                         "didn't answer). If it was, send it again as /change <what to change>.")
+                self.say("I couldn't work out whether that was a change request. If it was, "
+                         "send it again as /change <what to change>.")
             else:
                 self.say("I couldn't read that change request just now (the reader didn't "
                          "answer). Please try /change again in a minute. Nothing has changed.")
@@ -1051,8 +1074,10 @@ class BotCtl:
             self.say("Thanks. That doesn't need a change to how I work, so I haven't queued "
                      f"anything.{hint}")
             return
-        rule = off_limits(self.ad.bot, words, res.get("summary", "")) or (
-            str(res["off_limits"]) if res.get("off_limits") else None)
+        rule = off_limits(self.ad.bot, words, res.get("summary", ""))
+        if not rule and res.get("off_limits"):
+            self.note(f"reader flagged off limits: {res['off_limits']}")
+            rule = "it would touch something only Claude may change"
         rec = rec or self._new_rec(words)
         if rule:
             self._refuse(words, rule, rec)
@@ -1281,7 +1306,8 @@ class BotCtl:
         try:
             cfg = load_openclaw()
         except (OSError, ValueError) as e:
-            self.say(f"I can't read the model list right now ({e}).")
+            self.note(f"model list unreadable: {e}")
+            self.say("I can't read the model list right now; try again in a minute.")
             return
         self.say("Models allowed here:\n" + self._models_list(cfg)
                  + "\nPick one with /model " + ("<agent> " if len(self.ad.agents) > 1 else "")
@@ -1294,7 +1320,8 @@ class BotCtl:
             try:
                 m, t = effective(cfg, a.agent_id)
             except KeyError:
-                out.append(f"{a.target}: not set up")
+                label = a.target if len(self.ad.agents) > 1 else self.ad.name
+                out.append(f"{label}: not set up on this PC")
                 continue
             pinned = "" if (m == a.pinned_model and t == a.pinned_thinking) else (
                 f" (normally {pretty_model(a.pinned_model)}, {a.pinned_thinking})")
@@ -1314,7 +1341,8 @@ class BotCtl:
         try:
             cfg = load_openclaw()
         except (OSError, ValueError) as e:
-            self.say(f"I can't read the model settings right now ({e}).")
+            self.note(f"model settings unreadable: {e}")
+            self.say("I can't read the model settings right now; try again in a minute.")
             return
         toks = arg.split()
         if not toks or toks[0].lower() in ("status", "list"):
@@ -1393,19 +1421,23 @@ class BotCtl:
         try:
             set_agent_field(agent.agent_id, fld, new)
         except (ChangeFailed, KeyError, OSError) as e:
-            self.say(f"Not changed: {e}. {self._who(agent)} still uses {shown_old}.")
+            self.note(f"{fld} change for {agent.agent_id} failed: {e}")
+            self.say(f"Not changed: the settings change didn't go through, so nothing was "
+                     f"changed. {self._who(agent)} still uses {shown_old}.")
             return
         extra = None
         if self.ad.after_agent_change:
             try:
                 extra = self.ad.after_agent_change(agent, fld, old, new, note)
             except Exception as e:  # noqa: BLE001 - put the setting back, then say why
+                self.note(f"recording the {fld} change for {agent.agent_id} failed: {e}")
                 try:
                     set_agent_field(agent.agent_id, fld, old)
-                    back = f"put back to {shown_old}"
+                    back = f"put it back to {shown_old}"
                 except (ChangeFailed, KeyError, OSError) as e2:
-                    back = f"and putting it back failed too ({e2}); ask Claude"
-                self.say(f"Not changed: recording it failed ({e}), so I {back}.")
+                    self.note(f"putting it back failed: {e2}")
+                    back = "couldn't put it back either; ask Claude to check"
+                self.say(f"Not changed: recording it failed ({str(e)[:120]}), so I {back}.")
                 return
         self._record_setting(agent, fld, old, new)
         what = "model" if fld == "model" else "thinking level"
@@ -1466,15 +1498,18 @@ class BotCtl:
                      " /new clears the recent messages it uses too.")
             return
         rc, out, err = RUN([openclaw_bin(), "sessions", "compact", keys[0]], 300)
+        if rc != 0:
+            self.note(f"compact failed: {(err or out).strip()[:300]}")
         self.say("Compacted the conversation." if rc == 0 else
-                 f"Compacting didn't work: {(err or out).strip()[:200]}")
+                 "Compacting didn't work this time; nothing was lost.")
 
     def status_lines(self) -> list[str]:
         out = []
         try:
             out += self.model_lines()
         except (OSError, ValueError) as e:
-            out.append(f"Model settings unreadable: {e}")
+            self.note(f"model settings unreadable: {e}")
+            out.append("Model settings: unreadable just now")
         q = self.queue()
         running = TURNS.running()
         out.append(f"Queue: {q['mode']}"
