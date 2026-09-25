@@ -21,8 +21,24 @@ class ConfigError(RuntimeError):
     pass
 
 
+HOME_ENV = "ASXBOT_HOME"
+
+
 def repo_root() -> Path:
-    """The repo root: directory containing config.yaml and SPEC.md, walking up from here."""
+    """Where config.yaml, .env, data/ and reports/ live.
+
+    ASXBOT_HOME names it when the code runs from a release outside Google Drive
+    (scripts/deploy.py, from 2026-09-25): the code is an export of one commit under
+    %LOCALAPPDATA%sx-boteleases, the settings and the data stay in the checkout on
+    Drive. Without it: the directory containing config.yaml and SPEC.md, walking up from
+    here (the checkout itself, or an export being tested).
+    """
+    home = os.environ.get(HOME_ENV)
+    if home:
+        root = Path(home)
+        if not (root / "config.yaml").exists():
+            raise ConfigError(f"{HOME_ENV}={home} has no config.yaml")
+        return root
     here = Path(__file__).resolve()
     for parent in [here, *here.parents]:
         if (parent / "config.yaml").exists() and (parent / "SPEC.md").exists():

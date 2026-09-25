@@ -945,6 +945,9 @@ def watch(
     win = announcement_window(cfg)
     hours = (win[0].strftime("%H:%M"), win[1].strftime("%H:%M"))
     handled = _load_handled(cfg.data_dir, datetime.now(SYD).date())
+    from asxbot import release
+
+    log.info("arena watch: running from %s", release.describe())
     log.info(
         "arena watch: playbook %s at level %s, %d announcements already handled today",
         pb.key, pb.level.number, len(handled),

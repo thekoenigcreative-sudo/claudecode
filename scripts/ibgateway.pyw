@@ -37,7 +37,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+# The release this file is part of (scripts/deploy.py, asxbot.release), and the checkout
+# holding config.yaml (ASXBOT_HOME, set by the task shim); the same folder when run from the
+# checkout. IBC's settings template comes from the release, config.yaml from the checkout.
+RELEASE = Path(__file__).resolve().parents[1]
+REPO = Path(os.environ.get("ASXBOT_HOME") or RELEASE)
 MAX_TWOFA_TIMEOUTS = 3
 FAILURES = Path(r"C:\venvs\asx-bot\task-failures.log")
 
@@ -53,7 +57,7 @@ def main() -> int:
             fh.write(f"{stamp()}  ABORTED (ibgateway): {REPO} is not available. Google Drive "
                      "is not mounted, which usually means nobody is logged in.\n")  # fmt: skip
         return 1
-    sys.path.insert(0, str(REPO / "src"))
+    sys.path.insert(0, str(RELEASE / "src"))
     from asxbot import proc as hidden
     from asxbot.ibkr import credentials
     from asxbot.ibkr import ibc
@@ -78,7 +82,7 @@ def main() -> int:
         write_json(LAUNCHER_STATE, state)
 
     save()
-    template = REPO / "scripts" / "ibc" / "config.ini"
+    template = RELEASE / "scripts" / "ibc" / "config.ini"
     twofa = 0
     while True:
         paths.config.parent.mkdir(parents=True, exist_ok=True)
@@ -105,7 +109,7 @@ def main() -> int:
             save(phase="exited", phase_at=stamp(), exit={"code": None, "reason": str(e),
                                                           "at": stamp(), "gave_up_2fa": False})
             return 2
-        log(f"=== starting IB Gateway via IBC {ibc.IBC_VERSION}: login "
+        log(f"=== starting IB Gateway via IBC {ibc.IBC_VERSION} (from {RELEASE.name}): login "
             f"{'from Credential Manager' if login else 'NOT stored - Gateway will ask Rick'}"
             f"{', auto-restart (no new login needed)' if restart_dir else ''} ===")  # fmt: skip
         log("command: " + ibc.redacted(cmd, login))

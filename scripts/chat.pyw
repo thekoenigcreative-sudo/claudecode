@@ -36,8 +36,21 @@ from datetime import date, datetime
 from pathlib import Path
 
 VENV = Path(r"C:\venvs\asx-bot\Scripts")
+# The release this file is part of (an export under %LOCALAPPDATA%\asx-bot\releases, or the
+# checkout itself), and REPO: where config.yaml, .env, data/ and reports/ live. The task shim
+# (scripts/deploy.py, asxbot.release) sets ASXBOT_HOME; run straight from the checkout the
+# two are the same folder. Every child gets both, with PYTHONPATH on the release's src.
+RELEASE = Path(__file__).resolve().parents[1]
+REPO = Path(os.environ.get("ASXBOT_HOME") or RELEASE)
+
+
+def release_env(extra: dict) -> dict:
+    return {
+        **os.environ, "ASXBOT_HOME": str(REPO), "ASXBOT_RELEASE": str(RELEASE),
+        "PYTHONPATH": str(RELEASE / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        **extra,
+    }  # fmt: skip
 ASXBOT = [str(VENV / "asxbot.exe"), "chat"]
-REPO = Path(__file__).resolve().parents[1]
 RESTART_WAIT_S = 60
 MAX_RESTARTS_PER_HOUR = 5
 STOP_CODES = {
@@ -128,10 +141,13 @@ def main() -> int:
                      "not mounted, which usually means nobody is logged in.\n")  # fmt: skip
         return 1
     os.chdir(REPO)
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1",
-           "ASXBOT_LOG_DIR": str(LOG_DIR), "ASXBOT_CHAT_PARENT": str(os.getpid())}  # fmt: skip
+    env = release_env({
+        "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1",
+        "ASXBOT_LOG_DIR": str(LOG_DIR), "ASXBOT_CHAT_PARENT": str(os.getpid()),
+    })  # fmt: skip
     log = DailyLog()
-    log.write(f"\n=== chat launcher starting {stamp()} (pid {os.getpid()}) ===")
+    log.write(f"\n=== chat launcher starting {stamp()} (pid {os.getpid()}) from {RELEASE.name}, "
+              f"settings in {REPO} ===")  # fmt: skip
     restarts: list[float] = []
     try:
         while True:

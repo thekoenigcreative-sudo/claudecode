@@ -36,7 +36,20 @@ from datetime import datetime
 from pathlib import Path
 
 VENV = Path(r"C:\venvs\asx-bot\Scripts")
-REPO = Path(__file__).resolve().parents[1]
+# The release this file is part of (an export under %LOCALAPPDATA%\asx-bot\releases, or the
+# checkout itself), and REPO: where config.yaml, .env, data/ and reports/ live. The task shim
+# (scripts/deploy.py, asxbot.release) sets ASXBOT_HOME; run straight from the checkout the
+# two are the same folder. Every child gets both, with PYTHONPATH on the release's src.
+RELEASE = Path(__file__).resolve().parents[1]
+REPO = Path(os.environ.get("ASXBOT_HOME") or RELEASE)
+
+
+def release_env(extra: dict) -> dict:
+    return {
+        **os.environ, "ASXBOT_HOME": str(REPO), "ASXBOT_RELEASE": str(RELEASE),
+        "PYTHONPATH": str(RELEASE / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        **extra,
+    }  # fmt: skip
 
 
 def logs_dir() -> Path:
@@ -74,8 +87,8 @@ def main() -> int:
                      "is not mounted, which usually means nobody is logged in.\n")  # fmt: skip
         return 1
     os.chdir(REPO)
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1",
-           "ASXBOT_LOG_DIR": str(LOG_DIR), "ASXBOT_STDOUT_LOG": str(LOG)}  # fmt: skip
+    env = release_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1",
+                       "ASXBOT_LOG_DIR": str(LOG_DIR), "ASXBOT_STDOUT_LOG": str(LOG)})  # fmt: skip
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     try:
         from asxbot.log import rotate_daily
@@ -84,7 +97,8 @@ def main() -> int:
     except OSError:
         pass  # a log that could not be rotated is still a log; carry on appending
     with open(LOG, "a", encoding="utf-8", buffering=1) as log:
-        log.write(f"\n=== warm-up starting {stamp()} (hidden) ===\n")
+        log.write(f"\n=== warm-up starting {stamp()} (hidden) from {RELEASE.name}, settings in "
+                  f"{REPO} ===\n")  # fmt: skip
         try:
             # Imported here, after the check that the repo is mounted: asxbot lives on G:.
             from asxbot import proc as hidden

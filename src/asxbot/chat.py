@@ -933,8 +933,10 @@ def main(args) -> int:
 
     setup_logging(file=False, stream=sys.stdout)
     repo = repo_root()
-    log.info("Trader chat starting on commit %s (botctl %s, pid %d)", git_commit(repo),
-             botctl.BOTCTL_VERSION, os.getpid())  # fmt: skip
+    from asxbot import release
+
+    log.info("Trader chat starting on commit %s (botctl %s, pid %d), code from %s",
+             git_commit(repo), botctl.BOTCTL_VERSION, os.getpid(), release.describe())  # fmt: skip
     cfg = load_config()
     try:
         bot = load_bot(cfg)
