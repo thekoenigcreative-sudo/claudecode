@@ -536,6 +536,28 @@ caches its conId, and refuses a match that is not an ASX primary listing in AUD.
 - The first request to the real thing is the test. Until then, "built and tested" means
   "built".
 
+## 24. Gateway died with the window that started it, and the fallback never came back
+
+25 Sep, 08:58:29: IB Gateway's log stops, the same second an automatic update of the Claude
+desktop app began (Windows AppX log: 35 s servicing, 08:58:29-08:59:05; Claude's extensions
+restarted at 08:59:09). Gateway had been started from a Claude session, and went down with
+the app. Nothing noticed until ~10:10. Rule 9 again, for a program we do not even own: the
+watcher's lesson (23 Sep) was never applied to Gateway. Gateway is now started only through
+its own scheduled task, by a supervisor that checks it every 2 minutes from outside
+(`ibkr/supervisor.py`, docs/ibgateway.md).
+
+Second defect, found the same morning: when Gateway came back (Rick logged in at 10:16), the
+watcher's first IBKR bars batch timed out at 10:17. The code marks the link down on a timeout
+but keeps the socket open, and only a Gateway "link restored" message cleared the mark - a
+message Gateway never sends for a link it never reported lost. So the watcher stayed on
+Yahoo for the rest of the day, while every health line said "connected". `maybe_reconnect`
+now opens a fresh connection when a connected Gateway is not ready; a test with the fake
+fails on the old code.
+
+- A fallback is half a feature. Test the way back as hard as the way out.
+- A flag we set ourselves needs a way for us to clear it. Waiting for someone else's
+  message to clear our own inference is waiting forever.
+
 ---
 
 ## Standing rules

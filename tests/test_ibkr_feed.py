@@ -530,6 +530,87 @@ def test_the_feed_falls_back_and_comes_back(tmp_path):
     assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
 
 
+def test_a_batch_that_timed_out_does_not_keep_the_watcher_on_yahoo(tmp_path):
+    """25 Sep 2026, 10:17: the first bars batch on a freshly logged-in Gateway timed out; the
+    link was marked down while the socket stayed open, and only a Gateway "restored" message
+    could clear it - one never sent for a link Gateway itself never reported lost. A fresh
+    connection after `reconnect_every_s` now puts the watcher back on IBKR."""
+    clock = Clock()
+    now = datetime(2026, 9, 25, 10, 17, tzinfo=SYD)
+    gw, fake = gateway(clock, bars={"BHP": session(DAY)},
+                       quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
+                       settings={"reconnect_every_s": 60})  # fmt: skip
+    gw.connect()
+    feed, ev = _failover(tmp_path, gw, now)
+    real_run = fake.run
+
+    def timed_out(aw):
+        aw.close()
+        raise TimeoutError()
+
+    fake.run = timed_out
+    feed.refresh(["BHP"], now)
+    fake.run = real_run
+    assert gw.health.last_error == "bars batch failed: TimeoutError()" and not gw.ready
+    feed.refresh(["BHP"], now + timedelta(seconds=30))
+    assert not feed.using_primary and fake.connected  # on Yahoo, socket still open
+
+    clock.t += 30
+    feed.refresh(["BHP"], now + timedelta(seconds=60))
+    assert not feed.using_primary  # not before reconnect_every_s
+    clock.t += 31
+    feed.refresh(["BHP"], now + timedelta(seconds=91))
+    assert feed.using_primary and gw.ready
+    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
+    assert F.read_status(tmp_path / "data")["provider_in_use"] == "ibkr"
+
+
+def test_a_gateway_that_dies_and_comes_back_is_used_again_by_itself(tmp_path):
+    """Gateway's process gone (08:58 on 25 Sep), the port refusing while it is down, then a
+    new Gateway logged in: the watcher goes to Yahoo and comes back with no restart."""
+    clock = Clock()
+    now = datetime(2026, 9, 25, 9, 0, tzinfo=SYD)
+    gw, fake = gateway(clock, bars={"BHP": session(DAY)},
+                       quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
+                       settings={"reconnect_every_s": 60})  # fmt: skip
+    gw.connect()
+    feed, ev = _failover(tmp_path, gw, now)
+    assert feed.using_primary
+
+    fake.connected = False  # the process is killed: the socket closes
+    fake.refuse = True  # and nothing listens on 4001 while it is down
+    for h in fake.disconnectedEvent.handlers:
+        h()
+    feed.refresh(["BHP"], now + timedelta(minutes=1))
+    assert not feed.using_primary and feed.backup.refreshed
+    for m in range(2, 6):
+        clock.t += 61
+        feed.refresh(["BHP"], now + timedelta(minutes=m))
+        assert not feed.using_primary  # still down: tried, refused, still on Yahoo
+    assert gw.health.refused
+
+    fake.refuse = False  # the supervisor's Gateway is up and logged in
+    clock.t += 61
+    feed.refresh(["BHP"], now + timedelta(minutes=7))
+    assert feed.using_primary and feed.label == F.LIVE_LABEL
+    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
+
+
+def test_a_gateway_still_cut_off_from_ibkr_after_a_fresh_connection_stays_on_yahoo(tmp_path):
+    clock = Clock()
+    now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
+    gw, fake = gateway(clock, quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
+                       settings={"reconnect_every_s": 60})  # fmt: skip
+    gw.connect()
+    feed, _ = _failover(tmp_path, gw, now)
+    fake.errorEvent.emit(-1, 1100, "Connectivity between IB and TWS has been lost.", None)
+    fake.on_connect = [(2110, "Connectivity between TWS and server is broken.")]
+    feed.refresh(["BHP"], now + timedelta(minutes=1))
+    clock.t += 61
+    feed.refresh(["BHP"], now + timedelta(minutes=2))
+    assert not feed.using_primary and fake.connected and not gw.health.server_ok
+
+
 def test_delayed_ibkr_data_in_market_hours_is_not_used(tmp_path):
     now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
     gw, fake = gateway(quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2,

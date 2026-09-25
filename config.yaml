@@ -46,7 +46,12 @@ ibkr:
   max_requests_per_10min: 600
   max_concurrent_requests: 8  # IBKR allows 50 open at once
   min_refetch_s: 15           # never the same request twice inside 15 s
-  reconnect_every_s: 300      # while on the Yahoo fallback, try Gateway again this often
+  # While on the Yahoo fallback, try Gateway again this often. 2026-09-25, deliberate change
+  # (not a finding; plumbing, not a trading rule): 300 -> 60, so the watcher is back on IBKR
+  # within a minute of IB Gateway coming back (Rick: Gateway down 08:58-10:16 on 25 Sep).
+  # A try against a closed port is refused at once; against a live Gateway it is one
+  # read-only handshake.
+  reconnect_every_s: 60
   quote_wait_s: 3
   generic_ticks: "225"        # 225 = the auction's indicative price, volume and imbalance
   probe_code: BHP             # quoted every 10 min in market hours to confirm real-time

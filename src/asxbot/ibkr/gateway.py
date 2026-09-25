@@ -593,7 +593,15 @@ def maybe_reconnect(gw: Gateway) -> bool:
             gw.ib.sleep(0.2)  # let Gateway's "link restored" messages in
         except Exception:  # noqa: BLE001
             pass
-        return gw.ready  # connected; only the server link is down, and Gateway restores it
+        if gw.ready:
+            return True
+        # Still connected, still not ready. Gateway sends "restored" (1101/1102) only for a
+        # link IT reported lost; when WE marked the link down (a bars batch that timed out
+        # or came back mostly empty) nothing from Gateway will ever clear the mark, and the
+        # watcher stayed on Yahoo all day (25 Sep 2026, from 10:17, after the first batch
+        # on a freshly logged-in Gateway timed out). So start a fresh connection: its
+        # handshake says whether the link is up (Gateway repeats 2110 if it is not).
+        gw.disconnect()
     return gw.connect()
 
 
