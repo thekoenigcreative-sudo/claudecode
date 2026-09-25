@@ -46,7 +46,8 @@ file, a log, a message or a printed command (`ibc.redacted`, `ibc.scrub`; tested
 - Never start Gateway (or IBC) from a terminal or a Claude session. Start it only through
   `schtasks /run /tn "ASXBot IB Gateway"` - or leave it to the supervisor.
 - Re-create the tasks: `scripts\register_ibgateway_tasks.ps1` (it leaves a running launcher
-  alone).
+  alone), then `scripts\register_release_tasks.ps1`, so they run the deployed release and not
+  this checkout.
 
 ## Deviations from the brief, and why
 

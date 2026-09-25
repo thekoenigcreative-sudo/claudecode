@@ -89,7 +89,8 @@ def test_the_check_would_catch_a_bypass(tmp_path):
 
 def test_the_scan_sees_the_modules_that_start_processes():
     names = {p.name for p in _sources()}
-    assert {"agents.py", "capital.py", "arena_evening.pyw", "arena_warmup.pyw"} <= names
+    # capital.py (the 23 Sep top-up) was deleted 26 Sep; selfcheck.py also starts processes.
+    assert {"agents.py", "selfcheck.py", "arena_evening.pyw", "arena_warmup.pyw"} <= names
 
 
 @pytest.mark.parametrize("fn, target", [(proc.run, "run"), (proc.popen, "Popen")])

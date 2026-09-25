@@ -1,6 +1,8 @@
 # ASX trading assistant — build spec (rev 4)
 *22 Sep 2026. Single source of truth for this repo. Supersedes all earlier drafts.*
 
+Rev 4 covers the real-money path, still sim only. What runs today is the fake-money arena (ARENA.md, config.yaml `arena:`, docs/); the Trader chat is `asxbot chat`, never an OpenClaw channel.
+
 ## 1. What this is
 A personal trading assistant for my own ASX account. It finds trade ideas, proposes each one with its reasoning, and I approve every trade on Telegram. It is never fully automatic.
 

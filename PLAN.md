@@ -23,7 +23,7 @@ An AI agent (OpenClaw) does the trading work — reading, researching and decidi
 ## The order — one tactic at a time, ASX first
 Each tactic is ranked on three things: how strong the evidence is, how much the AI's reading and research adds, and whether it can actually be traded live from Australia.
 
-1. **ASX announcements — Daily.** The first two days double as the shake-down that proves the machinery (the agent wakes, orders fill, stops trigger, reports arrive). Then a warm-up on free, delayed prices while IBKR is being set up, with each fill at the true market price at the moment of the agent's decision. The formal 10-trading-day test starts once IBKR's live ASX prices are switched on.
+1. **ASX announcements — Daily.** The first two days double as the shake-down that proves the machinery (the agent wakes, orders fill, stops trigger, reports arrive). Then a warm-up on free, delayed prices while IBKR was being set up (23-24 Sep), with each fill at the true market price at the moment of the agent's decision. The formal 10-trading-day tests run on IBKR's live ASX prices, switched on for 25 Sep (see below: v1 was retired and replaced by two playbooks).
 2. **ASX technical setups** (52-week highs, pullbacks), with the agent checking the news behind each one — days to weeks.
 3. **ASX directors buying — Monthly.** It trades rarely and needs almost no attention, so once built it runs quietly in the background and doesn't hold up the queue.
 4. **Crypto token unlocks — Weekly.** Fake money; going live needs a futures-venue decision.
@@ -44,8 +44,8 @@ which is not a test, so it is retired and two playbooks start their 10-day Daily
   opening-range breakout, VWAP reclaim, halt resumption); the agent confirms or rejects
   each; code sizes (0.5% risk), manages (breakeven, half off, trailing stop) and is flat by
   the close.
-Both run on Yahoo's delayed prices: a rehearsal until IBKR's live data is switched on, which
-is one line in config.yaml. Rules: config.yaml, frozen 2026-09-24 before they ran.
+Both run on IBKR's real-time prices (switched on for 25 Sep); when the live feed is down
+no new entry is decided. Rules: config.yaml, frozen 2026-09-24 before they ran.
 
 ## Each tactic's cycle
 build (one or two evenings) → shake-down (1–2 days) → test (Daily: 10 ASX trading days or 14 crypto days; Weekly: 4 weeks; Monthly: 3 months) → checkpoint → next tactic.
@@ -63,7 +63,7 @@ build (one or two evenings) → shake-down (1–2 days) → test (Daily: 10 ASX 
 - **At each checkpoint:** about 10 minutes, then one message to Claude Code to start the next build.
 
 ## Accounts, and when each is needed
-- **Now:** none. The ASX warm-up runs on free, delayed prices.
-- **IBKR:** for ASX live prices (tactic 1's formal test) and, later, ASX real money.
+- **Now:** IBKR (live account, ASX Total, read-only API): the arena's prices since 25 Sep.
+- **IBKR, later:** ASX real money.
 - **Binance or Kraken:** only when a crypto tactic goes live on spot.
 - **A futures venue:** only if a shorting crypto tactic earns real money. Decide then, knowing the offshore risks.

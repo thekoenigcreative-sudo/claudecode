@@ -11,8 +11,8 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 |---|---|---|---|
 | Aim | Profit every day | Profit every week | Profit every month |
 | Risk per trade (distance to stop x size) | up to 5% of account | up to 2% | up to 1% |
-| Open positions per playbook | up to 8 | up to 6 | up to 5 |
-| Leverage: crypto / ASX | up to 10x / 3x | up to 3x / 1.5x | none |
+| Open positions per playbook | up to 3, at most 6 new a day, $5,000 a position (since 24 Sep) | up to 6 | up to 5 |
+| Leverage: crypto / ASX | up to 10x / none (1x since 23 Sep) | up to 3x / 1.5x | none |
 | Holding period | intraday; overnight only with a written reason | days, up to 2 weeks | weeks, up to 3 months |
 | Daily loss limit (then no new trades until tomorrow) | 15% of account | 8% | 4% |
 | Wake-up thresholds | most sensitive | medium | standard |
@@ -26,7 +26,7 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 - Each tactic goes: **build** (Claude Code, one or two evenings) → **shake-down** (1–2 days in the simulator: alerts wake the agent, orders fill, the evening report arrives) → **Level 1 test** (14 days for crypto, 10 trading days for ASX) → **checkpoint** (the agent posts a pass/fail summary against the ladder rules; I reply to continue) → next tactic.
 - The first build is the biggest: it includes the shared machinery every later tactic reuses (the two agents, their tools, the simulator upgrades, the scoreboard, the evening report). Later builds are small.
 - **Order:** follow PLAN.md (it wins on order and priorities). ASX first, all crypto last:
-  1. ASX announcements (Daily). Its first two days double as the machinery shake-down; then a warm-up on free delayed prices, with each fill at the true market price at the moment of the decision; the formal 10-trading-day test starts once IBKR's live ASX prices are on and the ASX 300 archive is complete.
+  1. ASX announcements (Daily). Its first two days doubled as the machinery shake-down and a warm-up on free delayed prices (23-24 Sep), with each fill at the true market price at the moment of the decision. v1 was retired on 24 Sep; its successors (2a and 2b below) started their formal 10-trading-day tests on 25 Sep, on IBKR's live ASX prices.
   2. ASX technical setups. 3. ASX directors buying (Monthly; runs quietly in the background once built).
   4. Crypto token unlocks (Weekly). 5. Crypto new listings. 6. Crypto momentum (Weekly).
   7–10. Only if still wanted: intraday crypto breakouts, crash bounces, crowded trades, range trading.
@@ -53,7 +53,7 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 - **Dossiers:** a one-page brief on every stock and coin in the active playbooks (what it does, market value, cash and runway, recent news, how it reacted to similar news before). Refreshed in the evenings and on weekends, on Sonnet. When news lands, the decider starts with context instead of from scratch.
 - **Base rates from the bots:** the rule-based backtests supply the history (for example, how a given announcement type has moved prices over the next 10 days in stocks of that size). The agent uses that as its starting estimate and adjusts with judgment.
 - **Read-through:** when news hits one company or coin, the agent checks what it means for competitors, suppliers and the sector, and what commodity price moves mean for ASX miners.
-- **Morning brief (7:15am Sydney):** overnight US and commodity moves, today's catalysts, open positions and the day's plan.
+- **Morning brief (7:15am Sydney), not built:** overnight US and commodity moves, today's catalysts, open positions and the day's plan.
 
 ### At the event: decide fast
 - The reader quotes every figure it relies on, with the page, so the decider never trades on a misread number.
@@ -71,7 +71,7 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 
 ### After the trade: learn
 - Journals every trade: the thesis before, the outcome after, what it got right or wrong.
-- Code scores the agent's calibration (do its 70%-confidence calls win about 70% of the time?) so its sizing gets sharper over time.
+- Not built: code scores the agent's calibration (do its 70%-confidence calls win about 70% of the time?) so its sizing gets sharper over time.
 - Keeps its own dated rulebook of lessons and follows it; updated at most weekly, never retroactively.
 
 ### With the bots
@@ -87,9 +87,9 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 
 ## Agent workload and models
 Speed rule: the agent acts the moment something worth trading appears. Code watches every feed for the active playbooks continuously and wakes the agent instantly. Thresholds and intervals live in `config.yaml`.
-- **Two agents, two models:** `trader-reader` (primary model Sonnet 5) reads and triages every alert, announcement and news item, researches it, and writes a short structured summary ending in trade-worthy yes/no. Only "yes" items go to `trader-decider` (primary model Opus), which decides (trade or pass, direction, size, entry, stop, target) and calls `place_order`. Code hands the summary from one agent to the other. OpenClaw's per-spawn model override has open bug reports where it is silently ignored, so don't rely on it. A setup test confirms which model produced each step, and every decision logs its model name.
+- **Two agents, two models:** `trader-reader` (primary model Sonnet 5) reads and triages every alert, announcement and news item, researches it, and writes a short structured summary ending in trade-worthy yes/no. Only "yes" items went to `trader-decider` (primary model Opus) in v1; v2's reaction look asks it whatever the reader said, and the day trader sends it code-found setups. It decides (trade or pass, direction, size, entry, stop, target) in a DECISION block, and code calls `arena_place_order` with it. Code hands the summary from one agent to the other. OpenClaw's per-spawn model override has open bug reports where it is silently ignored, so don't rely on it. A setup test confirms which model produced each step, and every decision logs its model name.
 - **ASX timing:** announcements are released 7:30am to 7:30pm Sydney (8:30pm during daylight saving). A price-sensitive announcement during trading triggers an automatic 10-minute trading pause in that stock, and free copies appear about 20 minutes after release (the collector's first live test saw a 27-minute-old newest item). So the agent typically sees an announcement about 10 minutes after trading resumes; every minute after that matters. News before the 10am open: orders go in during the pre-open. After the close: queued for the next morning's pre-open.
-- **During ASX trading (10am to 4:10pm):** the agent reviews its open ASX positions every 15 minutes, and closes Level 1 positions before the close unless it writes a reason to hold.
+- **During ASX trading (10am to 4:10pm):** Code works stops, targets and trade management every minute; at 15:50 it closes every v2 and day-trader position without asking.
 - **Crypto:** around the clock, instant wake-ups on the active playbooks' triggers, plus an hourly news sweep by the reader.
 - **Every evening:** the agent writes the Telegram report: every trade, the reasoning, the scoreboard, and what it plans to watch next.
 - **Weekly:** research review of every playbook, level recommendations, and proposed changes or new playbooks for Claude Code to build.
@@ -102,7 +102,7 @@ Starting guidance and yardstick rules are fixed before each playbook goes live a
 
 ### Start at Level 1 — Daily
 1. **Intraday crypto breakouts.** Trigger: 15-minute and 1-hour breakouts on heavy volume in BTC, ETH and the most-traded coins, favouring high-volatility days (calm days show little follow-through). The agent checks the news behind the move and decides, long or short. Yardstick: 3x, stop at the breakout candle's low (or high for shorts), exit by the end of the UTC day.
-2. **ASX announcements** (warm-up on delayed prices with fills at the true price at decision time; the formal test needs IBKR's live ASX prices and the completed ASX 300 archive). Trigger: every price-sensitive announcement for a stock above the liquidity floor, including trading-halt resumptions. The agent reads it in full (PDF included), researches the company and judges the surprise: results against expectations, guidance changes, contract size against market value, drilling results, capital raisings and their discount, takeovers. Long on good news; short on bad news in ASX 200 stocks; same-day exits by default. Yardstick: strategy A (price-sensitive announcement plus a gap of 5% or more over the ASX 200 on 3x normal volume; 10-day exit; 8% stop), already built and backtested.
+2. **ASX announcements** (v1: a warm-up on delayed prices on 23-24 Sep, with fills at the true price at decision time; retired 24 Sep, see 2a). Trigger: every price-sensitive announcement for a stock above the liquidity floor, including trading-halt resumptions. The agent reads it in full (PDF included), researches the company and judges the surprise: results against expectations, guidance changes, contract size against market value, drilling results, capital raisings and their discount, takeovers. Long on good news; short on bad news in ASX 200 stocks; same-day exits by default. Yardstick: strategy A (price-sensitive announcement plus a gap of 5% or more over the ASX 200 on 3x normal volume; 10-day exit; 8% stop), already built and backtested.
 3. **Crash bounces.** Trigger: a large liquidation spike with price well below its 24-hour average. The agent judges whether the drop was forced selling or real news, and decides. Returns over the following month have tended to be below normal, so holds are hours. Yardstick: buy, target +3%, exit within 12 hours.
 4. **Crowded trades (funding).** Trigger: funding in the top 5% of a coin's own history with open interest rising, checked around each funding settlement. The agent judges whether the crowd is about to be squeezed and decides. Yardstick: trade against the crowd, stop 8%, exit within 24 hours at Level 1.
 5. **New listings, first days.** Trigger: each new major-exchange listing. The agent trades the first days' swings intraday, long or short, judging valuation, float, backers, hype and category (meme coins can squeeze shorts hard). Yardstick: from day 3, short on a close below the day-1 low; stop 25% above entry; exit on day 30.
@@ -129,12 +129,13 @@ every one. Code sizes at 0.5% risk, enforces the stop at the setup's invalidatio
 to breakeven at +1R, takes half at +2R and trails 1R behind, allows one re-entry per stock
 per day, and is flat at 15:50. Exact rules: config.yaml `asx_daytrader`.
 
-Both run on Yahoo's delayed bars: decisions use only bars that were final when they were
-made, fills come from the first bar after the order, and every report says "delayed data -
-rehearsal until IBKR live prices". `data.live_provider: ibkr` switches to IBKR's real-time
-prices through IB Gateway (built 24 Sep, read-only, no order call anywhere in it); Yahoo stays
-the automatic fallback whenever Gateway is down, and the evening report counts which prices
-each decision used. Fills stay simulated either way.
+Both run on IBKR real-time prices through IB Gateway (read-only; no order call in that code).
+When the live feed is down, delayed or stale, no new entry is decided: the day trader stops
+scanning, reaction looks and the v2 rule bot wait (a window that closes meanwhile is recorded
+as missed), and pre-open looks are skipped. Exits keep working, from Yahoo's delayed bars only
+while the stream is down. Fills stay simulated (docs/ibkr_live_data.md). A connection doctor
+inside the watcher names the cause of any IBKR trouble, takes the recovery that cause needs
+and tells Rick (src/asxbot/ibkr/doctor.py).
 
 ### Start at Level 2 — Weekly (these are weekly by nature)
 6. **Crypto momentum.** Trigger: the daily ranking of the top 30 coins by 2–4 week return, at 00:00 UTC when daily candles close. The agent picks and sizes up to 5 holdings, checking news, upcoming unlocks and themes, and rebalances weekly (the signal plays out over 1–4 weeks, so daily churn only pays fees). If BTC closes below its 200-day average, it decides whether to move to stablecoins. Yardstick: top 5, weekly rebalance, stablecoins when BTC is below its 200-day average.

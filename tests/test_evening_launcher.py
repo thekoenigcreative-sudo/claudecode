@@ -16,11 +16,40 @@ from pathlib import Path
 
 import pytest
 
-from asxbot.arena import capital as C
 from asxbot.log import logs_dir
 
 LAUNCHER = Path(__file__).resolve().parents[1] / "scripts" / "arena_evening.pyw"
 HEADER = re.compile(r"^=== evening report \d{4}-\d\d-\d\d \d\d:\d\d ===$")
+ANY_HEAD = re.compile(r"^=== evening report ")
+REPORT_STEP = "--- asxbot arena report"
+STEP_DONE = re.compile(r"^--- exit -?\d+ ---$")
+
+
+def evening_finished(log_text: str, day: date, slot: time) -> str | None:
+    """None if the evening routine for `day` ran in its slot and its report step returned;
+    otherwise why not. Moved here on 2026-09-26 from arena/capital.py (the 23 Sep top-up,
+    deleted), so the launcher's log is still proven readable as finished or not."""
+    lines = log_text.splitlines()
+    head = re.compile(rf"^=== evening report {day.isoformat()} (\d\d):(\d\d) ===$")
+    start = None
+    for i, line in enumerate(lines):
+        m = head.match(line.strip())
+        if m and (int(m.group(1)), int(m.group(2))) >= (slot.hour, slot.minute):
+            start = i
+    if start is None:
+        return f"no evening report for {day} at or after {slot:%H:%M} in the evening log"
+    section = lines[start + 1 :]
+    # Only this run's lines: a later day's run must not answer for this one.
+    section = section[: next((i for i, ln in enumerate(section) if ANY_HEAD.match(ln)), None)]
+    step = next((i for i, ln in enumerate(section) if ln.startswith(REPORT_STEP)), None)
+    if step is None:
+        return f"the evening routine for {day} has not reached its report step yet"
+    # The launcher writes output as it arrives, so a line after the step's header proves
+    # nothing; it closes each step with an exit line, and only that says the report returned.
+    if not any(STEP_DONE.match(ln.strip()) for ln in section[step + 1 :]):
+        return f"the evening report for {day} has started but not returned"
+    return None
+
 
 # Behaves like `asxbot arena ...` as far as the launcher can tell: prints, exits with a code.
 STANDIN = r"""
@@ -127,9 +156,9 @@ def test_the_routine_runs_every_step_in_order_and_logs_as_the_powershell_did(rep
     assert calls(repo) == [
         "arena evening-due", "arena resolve", "arena mark", "arena report --agent --send"
     ]  # fmt: skip
-    # The top-up's check reads this log and sees a finished evening.
+    # A reader of this log sees a finished evening.
     text = "\n".join(lines)
-    assert C.evening_finished(text, date.today(), time(0, 0)) is None
+    assert evening_finished(text, date.today(), time(0, 0)) is None
     # Nothing on Drive is held open: the log is local, and copied to data/logs/ whole.
     mirrored = repo / "data" / "logs" / "arena_evening.log"
     assert mirrored.read_bytes() == evening_log(repo).read_bytes()
@@ -200,7 +229,7 @@ def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
             )  # fmt: skip
     lines = log_lines(repo)
     assert lines[-2:] == ["--- asxbot arena report --agent --send ---", "the report, first line"]
-    why = C.evening_finished("\n".join(lines), date.today(), time(0, 0))
+    why = evening_finished("\n".join(lines), date.today(), time(0, 0))
     assert why is not None and "not returned" in why
 
 

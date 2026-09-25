@@ -1,6 +1,13 @@
-# Handover — 22 Sep 2026, ~20:40 AEST (home PC, RK-MINI)
+# Handover 22-24 Sep (historical)
 
-Supersedes the 15:25 laptop handover. Read PLAN.md first, then SPEC.md, STRATEGIES.md and
+> **Current state (26 Sep 2026): this file is history. For what runs now, read:**
+> docs/releases.md (what the scheduled tasks run, deploying); docs/ibkr_live_data.md and
+> docs/ibgateway.md (IBKR real-time prices, no entry on stale data); docs/chat.md (the Trader
+> chat, `asxbot chat`, never an OpenClaw channel); config.yaml `arena.playbooks` (announcements
+> v2 and the day trader, every limit); TRACKER.md (what is open, fixed and verified).
+
+*Written 22 Sep 2026, ~20:40 AEST (home PC, RK-MINI), added to until 24 Sep.* Supersedes the
+15:25 laptop handover. Read PLAN.md first, then SPEC.md, STRATEGIES.md and
 ARENA.md.
 
 ## Where things stand
@@ -44,8 +51,9 @@ on it, so nothing is pinned.
 
 ### The deferred fill rule (decided with Rick, 22 Sep)
 
-Free quotes are ~20 minutes delayed, so the true price at the moment of a decision is not
-knowable when the decision is made. So:
+Free quotes were ~20 minutes delayed (the arena's prices until 25 Sep; IBKR real-time
+since), so the true price at the moment of a decision was not knowable when the decision was
+made. So:
 
 - every order is recorded `pending_fill`, stamped `decided_at` (the clock when it is
   recorded) and `data_as_of` (when the data it was decided on was read);
@@ -83,7 +91,7 @@ still the default, still Sonnet 5, still on its own bot.
 |---|---|---|---|---|
 | `main` (JARVIS) | `anthropic/claude-sonnet-5` | (default) | `~\.openclaw\workspace` | `@JARVIS_Z2G9_bot` (`default`) |
 | `trader-reader` | `anthropic/claude-sonnet-5` | `medium` | `~\.openclaw\workspace-trader-reader` | none |
-| `trader-decider` | `anthropic/claude-opus-5-5` | `high` | `~\.openclaw\workspace-trader-decider` | `@rick_asx_trader_bot` (`trader`) |
+| `trader-decider` | `anthropic/claude-opus-5-5` | `high` | `~\.openclaw\workspace-trader-decider` | none since 24 Sep (was `@rick_asx_trader_bot`; that bot is `asxbot chat`'s now, docs/chat.md) |
 
 Effort is set per agent, 23 Sep, and needed no gateway restart:
 
@@ -105,13 +113,15 @@ assumed. Config backup: `openclaw.json.bak-20260923-pre-thinking`.
 
 **The reader now has two gates.** Its contract ends with `TRADE_WORTHY` and then
 `CAN_SIZE_AND_EXIT` ("enough here to size a position and exit it at sensible cost?"), and
-code calls the decider only when both are YES. Either line missing or unclear counts as
+code calls the decider only when both are YES (v1; v2's reaction look asks the decider
+whatever the reader said, and the day trader does not use the reader). Either line missing or unclear counts as
 NO. This is the second look after the plain-code screen, on what got through it.
 
 `channels.telegram` was migrated from a single `botToken` to a two-account form
 (`accounts.default` and `accounts.trader`), with explicit bindings so each bot routes to
 its own agent. The gateway was restarted on 22 Sep with Rick's approval; both channels
-probe as connected. Config backup: `openclaw.json.bak-20260922-pre-telegram-trader`.
+probe as connected. (`accounts.trader` was removed on 24 Sep: the trader bot is answered by
+`asxbot chat`, docs/chat.md, and must never be an OpenClaw channel again.) Config backup: `openclaw.json.bak-20260922-pre-telegram-trader`.
 
 Each agent has its own `AGENTS.md` operating manual, mirrored into `docs/agents/`.
 
@@ -179,13 +189,13 @@ Level 1 test on 25 Sep; the evening report says "day N of 10 (v2)" / "(v1)".
 
 | Piece | Where |
 |---|---|
-| Intraday data (Yahoo delayed now; `data.live_provider: ibkr` switches to IBKR, see below) | `arena/intraday.py` - batched fetches held in memory, whole sessions written to the minute cache once at 16:40 |
+| Intraday data (IBKR real-time since 25 Sep, `data.live_provider: ibkr`; Yahoo's delayed bars only for exits while the stream is down, docs/ibkr_live_data.md) | `arena/intraday.py` - batched fetches held in memory, whole sessions written to the minute cache once at 16:40 |
 | Size-aware liquidity rule | `arena/liquid.py` (order < 5% of median daily turnover; also in `arena_place_order`) |
 | v2 screen, reaction, queue, rule bot arithmetic | `arena/reaction_v2.py` |
 | v2 decider packet, reaction looks, v2 rule bot day, flat sweep | `arena/v2_flow.py` |
 | Day trader: universe, four setups, scan, agent call, sizing | `arena/daytrader.py` |
 | Trade management (breakeven, half at +2R, trail) | `arena/broker.py` `_manage`, bar by bar |
-| Plumbing replay | `asxbot arena replay --days ... --delays 20,0` (`arena/replay.py`), rule bots only |
+| Replay | `asxbot arena replay-ibkr` (`arena/replay_ibkr.py`) over IBKR history, rule bots only (the Yahoo-era `arena replay` was deleted 26 Sep) |
 
 Where to look during a day: `data/arena/reaction/<day>.json` (each stock's look and why),
 `data/arena/v2bot/<day>.json` (the v2 rule at 10:30), `data/arena/daytrader/<day>.json`
@@ -208,8 +218,9 @@ LIVE account with **Read-Only API on**. The arena reads market data from it and 
 | Self-check | `live_data`: fell back to Yahoo, or status stale in market hours. A Gateway that needs a login gets ONE Telegram line per outage |
 
 **Switched on** (`data.live_provider: ibkr`) after the check passed at 21:35 and 21:40 on
-24 Sep. To switch off, set it back to `yfinance`. If Gateway is down in the morning the
-watcher runs on Yahoo by itself and says so.
+24 Sep. To switch off, set it back to `yfinance`. If Gateway is down, the watcher decides no
+new entry until it is back and exits keep working from Yahoo's delayed bars (since 25 Sep,
+docs/ibkr_live_data.md; on 24 Sep it fell back to Yahoo for everything).
 
 Every contract is qualified (reqContractDetails) before any request and cached with its
 conId: ib_async refuses a quote for a contract without one, which is what failed the first
@@ -217,7 +228,9 @@ live check (21:32). A stock must come back with ASX as primary exchange and in A
 as XJO (IND) on ASX. Market data type: real-time (1) from 07:00 to 16:15 on a trading day,
 frozen (2) otherwise; the check prints what it asked for and what it got.
 
-How the ~250-stock scan fits IBKR's limits: bars never hold a market data line; the universe
+(The 24 Sep design, replaced on 25 Sep by one connection and streamed bars with a line
+rotation: docs/ibkr_live_data.md.) How the ~250-stock scan fits IBKR's limits: bars never
+hold a market data line; the universe
 is rotated through 1-minute historical requests, 90 a scan (stalest first, ~every 3 min
 each), at most 600 in ten minutes and 8 open at once (IBKR allows 50), never the same request
 inside 15 s; a stock being decided on is fetched on the spot. Quotes are the only line users,
@@ -311,11 +324,11 @@ the count appears in the 16:10 message - so whether that gate ever overrules the
 a question the log answers rather than a hunch.
 Delivery is best effort and never blocks an order, fill or stop. Outbound reports go straight through the Bot API (plain
 code, so they still arrive if a model call fails); inbound messages to
-`@rick_asx_trader_bot` route to `trader-decider`.
+`@rick_asx_trader_bot` are answered by this repo's own receiver, `asxbot chat` (since 24 Sep,
+docs/chat.md). OpenClaw no longer polls that bot, and must never again.
 
-One gotcha worth knowing: **OpenClaw now polls that bot, and `getUpdates` is exclusive.**
-`asxbot telegram pair` can no longer discover the chat id by asking Telegram, because
-OpenClaw has already consumed the updates. Use `asxbot telegram pair --chat-id <id>`.
+One gotcha worth knowing: **`getUpdates` is exclusive.** Use `asxbot telegram pair
+--chat-id <id>` only; without --chat-id it competes with the chat for the bot's messages.
 Sending is unaffected — only `getUpdates` is exclusive, not `sendMessage`.
 
 ## Phase 1 rerun on the finished archive (23 Sep)
@@ -374,7 +387,7 @@ them by hand. On the first run it immediately surfaced the re-look crash from 10
 `arena/filtercost.py` measures what the screen threw away: every rejection, grouped by the
 test that made it, scored on what the stock did over the next 10 sessions against the index.
 `asxbot arena filter-cost --weeks N`, weekly through the task **ASXBot Filter Cost**
-(Sundays 18:00, `scripts/arena_filter_cost.ps1`), writing `reports/filter_cost.md`.
+(Sundays 18:00; then `scripts/arena_filter_cost.ps1`, since 25 Sep its release shim, docs/releases.md), writing `reports/filter_cost.md`.
 **It reports and nothing else.** Today everything is "not yet measurable" - the rejections
 are hours old and the horizon is 10 sessions - which is the honest answer, not a null result.
 

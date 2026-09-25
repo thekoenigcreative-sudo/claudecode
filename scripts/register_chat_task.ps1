@@ -6,6 +6,11 @@
 # 5 an hour); the task's own restart-on-failure is the backstop for the launcher. Logs:
 # %LOCALAPPDATA%\asx-bot\logs\chat.log.
 #
+# The task runs the release shim, %LOCALAPPDATA%\asx-bot\bin\chat.pyw, which runs
+# scripts\chat.pyw from the deployed release (releases\CURRENT), never this checkout
+# (docs\releases.md; 26 Sep 2026: until then this script pointed the task at the checkout).
+# Run scripts\deploy.py first: it writes the shim.
+#
 # BEFORE running this, OpenClaw must no longer poll the bot: remove
 # channels.telegram.accounts.trader and its binding from ~\.openclaw\openclaw.json. The chat
 # refuses to start (exit 10, logged) until then. See docs\chat.md, "Going live".
@@ -18,22 +23,30 @@
 #     Unregister-ScheduledTask -TaskName "ASXBot Chat" -Confirm:$false
 $ErrorActionPreference = "Stop"
 $task = "ASXBot Chat"
-$repo = "G:\My Drive\asx-bot"
 $pythonw = "C:\venvs\asx-bot\Scripts\pythonw.exe"
-$script = "$repo\scripts\chat.pyw"
+$script = Join-Path $env:LOCALAPPDATA "asx-bot\bin\chat.pyw"   # the release shim (scripts\deploy.py)
+# The working folder is on a local disk, not Drive (26 Sep 2026, as on the live task), so the
+# task can start while Google Drive is not mounted.
+$work = Join-Path $env:LOCALAPPDATA "asx-bot"
 
-foreach ($p in @($pythonw, $script)) {
-    if (-not (Test-Path $p)) { throw "not found: $p - nothing was created" }
+foreach ($p in @($pythonw, $script, $work)) {
+    if (-not (Test-Path $p)) { throw "not found: $p - run scripts\deploy.py first if it is the shim; nothing was created" }
 }
 if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
     throw "$task already exists - nothing was changed. Unregister it first to recreate it."
 }
 
-$action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$script`"" -WorkingDirectory $repo
+$action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$script`"" -WorkingDirectory $work
 
 # At Rick's logon, plus one minute: G: (Google Drive) is only there inside his session.
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $trigger.Delay = "PT1M"
+# Local time, never a UTC offset (26 Sep 2026): New-ScheduledTaskTrigger writes today's offset
+# (+10:00) into a start time, and Task Scheduler then fires at that fixed UTC instant, an hour
+# late from 5 Oct (daylight saving). A logon trigger has no start time; this keeps it so.
+if ($trigger.StartBoundary) {
+    $trigger.StartBoundary = $trigger.StartBoundary -replace '([+-]\d\d:\d\d|Z)$', ''
+}
 
 # The same account and logon type as the other ASXBot tasks: Rick's session, where G: exists.
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited

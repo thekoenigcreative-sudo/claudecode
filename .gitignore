@@ -1,5 +1,7 @@
-# secrets
+# secrets (and any variant of .env; the template is the one kept)
 .env
+.env.*
+!.env.example
 
 # bulky data (copy across manually when moving PCs). Root only: a bare `data/` also
 # matched src/asxbot/data, so the data-provider package was never committed.
@@ -17,6 +19,16 @@ build/
 
 # logs
 *.log
+
+# test coverage
+.coverage*
+htmlcov/
+
+# no live database in the repo (CLAUDE.md); scratch and backup files
+*.db
+*.sqlite*
+*.tmp
+*.bak
 
 # replay workers' intermediate slices; the report and its JSON are what is kept
 reports/replay_ibkr_*_parts/

@@ -50,7 +50,7 @@ stocks and no point-in-time index membership. Only Norgate Platinum data counts 
 
 See SPEC.md section 9. Each stage is tested and committed before the next starts.
 
-## Commands the trader agent calls
+## Commands (the real-money path, sim only)
 
 All through the `asxbot` CLI in the venv. Every command prints active alerts first.
 
@@ -64,31 +64,20 @@ All through the `asxbot` CLI in the venv. Every command prints active alerts fir
 | `asxbot reconcile` | Broker positions vs the fills log. Raises an alert on mismatch. |
 | `asxbot daily_report` | One-screen summary: alerts, cash, positions, today's counts, reconciliation, archive status. |
 | `asxbot dryrun [--unwind]` | Sim-only end-to-end exercise with a fake announcement and fake quote. |
-| `asxbot announcements poll` | Live poller loop (07:30-19:30 Sydney, trading days). Run it as its own process. |
+| `asxbot announcements poll` | Standalone poller for testing; never while the watcher runs. |
 | `asxbot announcements history --universe asx300` | Resumable archive builder. Run detached; Ctrl-C safe. |
 | `asxbot backtest` | Phase 1 backtest to `reports/phase1.md`. |
 
-## OpenClaw trader agent
+## The trader agents and the Trader chat
 
-Set up a **separate** OpenClaw agent for trading. Leave existing agents untouched. Do not install
-third-party ClawHub add-ons on it.
+The Trader chat (@rick_asx_trader_bot) is this repo's own receiver, `asxbot chat`
+(docs/chat.md). The arena agents are called by code (arena/agents.py). No agent has shell
+access to an order command. Real-money `place_order` approvals are not set up.
 
-1. Create the agent with its own workspace (for example `~/.openclaw/agents/asx-trader/`) and its
-   own Telegram bot token. Its workspace instructions should say: "You propose and explain ASX
-   trades from `asxbot scan` and `asxbot proposals`. You never decide whether an order was
-   approved, placed or filled; only the broker's returned order id and fill count in the
-   `place_order` output say that."
-2. Give it exec access to exactly these commands, with the venv path:
-   `C:\venvs\asx-bot\Scripts\asxbot.exe scan|proposals|positions|reconcile|daily_report|place_order ...`
-3. **Exec approvals:** set the agent to *ask on every command* (never "always allow"), and set
-   it to *deny* when no approval channel is reachable. `place_order` puts ticker, qty and limit
-   in the command line, so the approval prompt on Telegram shows exactly what is being approved.
-4. Daily routine the agent runs (each step is a command you approve): `scan` during the session
-   when the poller reports a new price-sensitive announcement, `proposals` to show you the
-   candidates, `place_order` only after you say yes to a specific proposal id, `daily_report`
-   after the close.
-5. The agent may read and summarise a proposal's announcement PDF (`data/announcements/pdf/`)
-   when explaining a live proposal. It must not classify historical announcements.
+The two arena agents, `trader-reader` and `trader-decider`, are their own OpenClaw agents
+(docs/agents/). Leave the other OpenClaw agents untouched, install no ClawHub add-ons on
+these, and never add the trader bot back to OpenClaw as a channel. No agent classifies
+historical announcements.
 
 Broker mode stays `sim` until you change `config.yaml` yourself. `paper` needs IB Gateway and
 `uv pip install -e ".[ibkr]"`. `live` additionally needs `LIVE_TRADING_CONFIRMED=yes` in `.env`.
@@ -113,19 +102,21 @@ The gap between them is the measure of what the agent's judgment adds.
 asxbot arena status                 # playbooks, levels, accounts
 asxbot arena scoreboard             # P&L, green/red days, drawdown, agent vs bot
 asxbot arena positions              # open positions and pending fills
-asxbot arena quote --ticker BHP     # the delayed quote and the price reaction
+asxbot arena quote --ticker BHP     # the quote (IBKR real-time; Yahoo's delayed one while Gateway is down) and the price reaction
 asxbot arena dossier --ticker BHP   # one-page brief on a stock
 asxbot arena resolve                # fill pending orders, trigger stops
 asxbot arena mark                   # mark every account to market
 asxbot arena report --agent --send  # the evening report, on Telegram
-asxbot arena watch --until 19:25    # the warm-up watcher (the scheduled task runs this)
+asxbot arena watch --until auto     # the watcher: only through its scheduled task, never from a terminal (CLAUDE.md)
 asxbot arena reset --yes            # wipe accounts back to their opening balance
 ```
 
 ### Deferred fills
 
-Free quotes are about 20 minutes delayed, so the true price at the moment of a decision is
-not knowable when the decision is made. Every arena order is therefore recorded pending,
+Decided on 22 Sep, when the arena ran on free quotes about 20 minutes delayed, so the true
+price at the moment of a decision was not knowable when the decision was made. Since 25 Sep
+decisions use IBKR real-time prices (docs/ibkr_live_data.md); the rule stands. Every arena
+order is recorded pending,
 stamped with the time it was recorded (`decided_at`) and the time its data was read
 (`data_as_of`), and filled later from the first 1-minute bar that starts strictly after
 `decided_at`. If the stock did not trade in that minute, the fill walks **forward** to the
@@ -162,5 +153,6 @@ and never causes one.
 
 ### Telegram
 
-The trader bot is separate from any other OpenClaw agent's bot. Its token lives in `.env`.
-To link it: message the bot on Telegram, then `asxbot telegram pair`.
+The trader bot (@rick_asx_trader_bot) is separate from any other bot. Its token lives in
+`.env`. To link it: message the bot on Telegram, then `asxbot telegram pair --chat-id <id>`
+only; without --chat-id it competes with the chat for the bot's messages.

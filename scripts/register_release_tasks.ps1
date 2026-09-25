@@ -6,6 +6,9 @@
 #         shim that resolves releases\CURRENT and runs that release's scripts\<task>.pyw with
 #         ASXBOT_HOME pointing back at this checkout for config.yaml, .env and data\.
 #
+# The action's working folder is %LOCALAPPDATA%\asx-bot, not this checkout (26 Sep 2026), so
+# a task can start while Google Drive is not mounted.
+#
 # Only each task's ACTION changes. Triggers, settings and the account are kept and read
 # back; every definition is saved first to data\task_backups\, so any one can be undone:
 #     Register-ScheduledTask -TaskName "<name>" -Force -Xml (Get-Content "<backup>" -Raw)
@@ -19,6 +22,7 @@ $ErrorActionPreference = "Stop"
 $repo = "G:\My Drive\asx-bot"
 $pythonw = "C:\venvs\asx-bot\Scripts\pythonw.exe"
 $bin = Join-Path $env:LOCALAPPDATA "asx-bot\bin"
+$work = Join-Path $env:LOCALAPPDATA "asx-bot"   # working folder: on a local disk, not Drive
 $backups = "$repo\data\task_backups"
 $tasks = @{
     "ASXBot Arena Warmup"          = "arena_warmup"
@@ -33,6 +37,7 @@ $tasks = @{
 }
 
 if (-not (Test-Path $pythonw)) { throw "not found: $pythonw - nothing was changed" }
+if (-not (Test-Path $work)) { throw "not found: $work - nothing was changed" }
 foreach ($name in $tasks.Values) {
     if (-not (Test-Path (Join-Path $bin "$name.pyw"))) { throw "shim missing: $bin\$name.pyw - run scripts\deploy.py first; nothing was changed" }
 }
@@ -53,16 +58,28 @@ foreach ($task in $tasks.Keys) {
     $backup = Join-Path $backups ("{0} {1}.xml" -f $task, (Get-Date -Format "yyyy-MM-dd HHmmss"))
     Export-ScheduledTask -TaskName $task | Out-File -Encoding unicode $backup
     $before = Describe-Task $current
-    $action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$shim`"" -WorkingDirectory $repo
+    $action = New-ScheduledTaskAction -Execute $pythonw -Argument "`"$shim`"" -WorkingDirectory $work
     Set-ScheduledTask -TaskName $task -Action $action | Out-Null
     $after = Get-ScheduledTask -TaskName $task
     $afterDesc = Describe-Task $after
-    if ($after.Actions.Count -ne 1 -or $after.Actions[0].Execute -ne $pythonw -or $after.Actions[0].Arguments -ne "`"$shim`"") {
+    if ($after.Actions.Count -ne 1 -or $after.Actions[0].Execute -ne $pythonw -or $after.Actions[0].Arguments -ne "`"$shim`"" -or $after.Actions[0].WorkingDirectory -ne $work) {
         throw "$task : the action did not take - restore from $backup"
     }
     foreach ($i in 0..2) {
         if ($afterDesc[$i] -ne $before[$i]) { throw "$task changed beyond its action ($($before[$i]) -> $($afterDesc[$i])) - restore from $backup" }
     }
     Write-Output ("OK {0,-30} -> {1}  (state {2}; backup {3})" -f $task, $shim, $after.State, (Split-Path $backup -Leaf))
+    # Checked, not changed (26 Sep 2026). A trigger time with a UTC offset (New-ScheduledTaskTrigger
+    # writes today's, +10:00) fires at a fixed UTC instant: from 5 Oct, daylight saving, a 07:30
+    # start would come at 08:30. The Warmup's time limit is PT14H (set 26 Sep): the watcher runs
+    # 07:30 to 20:25 on daylight saving, and a limit it reaches kills it.
+    foreach ($tr in $after.Triggers) {
+        if ($tr.StartBoundary -match '([+-]\d\d:\d\d|Z)$') {
+            Write-Output "WARNING $task : trigger starts at $($tr.StartBoundary) - a fixed UTC time; strip the offset so it follows daylight saving"
+        }
+    }
+    if ($task -eq "ASXBot Arena Warmup" -and $after.Settings.ExecutionTimeLimit -ne "PT14H") {
+        Write-Output "WARNING $task : time limit $($after.Settings.ExecutionTimeLimit), expected PT14H"
+    }
 }
-Write-Output "Every task now runs releases\CURRENT through its shim; triggers, settings and accounts unchanged."
+Write-Output "Every task now runs releases\CURRENT through its shim from $work; triggers, settings and accounts unchanged."
