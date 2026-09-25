@@ -75,9 +75,82 @@ def test_day(pb, day: date) -> str:
         if d.weekday() < 5 and is_trading_day(d):
             k += 1
         d = date.fromordinal(d.toordinal() + 1)
+    partial = partial_day(pb, day)
+    tail = f" - PARTIAL DAY ({partial})" if partial else ""
     if k > n:
-        return f"day {k} (v{pb.version}): past the {n}-day test, checkpoint due"
-    return f"day {k} of {n} (v{pb.version})"
+        return f"day {k} (v{pb.version}): past the {n}-day test, checkpoint due{tail}"
+    return f"day {k} of {n} (v{pb.version}){tail}"
+
+
+def partial_day(pb, day: date) -> str:
+    """The reason `day` is only a partial test day for this playbook (config
+    `partial_days`, dated), or "" for a full day."""
+    days = pb.raw.get("partial_days") or {}
+    return str(days.get(day.isoformat()) or days.get(day) or "")
+
+
+def scorecard_facts(arena: Arena, day: date, scores: list[Score]) -> list[dict]:
+    """The daily scorecard (Rick's brief, 25 Sep): per playbook and account, today's P&L
+    after fees, the running total, green/red days so far, the worst day and the worst
+    peak-to-trough drop, how much of the gross profit the best trade is, and which prices
+    today's decisions were made on (playbook_facts carries the per-decision counts)."""
+    by_acct = {s.account: s for s in scores}
+    out = []
+    for pb in arena.playbooks():
+        row = {"key": pb.key, "title": pb.title, "test": test_day(pb, day),
+               "partial": partial_day(pb, day), "accounts": []}  # fmt: skip
+        for kind in ("agent", "bot"):
+            acct = arena.account(pb, kind)
+            s = by_acct.get(acct.name)
+            prices = arena.broker.prices(acct, day)
+            start = arena.store.day_start_equity(acct, day)
+            equity = acct.equity(prices)
+            closed = [o for o in acct.orders.values()
+                      if o.status in ("filled", "partial") and o.filled_qty
+                      and o.side in ("sell", "cover")]  # fmt: skip
+            gains = sorted((float(o.realised) for o in closed if o.realised > 0), reverse=True)
+            gross_gain = sum(gains)
+            row["accounts"].append({
+                "kind": kind, "name": acct.name,
+                "today_after_fees": round(equity - start, 2),
+                "total_after_fees": round(equity - acct.starting_cash, 2),
+                "fees_total": round(acct.fees_paid + acct.borrow_paid, 2),
+                "green_days": s.green_days if s else 0, "red_days": s.red_days if s else 0,
+                "worst_day_pct": s.worst_day_pct if s else 0.0,
+                "max_drawdown_pct": s.max_drawdown_pct if s else 0.0,
+                "trades": len(closed), "wins_after_fees": sum(
+                    1 for o in closed if float(o.realised) - float(o.commission) > 0),
+                "best_trade": round(gains[0], 2) if gains else None,
+                "best_trade_share_pct": (round(gains[0] / gross_gain * 100, 1)
+                                         if gains and gross_gain > 0 else None),
+            })  # fmt: skip
+        out.append(row)
+    return out
+
+
+def scorecard_lines(facts: dict) -> list[str]:
+    """The scorecard as plain lines, for the code-written report and the agent's brief."""
+    lines = []
+    for row in facts.get("scorecard") or []:
+        lines.append(f"<b>{escape(row['title'])}</b> - {escape(row['test'])}")
+        if row.get("partial"):
+            lines.append(f"  PARTIAL DAY: {escape(row['partial'])}")
+        for a in row["accounts"]:
+            best = ("-" if a["best_trade_share_pct"] is None
+                    else f"{a['best_trade_share_pct']:.0f}% from the best trade "
+                         f"({a['best_trade']:+,.2f})")  # fmt: skip
+            lines.append(
+                f"  {a['kind'].upper()}: today {a['today_after_fees']:+,.2f} after fees, total "
+                f"{a['total_after_fees']:+,.2f} (fees {a['fees_total']:,.2f}); green/red days "
+                f"{a['green_days']}/{a['red_days']}; worst day {a['worst_day_pct']:+.2f}%, worst "
+                f"drop {a['max_drawdown_pct']:.2f}%; trades {a['trades']} ({a['wins_after_fees']} "
+                f"won after fees); gross profit {best}"
+            )
+        pb = next((p for p in facts.get("playbooks", []) if p["key"] == row["key"]), None)
+        if pb and pb.get("data_by_decision"):
+            lines.append("  prices per decision: " + ", ".join(
+                f"{n} on {k}" for k, n in pb["data_by_decision"].items()))
+    return lines
 
 
 NO_PRICES = "no usable prices (no previous close on {})"
@@ -306,6 +379,9 @@ def gather(arena: Arena, day: date | None = None) -> dict:
         "money": "FAKE money (arena). No real order can be placed from here.",
         "scores": [s.to_dict() for s in scores],
         "score_objects": scores,
+        # The daily scorecard (25 Sep): P&L after fees, green/red days, worst drop, the
+        # best trade's share, prices per decision, and any partial day with its reason.
+        "scorecard": scorecard_facts(arena, day, scores),
         "positions": positions,
         "alerts_seen": len(alerts_today),
         "alerts_acted_on": len({r.get("ticker") for r in orders_today if r.get("ticker")}),
@@ -388,6 +464,7 @@ def render_plain(facts: dict) -> str:
             f"{v2['rule_bot']['status'] or 'did not run'}, "
             f"{len(v2['rule_bot']['signals'])} signal(s)"
         )
+    lines += ["", "<b>Scorecard</b>", *scorecard_lines(facts)]
     lines += [
         "",
         "<b>Scoreboard</b>",
@@ -482,6 +559,11 @@ def agent_brief(facts: dict) -> str:
         "- For the day trader say how many setups the scan found, how many you took and "
         "rejected, and what the rule bot did (FACTS daytrader_today). For announcements v2 "
         "say what the reaction looks and the rule bot did (FACTS announcements_v2_today).\n"
+        "- Include the SCORECARD for each playbook, from FACTS scorecard, as its own short "
+        "block: today's P&L after fees and the total for the agent and the bot, green/red "
+        "days, the worst drop, how much of the profit is the best trade, and the prices per "
+        "decision. If a playbook's `partial` is set, say the day is a PARTIAL DAY and give "
+        "the reason word for word.\n"
         "- Keep it under 3000 characters. Plain text with simple HTML tags "
         "(<b>, <i>, <pre>) only.\n\n"
         f"FACTS (JSON):\n{json.dumps(payload, indent=2, default=str)}\n"

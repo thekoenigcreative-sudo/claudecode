@@ -543,6 +543,11 @@ arena:
       test_days: 10
       # New accounts, $20,000 each (arena.starting_aud): v2's record starts clean.
       accounts: asx_announcements_v2
+      # Days that do not count as a full test day, with the reason; the evening report and
+      # the scorecard say so (report.test_day). Added 2026-09-25 for day 1 (a record, not a
+      # rule change).
+      partial_days:
+        "2026-09-25": "data failure - the IBKR history batch timed out at 07:30 and Gateway died 08:58-10:16, so seven reaction looks were lost as 'quiet' and the 10:30 rule bot was re-run late, at 10:53, after a mid-session restart"
       holding: intraday
       # Flat by the pre-close sweep at arena.preclose.sweep_time (15:50): code closes every
       # position without asking - no overnight holds in v2, so the agent and its rule bot run

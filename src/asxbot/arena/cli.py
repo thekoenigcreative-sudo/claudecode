@@ -393,6 +393,26 @@ def cmd_replay(args) -> int:
     return 0
 
 
+def cmd_replay_ibkr(args) -> int:
+    """The replay of the frozen rule bots over IBKR 1-minute history (replay_ibkr.py)."""
+    from datetime import date as date_cls
+    from pathlib import Path as _P
+
+    from asxbot.arena import replay_ibkr as RI
+
+    cfg = load_config()
+    setup_logging(cfg.logs_dir)
+    codes = [c.strip().upper() for c in args.codes.split(",")] if args.codes else None
+    if args.worker:
+        days = [date_cls.fromisoformat(d) for d in args.days.split(",")]
+        return RI.worker_main(cfg, days, _P(args.json), codes or [])
+    first, last = date_cls.fromisoformat(args.from_day), date_cls.fromisoformat(args.to_day)
+    md = RI.run(cfg, first, last, workers=int(args.workers), codes=codes)
+    print(f"written: {md}")
+    print(RI.LABEL)
+    return 0
+
+
 def cmd_hours(args) -> int:
     """Today's announcement window, which moves with Sydney daylight saving."""
     from asxbot.arena.hours import describe
@@ -654,6 +674,20 @@ def add_parsers(sub) -> None:
     rp.add_argument("--days", required=True, help="comma-separated YYYY-MM-DD")
     rp.add_argument("--delays", default="20,0", help="feed delays in minutes, e.g. 20,0")
     rp.set_defaults(fn=cmd_replay)
+
+    ri = a.add_parser(
+        "replay-ibkr",
+        help="REPLAY the frozen v2 and day-trader rule bots over IBKR 1-minute history "
+        "(scripts/ibkr_fetch_history.py fetches it); a scorecard per playbook, labelled",
+    )
+    ri.add_argument("--from", dest="from_day", help="first day, YYYY-MM-DD")
+    ri.add_argument("--to", dest="to_day", help="last day, YYYY-MM-DD")
+    ri.add_argument("--workers", type=int, default=1, help="child processes to split days over")
+    ri.add_argument("--codes", help="comma-separated codes (default: today's ASX 300 list)")
+    ri.add_argument("--worker", action="store_true", help="(internal) one slice of days")
+    ri.add_argument("--days", help="(internal) comma-separated days for --worker")
+    ri.add_argument("--json", help="(internal) where a worker writes its results")
+    ri.set_defaults(fn=cmd_replay_ibkr)
 
     a.add_parser(
         "evening-due", help="exit 0 if now is today's evening-report slot"
