@@ -271,3 +271,66 @@ def test_the_evening_report_says_day_n_of_10_and_delayed_data_for_each_playbook(
     assert text.count("delayed data - rehearsal until IBKR live prices") >= 2
     brief = agent_brief(facts)
     assert "day 1 of 10 (v2)" in brief and "word for word" in brief
+
+
+# --------------------------------------------------------------------------
+# 25 Sep 2026: missing prices are a data failure, never a verdict (LEARNINGS #25)
+# --------------------------------------------------------------------------
+def _no_index_history(mb):
+    """The stock's prior sessions and today, the index's today only: no previous close for
+    the index, as on IBKR after the 07:30 batch timed out."""
+    for d in PRIOR:
+        put(mb, "NEWS", d, flat_day(d, 1.0, 1000))
+    put(mb, "NEWS", DAY, frame(DAY, {(10, m): (1.05, 1.06, 1.03, 1.05, 5000)
+                                     for m in range(0, 45)}))  # fmt: skip
+    put(mb, "^AXJO", DAY, frame(DAY, {(10, m): (8000, 8000, 8000, 8000, 0)
+                                      for m in range(0, 45)}))  # fmt: skip
+
+
+def test_a_reaction_look_with_no_previous_close_waits_instead_of_calling_it_quiet(
+    arena, cfg, mb, monkeypatch
+):
+    pb = load_playbook(cfg, "asx_announcements_v2")
+    _no_index_history(mb)
+    enqueue(cfg.data_dir, DAY, _announcement(), "tradeable")
+    monkeypatch.setattr(v2_flow, "call_agent", lambda *a, **k: pytest.fail("no prices"))
+    view = MarketView(mb, DAY, ReplayFeed(mb, 0), "^AXJO", 5, 3)
+    v2_flow.reaction_looks(arena, pb, view, at(10, 12))
+    assert load_queue(cfg.data_dir, DAY)["NEWS"]["status"] == "queued"
+
+
+def test_the_v2_rule_bot_waits_for_the_index_previous_close(arena, cfg, mb):
+    pb = load_playbook(cfg, "asx_announcements_v2")
+    _no_index_history(mb)
+    ann = pd.DataFrame([{"code": "NEWS", "released_at": pd.Timestamp("2026-01-08 08:30"),
+                         "price_sensitive": True, "ids_id": "X", "headline": "h"}])  # fmt: skip
+    view = MarketView(mb, DAY, ReplayFeed(mb, 0), "^AXJO", 5, 3)
+    arena.broker.clock = Clock(at(10, 31))
+    assert v2_flow.v2_bot_cycle(arena, pb, view, at(10, 31), ann=ann) == []
+    st = load_bot_state(cfg.data_dir, DAY)
+    assert st["status"] == "waiting" and "for the index" in st["why"]
+    arena.broker.clock = Clock(at(11, 20))
+    v2_flow.v2_bot_cycle(arena, pb, view, at(11, 20), ann=ann)
+    st = load_bot_state(cfg.data_dir, DAY)
+    assert st["status"] == "missed" and "for the index" in st["why"]
+
+
+@pytest.mark.parametrize(
+    "source, delayed, want",
+    [("ibkr (real-time)", False, "live data (IBKR)"),
+     ("yfinance (delayed)", True, "delayed data (Yahoo) - IBKR unavailable")],
+)  # fmt: skip
+def test_a_pre_open_look_records_the_prices_its_quote_came_from(
+    arena, cfg, monkeypatch, source, delayed, want
+):
+    from asxbot.log import EventLog
+
+    cfg.raw["data"]["live_provider"] = "ibkr"
+    pb = load_playbook(cfg, "asx_announcements_v2")
+    q = Quote("NEWS", 1.0, 1.0, 1.0, 0, datetime(2026, 1, 8, 8, 0), source, delayed)
+    monkeypatch.setattr(arena, "quote_provider", lambda: StaticQuotes({"NEWS": q}))
+    monkeypatch.setattr(W, "call_agent", lambda *a, **k: Reply("x\nTRADE_WORTHY: YES"))
+    monkeypatch.setattr(v2_flow, "call_agent", lambda *a, **k: Reply(_decision(net=0.2)))
+    W.handle_announcement(arena, pb, _announcement(), at(8, 30))
+    recs = EventLog(cfg.data_dir).read("arena_decisions")
+    assert [(r["stage"], r["data"]) for r in recs] == [("reader", want), ("decider", want)]

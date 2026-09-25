@@ -72,6 +72,7 @@ MARKET_OPEN, MARKET_CLOSE = time_cls(10, 0), time_cls(16, 10)
 # Real-time is asked for from the pre-open (07:00) to past the closing auction (16:10-16:12).
 LIVE_FROM, LIVE_TO = time_cls(7, 0), time_cls(16, 15)
 QUALIFY_RETRY_S = 3600.0  # a code IBKR could not qualify is not asked about again for an hour
+LINK_CHECK_S = 5.0  # how long Gateway has to answer a time request after a batch timed out
 
 
 def _trading_day(now: datetime) -> bool:
@@ -195,6 +196,7 @@ class Health:
     last_ok_at: str = ""
     pacing_hits: int = 0
     farms_broken: set = field(default_factory=set)
+    timeouts_in_row: int = 0  # bars batches in a row that ran out of time with nothing back
 
     def to_dict(self) -> dict:
         return {
@@ -211,6 +213,7 @@ class Health:
             "last_ok_at": self.last_ok_at,
             "pacing_hits": self.pacing_hits,
             "farms_broken": sorted(self.farms_broken),
+            "timeouts_in_row": self.timeouts_in_row,
         }
 
 
@@ -241,6 +244,7 @@ class Gateway:
         self.budget = max(1, int(settings.max_requests_per_cycle))
         self.last_connect_try: float | None = None
         self.unknown_codes: set[str] = set()
+        self.unanswered: set[str] = set()  # codes the last bars batch ran out of time for
         self._req_errors: dict[int, tuple[int, str]] = {}
         self._lines = 0
 
@@ -428,6 +432,7 @@ class Gateway:
         At most `room()` are sent (the caller picks which); the rest are left out. Returns
         code -> bars (Sydney index, open/high/low/close/volume); a code with none is left out.
         """
+        self.unanswered = set()
         if not requests or not self.ready:
             return {}
         codes = list(requests)[: self.room()]
@@ -456,16 +461,26 @@ class Gateway:
             return code, got
 
         # The whole batch is bounded too: a data farm that hangs must not stall the watcher.
+        # What came back in time is kept; the rest is cancelled and left for the next cycle.
+        # Until 25 Sep 2026 a timeout threw every answer away (07:30: "90 asked, 0 returned")
+        # and marked the link down, though Gateway was fine (LEARNINGS #25).
         whole = float(self.s.request_timeout_s) * 2
 
         async def every():  # gathered inside the running loop, never before it
-            return await asyncio.wait_for(asyncio.gather(*(one(c) for c in codes)), timeout=whole)
+            tasks = {asyncio.ensure_future(one(c)): c for c in codes}
+            done, pending = await asyncio.wait(tasks, timeout=whole)
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            got = [t.result() for t in done if not t.cancelled() and t.exception() is None]
+            return got, {tasks[t] for t in pending}
 
         try:
-            results = self.ib.run(every())
+            results, late = self.ib.run(every())
         except Exception as e:  # noqa: BLE001
             self.health.last_error = f"bars batch failed: {e!r}"
-            self.health.server_ok = False  # a batch that hangs or breaks: treat the link as down
+            self.health.server_ok = False  # the connection itself broke: treat the link as down
             log.error("IBKR bars batch of %d failed: %r", len(codes), e)
             return {}
         out = {}
@@ -475,7 +490,50 @@ class Gateway:
                 out[code] = df
         if out:
             self.health.last_ok_at = datetime.now(SYD).isoformat(timespec="seconds")
+        if not late:
+            self.health.timeouts_in_row = 0
+            return out
+        self.unanswered = set(late)
+        self._timed_out(len(codes), len(results), len(late), whole)
         return out
+
+    def _timed_out(self, asked: int, answered: int, late: int, whole: float) -> None:
+        """A batch ran out of time. Anything back means the link works: the late ones are
+        asked again next cycle. Nothing back: the link is down only if Gateway does not answer
+        a time request either, or if it is the second such batch in a row."""
+        if answered:
+            self.health.timeouts_in_row = 0
+            log.warning(
+                "IBKR bars batch: %d of %d answered in %.0f s; the other %d are asked again "
+                "next cycle", answered, asked, whole, late,
+            )  # fmt: skip
+            return
+        self.health.timeouts_in_row += 1
+        answers = self._answers()
+        if answers and self.health.timeouts_in_row < 2:
+            log.warning(
+                "IBKR bars batch of %d: nothing back in %.0f s, but Gateway answers; asked "
+                "again next cycle", asked, whole,
+            )  # fmt: skip
+            return
+        why = (f"bars batch of {asked} timed out, {self.health.timeouts_in_row} in a row"
+               if answers else f"bars batch of {asked} timed out and Gateway did not answer "
+               "a time request")  # fmt: skip
+        self.health.last_error = why
+        self.health.server_ok = False
+        log.error("IBKR %s: link treated as down", why)
+
+    def _answers(self) -> bool:
+        """Does Gateway answer at all? Its clock, which needs no data farm."""
+        ask = getattr(self.ib, "reqCurrentTimeAsync", None)
+        if ask is None:
+            return False
+        try:
+            self.ib.run(asyncio.wait_for(ask(), timeout=LINK_CHECK_S))
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("IB Gateway did not answer a time request: %r", e)
+            return False
 
     # -- quotes -------------------------------------------------------------
     def quote(self, code: str) -> dict | None:

@@ -442,9 +442,17 @@ class MarketView:
     def _history(self):
         return self.minutes if self.replay else self.feed.history_source()
 
+    def _known(self, memo: dict, code: str) -> bool:
+        """Remembered for the day? A value is. A missing one only when the minute cache is the
+        history (Yahoo, replay); from a feed that keeps its own (IBKR) it is looked for again,
+        so prior sessions that arrive later - after a batch timed out - are used."""
+        if code not in memo:
+            return False
+        return memo[code] is not None or self._history() is self.minutes
+
     def prev_close(self, code: str) -> float | None:
         self._sync()
-        if code not in self._prev:
+        if not self._known(self._prev, code):
             px = previous_close(self._history(), code, self.day)
             if px is None and not self.replay:
                 self.ensure_history(code)
@@ -454,7 +462,7 @@ class MarketView:
 
     def usual(self, code: str) -> pd.Series | None:
         self._sync()
-        if code not in self._usual:
+        if not self._known(self._usual, code):
             h = self._history()
             u = usual_cum_volume(h, code, self.day, self.sessions, self.min_sessions)
             if u is None and not self.replay:
@@ -465,12 +473,14 @@ class MarketView:
         return self._usual[code]
 
     def ensure_history(self, code: str) -> None:
-        """Fetch the prior sessions' bars for one stock, once a day, if they are missing."""
+        """Fetch the prior sessions' bars for one stock if they are missing: from Yahoo once a
+        day; from a feed that keeps its own (IBKR) as often as that feed allows (it counts
+        its own attempts)."""
         if self.replay or code in self._history_tried:
             return
-        self._history_tried.add(code)
         if self.feed.ensure_history(code, self.day, self.sessions):
             return
+        self._history_tried.add(code)
         days = prior_sessions(self.day, self.sessions)
         try:
             backfill(self.minutes, [code], days, batch=1, pause_s=0.0)

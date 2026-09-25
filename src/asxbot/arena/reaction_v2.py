@@ -46,6 +46,9 @@ log = get_logger("asxbot.arena.reaction_v2")
 SYD = ZoneInfo("Australia/Sydney")
 OPEN = time_cls(10, 0)
 PREV_CLOSE_TIME = time_cls(16, 10)
+# A data failure, never a verdict: a look or a rule that meets it waits (reaction_looks,
+# v2_bot_cycle), and the evening report counts it as "no usable prices".
+NO_PREV_CLOSE = "no previous close in the minute cache"
 
 
 # --------------------------------------------------------------------------
@@ -123,7 +126,7 @@ def reaction(
     iprev = view.prev_close(view.index)
     out: dict = {"available": False, "data_label": view.label}
     if prev is None or iprev is None:
-        out["why"] = "no previous close in the minute cache"
+        out["why"] = NO_PREV_CLOSE
         return out
     after = bars[bars.index >= since]
     if not len(after) or not len(idx):
@@ -359,7 +362,7 @@ def v2_bot_signal(
         return None, "no trade 10:00-10:30"
     prev, iprev = view.prev_close(code), view.prev_close(view.index)
     if prev is None or iprev is None:
-        return None, "no previous close in the minute cache"
+        return None, NO_PREV_CLOSE
     usual = view.usual(code)
     if usual is None:
         return None, "no usual-volume baseline (too few prior sessions cached)"

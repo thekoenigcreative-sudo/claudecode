@@ -80,14 +80,31 @@ def test_day(pb, day: date) -> str:
     return f"day {k} of {n} (v{pb.version})"
 
 
+NO_PRICES = "no usable prices (no previous close on {})"
+NOT_RECORDED = "price source not recorded"
+
+
+def _price_fixes(data_dir, day: date) -> dict[str, str]:
+    """Labels established after the fact, from the log, for decisions made before they were
+    recorded (data/arena/price_sources/<day>.json: {"<ticker> <stage>": label}). Each entry
+    there says what it rests on; nothing here guesses."""
+    p = data_dir / "arena" / "price_sources" / f"{day.isoformat()}.json"
+    if not p.exists():
+        return {}
+    return dict(json.loads(p.read_text(encoding="utf-8")).get("labels", {}))
+
+
 def decision_data(cfg, day: date) -> dict[str, dict[str, int]]:
     """Which prices each of today's decisions was made on, per playbook: every day-trader
-    setup, every v2 reaction look and the v2 rule bot record the feed's label when they
-    decide (IBKR live, or Yahoo delayed - including a fallback when IBKR was down)."""
+    setup, every v2 pre-open look, reaction look and the v2 rule bot record the label of the
+    prices they used when they decide (IBKR live, or Yahoo delayed - including a fallback
+    when IBKR was down). A look or rule that had no previous close to measure against made
+    no decision on prices at all: it is counted as that, not under the feed's label."""
     from asxbot.arena.daytrader import load_state
-    from asxbot.arena.reaction_v2 import load_bot_state, load_queue
+    from asxbot.arena.reaction_v2 import NO_PREV_CLOSE, load_bot_state, load_queue
 
     out: dict[str, dict[str, int]] = {}
+    fixes = _price_fixes(cfg.data_dir, day)
 
     def add(key: str, label) -> None:
         if label:
@@ -96,10 +113,29 @@ def decision_data(cfg, day: date) -> dict[str, dict[str, int]]:
 
     for sig in load_state(cfg.data_dir, day).get("signals", []):
         add("asx_daytrader", sig.get("data"))
+    for rec in EventLog(cfg.data_dir).read("arena_decisions"):
+        if rec.get("v2") != "pre_open" or rec.get("stage") != "decider":
+            continue
+        try:
+            at = datetime.fromisoformat(rec["ts"]).astimezone(SYD)
+        except (KeyError, ValueError):
+            continue
+        if at.date() == day:
+            add("asx_announcements_v2", rec.get("data")
+                or fixes.get(f"{rec.get('ticker')} pre_open") or NOT_RECORDED)  # fmt: skip
     for k, v in load_queue(cfg.data_dir, day).items():
         if not k.startswith("_") and isinstance(v, dict):
-            add("asx_announcements_v2", (v.get("reaction") or {}).get("data_label"))
-    add("asx_announcements_v2", load_bot_state(cfg.data_dir, day).get("data"))
+            r = v.get("reaction") or {}
+            if r.get("why") == NO_PREV_CLOSE:
+                add("asx_announcements_v2", NO_PRICES.format(r.get("data_label") or "?"))
+            else:
+                add("asx_announcements_v2", r.get("data_label"))
+    bot = load_bot_state(cfg.data_dir, day)
+    measured = [c for c in bot.get("candidates", []) if "signal" in c]
+    if measured and all(c.get("why") == NO_PREV_CLOSE for c in measured):
+        add("asx_announcements_v2", NO_PRICES.format(bot.get("data") or "?"))
+    else:
+        add("asx_announcements_v2", bot.get("data"))
     return out
 
 

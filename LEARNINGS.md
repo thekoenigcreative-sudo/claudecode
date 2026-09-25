@@ -558,6 +558,41 @@ fails on the old code.
 - A flag we set ourselves needs a way for us to clear it. Waiting for someone else's
   message to clear our own inference is waiting forever.
 
+## 25. One timeout at 07:30 took the whole morning's prices with it
+
+25 Sep, 07:30:57: the watcher's first IBKR batch - prior sessions for 90 stocks, the ASX 200
+index first - ran past its 40 s limit. Four things followed, each from the one before:
+
+1. The batch timeout threw away every answer, including those already back ("90 asked, 0
+   returned"), and marked the link down though Gateway was fine.
+2. All 90 codes were marked "tried" for the day with nothing in hand. When IBKR came back
+   (10:16 and 10:39), no stock and not the index had a previous close: seven reaction looks
+   (TGN, BMN, NWL, AUE, HLS, ING at 10:16-10:17, PEN at ~10:40) were closed as "quiet", and
+   the v2 rule bot's one 10:30 decision found 13 of 13 candidates "no previous close" and
+   closed as done. None was quiet; there were no prices to measure.
+3. The feed only checked Gateway when prices were asked for, which is never before 10:00.
+   The status file sat at 07:30 (the 10:00 SELF-CHECK: "not updated for 151 minutes") and the
+   feed said "IBKR" all morning while Gateway was not ready, and from 09:02 dead.
+4. Every pre-open look recorded the playbook's label, not its quote's source. The quotes
+   came from Yahoo (FailoverQuotes follows Gateway, which was not ready), so five pre-open
+   decisions (BMN, NWL, AUE, HLS, ING) were on Yahoo, with nothing on record saying so.
+
+Now: a batch that times out keeps what came back and asks for the rest next cycle; the link
+is called down only if nothing comes back and Gateway does not answer a time request, or
+twice in a row. Prior sessions are retried (3 empty answers before giving up). A missing
+previous close is not remembered on IBKR. The watcher checks the feed every cycle, before
+the open too, and the status says where quotes come from. A reaction look or the v2 rule
+bot with no previous close waits (until its window closes) instead of recording a verdict.
+Each pre-open look records its quote's source, and the evening report counts pre-open looks
+and "no usable prices" separately. 15 tests, all failing on the old code.
+
+- A timeout is not an answer. Keep what arrived, ask again for the rest.
+- "Tried" is not "done". Mark a thing done when it is in hand.
+- A data failure recorded as a verdict ("quiet", "no signal") is the worst kind: it looks
+  like a result. Missing inputs must wait or say so, never decide.
+- A status that is only written as a side effect of other work goes silent exactly when that
+  work stops - which is when it is needed.
+
 ---
 
 ## Standing rules

@@ -795,7 +795,9 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
     reaction look; the reader writes its summary now; overnight news also gets the decider's
     pre-open look (only if the reader calls it trade-worthy, as in v1)."""
     from asxbot.arena import v2_flow
+    from asxbot.arena.intraday import live_provider
     from asxbot.arena.reaction_v2 import enqueue, log_no_quote, screen_v2
+    from asxbot.ibkr.feed import quote_label
 
     cfg = arena.cfg
     q_provider = quotes or arena.quote_provider()
@@ -843,7 +845,9 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
                     "for 10 minutes"),
             "last_quote": None if quote is None else quote.last,
             "previous_close_quote": None if quote is None else quote.prev_close,
-            "data_label": pb.data_basis,
+            "quote_source": None if quote is None else quote.source,
+            # the prices this look is made on: the quote's own source, not the playbook's
+            "data_label": quote_label(quote, live_provider(cfg)),
         },  # fmt: skip
         "text": text,
     }
@@ -865,7 +869,7 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
         {"stage": "reader", "ticker": a.code, "ids_id": a.ids_id, "model": reader.model,
          "model_expected": expected_model(cfg, "reader"), "trade_worthy": worthy, "why": why,
          "can_size_and_exit": can_size, "can_size_why": size_why, "summary": reader.text,
-         "v2": True},
+         "data": ctx["reaction"]["data_label"], "v2": True},
     )  # fmt: skip
     if why_no_text:
         out["no_pdf_text_why"] = why_no_text
@@ -1009,6 +1013,12 @@ def watch(
                 log.info("outside announcement hours %s-%s Sydney; sleeping", *hours)
                 _sleep(300, "outside announcement hours")
                 continue
+            # The live-data feed checks IB Gateway and writes its status every cycle, before
+            # the open too. Until 25 Sep 2026 it did so only when prices were asked for: from
+            # 07:30 to 10:00 the status sat unwritten and the feed said "IBKR" while Gateway
+            # was not ready (and then dead), so the pre-open looks were labelled IBKR live
+            # though their quotes came from Yahoo (LEARNINGS #25).
+            _feed_check(arena, now)
             try:
                 new = poller.poll_once(now)
             except Exception as e:  # noqa: BLE001
@@ -1120,6 +1130,15 @@ def _work_all(arena: Arena, pbs) -> None:
                 arena.broker.resolve_pending(acct, now)
             except Exception as e:  # noqa: BLE001 - one book failing must not stop the rest
                 log.exception("working %s %s failed: %s", p.key, kind, e)
+
+
+def _feed_check(arena: Arena, now: datetime) -> None:
+    try:
+        feed = day_view(arena, now).feed
+        if hasattr(feed, "check"):
+            feed.check(now)
+    except Exception as e:  # noqa: BLE001 - a feed check must never stop the watcher
+        log.exception("the live-data feed check failed: %s", e)
 
 
 def _intraday(arena: Arena, pb: Playbook, others) -> None:

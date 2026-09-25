@@ -766,3 +766,201 @@ def test_the_check_passes_on_live_data_and_fails_plainly_otherwise(cfg):
     in_hours = datetime(2026, 9, 25, 11, 0, tzinfo=SYD)
     assert run_check(cfg, lines.append, gateway=gw, now=in_hours) == 1
     assert "not real-time" in lines[-1]
+
+
+# --------------------------------------------------------------------------
+# 25 Sep 2026: a bars batch that ran out of time (LEARNINGS #25)
+# --------------------------------------------------------------------------
+class SlowIB(FakeIB):
+    """Some symbols' history never arrives in time; Gateway's clock may or may not answer."""
+
+    def __init__(self, clock, slow=(), clock_answers=True, **kw):
+        super().__init__(clock, **kw)
+        self.slow = set(slow)
+        self.clock_answers = clock_answers
+
+    async def reqHistoricalDataAsync(self, contract, *a, **k):
+        if contract.symbol in self.slow:
+            await asyncio.sleep(5)
+        return await super().reqHistoricalDataAsync(contract, *a, **k)
+
+    async def reqCurrentTimeAsync(self):
+        if not self.clock_answers:
+            await asyncio.sleep(5)
+        return datetime.now(UTC)
+
+
+def slow_gateway(slow=(), clock_answers=True, clock=None, **kw):
+    clock = clock or Clock()
+    fake = SlowIB(clock, slow=slow, clock_answers=clock_answers, **kw)
+    settings = GatewaySettings(request_timeout_s=0.05, reconnect_every_s=60)
+    gw = Gateway(settings, ib_factory=lambda: fake, clock=clock, wall=lambda: EVENING)
+    gw.connect()
+    return gw, fake
+
+
+def test_a_batch_that_runs_out_of_time_keeps_what_came_back():
+    gw, _ = slow_gateway(slow={"LATE"}, bars={"BHP": session(DAY), "LATE": session(DAY)})
+    got = gw.bars({"BHP": ("900 S", None), "LATE": ("900 S", None)})
+    assert list(got) == ["BHP"] and gw.unanswered == {"LATE"}
+    assert gw.ready and gw.health.timeouts_in_row == 0  # something came back: the link works
+
+
+def test_nothing_back_but_gateway_answering_is_asked_again_before_the_link_is_called_down():
+    gw, _ = slow_gateway(slow={"BHP"}, bars={"BHP": session(DAY)})
+    assert gw.bars({"BHP": ("900 S", None)}) == {}
+    assert gw.ready and gw.unanswered == {"BHP"} and gw.health.timeouts_in_row == 1
+    assert gw.bars({"BHP": ("900 S", None)}) == {}  # twice in a row: now it is down
+    assert not gw.ready and "2 in a row" in gw.health.last_error
+
+
+def test_nothing_back_and_gateway_silent_is_the_link_down(monkeypatch):
+    from asxbot.ibkr import gateway as G
+
+    monkeypatch.setattr(G, "LINK_CHECK_S", 0.05)
+    gw, _ = slow_gateway(slow={"BHP"}, clock_answers=False, bars={"BHP": session(DAY)})
+    assert gw.bars({"BHP": ("900 S", None)}) == {}
+    assert not gw.ready and "did not answer a time request" in gw.health.last_error
+
+
+def test_prior_sessions_a_batch_ran_out_of_time_for_are_asked_again(tmp_path):
+    """07:30:57 on 25 Sep 2026: "90 asked, 0 returned", and all 90 - the index among them -
+    were marked done for the day, so from 10:16 on IBKR every reaction look and every v2
+    rule-bot candidate had no previous close."""
+    prior = []
+    for d in (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)):
+        prior += session(d, n=30, vol=500.0)
+    gw, fake = slow_gateway(slow={"XJO", "BHP"}, bars={"BHP": prior, "XJO": prior})
+    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
+    view = MarketView(MinuteBars(tmp_path), DAY, feed, sessions=3, min_sessions=3)
+    assert view.prepare(["^AXJO", "BHP"]) == 2  # nothing back in time
+    fake.slow.clear()
+    assert view.prev_close("^AXJO") == pytest.approx(10.29)  # asked again, not given up on
+    assert view.prepare(["^AXJO", "BHP"]) == 1  # BHP too; the index is done
+    assert view.prev_close("BHP") == pytest.approx(10.29)
+    assert view.prepare(["^AXJO", "BHP"]) == 0  # done for the day once returned
+
+
+def test_a_missing_previous_close_on_ibkr_is_not_remembered_for_the_day(tmp_path):
+    gw, fake = slow_gateway(bars={})
+    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
+    view = MarketView(MinuteBars(tmp_path), DAY, feed, sessions=3, min_sessions=3)
+    assert view.prev_close("BHP") is None  # IBKR sent nothing (yet)
+    fake.bars["BHP"] = session(date(2026, 9, 24), n=30)
+    assert view.prev_close("BHP") == pytest.approx(10.29)
+
+
+def test_prior_sessions_that_come_back_empty_are_given_up_after_three_asks(tmp_path):
+    gw, fake = slow_gateway(bars={})
+    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
+    asked = [feed.prepare(["NONE"], DAY, 3) for _ in range(F.HISTORY_TRIES + 1)]
+    assert asked == [1] * F.HISTORY_TRIES + [0]
+
+
+def test_a_refresh_leaves_the_late_codes_at_the_front_of_the_next_one(tmp_path):
+    gw, fake = slow_gateway(slow={"LATE"}, bars={"BHP": session(DAY), "LATE": session(DAY)})
+    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
+    now = datetime(2026, 9, 25, 10, 6, 20, tzinfo=SYD)
+    assert feed.refresh(["BHP", "LATE"], now) == ["BHP"]
+    fake.slow.clear()
+    assert feed.refresh(["BHP", "LATE"], now + timedelta(seconds=10)) == ["LATE"]
+
+
+def test_before_the_open_the_feed_check_follows_gateway_and_keeps_the_status_fresh(tmp_path):
+    """From 07:30 to 10:00 on 25 Sep 2026 nothing asked for prices, so nothing checked the
+    feed: the status sat at 07:29 (the 10:00 SELF-CHECK: "not updated for 151 minutes") and
+    the feed still said IBKR while Gateway was not ready, then dead. The watcher now calls
+    `check` every cycle."""
+    clock = Clock()
+    t0 = datetime(2026, 9, 25, 7, 30, tzinfo=SYD)
+    gw, fake = gateway(clock, settings={"reconnect_every_s": 60})
+    gw.connect()
+    feed, ev = _failover(tmp_path, gw, t0)
+    assert feed.using_primary
+    fake.errorEvent.emit(-1, 1100, "Connectivity between IB and TWS has been lost.", None)
+    feed.check(t0 + timedelta(minutes=1))
+    st = F.read_status(tmp_path / "data")
+    assert not feed.using_primary and feed.label == F.FALLBACK_LABEL
+    assert st["provider_in_use"] == "yfinance" and st["quotes_from"] == "yfinance"
+    assert st["at"] == "2026-09-25T07:31:00+10:00"
+    fake.refuse = True  # Gateway gone: every fresh connection refused
+    fake.connected = False
+    for m in range(2, 40):  # a cycle a minute until 08:09, no price asked for
+        clock.t += 61
+        feed.check(t0 + timedelta(minutes=m))
+        age = t0 + timedelta(minutes=m) - datetime.fromisoformat(
+            F.read_status(tmp_path / "data")["at"])  # fmt: skip
+        assert age <= F.STATUS_EVERY <= timedelta(minutes=10)
+    assert not feed.using_primary
+    fake.refuse = False  # logged in again
+    clock.t += 61
+    feed.check(t0 + timedelta(minutes=41))
+    st = F.read_status(tmp_path / "data")
+    assert feed.using_primary and st["provider_in_use"] == "ibkr" and st["quotes_from"] == "ibkr"
+    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
+
+
+def test_the_watcher_checks_the_feed_every_cycle_and_survives_a_failing_check(monkeypatch):
+    from asxbot.arena import watch as W
+
+    seen = []
+    feed = SimpleNamespace(check=seen.append)
+    monkeypatch.setattr(W, "day_view", lambda arena, now: SimpleNamespace(feed=feed))
+    now = datetime(2026, 9, 25, 7, 45, tzinfo=SYD)
+    W._feed_check(None, now)
+    assert seen == [now]
+
+    def broken(arena, now):
+        raise RuntimeError("no view")
+
+    monkeypatch.setattr(W, "day_view", broken)
+    W._feed_check(None, now)  # logged, not raised
+
+
+def test_a_quote_is_labelled_by_where_it_came_from():
+    from asxbot.live.quotes import Quote
+
+    t = datetime(2026, 9, 25, 9, 30)
+    ib = Quote("ING", 2.04, 2.04, 2.04, 0, t, "ibkr (real-time)", False)
+    frozen = Quote("ING", 2.04, 2.04, 2.04, 0, t, "ibkr (delayed)", True)
+    yahoo = Quote("ING", 2.04, 2.04, 2.04, 0, t, "yfinance (delayed)", True)
+    assert F.quote_label(ib) == F.LIVE_LABEL
+    assert F.quote_label(frozen) == "delayed data (IBKR, not real-time)"
+    assert F.quote_label(yahoo) == F.FALLBACK_LABEL
+    assert F.quote_label(yahoo, "yfinance") == DELAYED_LABEL
+    assert F.quote_label(None) == "no quote"
+
+
+def test_the_report_labels_every_kind_of_decision_by_its_prices(cfg):
+    """25 Sep 2026: pre-open looks priced on Yahoo while Gateway was down, reaction looks and
+    the v2 rule bot with no previous close on IBKR, a reaction look on the Yahoo fallback."""
+    from asxbot.arena import report as R
+    from asxbot.arena.reaction_v2 import NO_PREV_CLOSE, save_bot_state, save_queue
+    from asxbot.log import EventLog
+
+    ev = EventLog(cfg.data_dir)
+    for tk, data in (("BMN", None), ("ING", None), ("NEW", F.LIVE_LABEL), ("OLD", None)):
+        ev.append("arena_decisions", {"stage": "decider", "ticker": tk, "v2": "pre_open",
+                                      **({"data": data} if data else {})})  # fmt: skip
+    ev.append("arena_decisions", {"stage": "reader", "ticker": "BMN", "v2": True})
+    fixes = cfg.data_dir / "arena" / "price_sources" / f"{date.today().isoformat()}.json"
+    fixes.parent.mkdir(parents=True, exist_ok=True)
+    fixes.write_text(json.dumps({"labels": {"BMN pre_open": F.FALLBACK_LABEL,
+                                            "ING pre_open": F.FALLBACK_LABEL}}),
+                     encoding="utf-8")  # fmt: skip
+    today = date.today()  # the events are stamped now
+    save_queue(cfg.data_dir, today, {
+        "TGN": {"status": "quiet", "reaction": {"available": False, "why": NO_PREV_CLOSE,
+                                                "data_label": F.LIVE_LABEL}},
+        "MXT": {"status": "looked", "reaction": {"available": True,
+                                                 "data_label": F.FALLBACK_LABEL}},
+        "PEN": {"status": "queued"},
+    })  # fmt: skip
+    save_bot_state(cfg.data_dir, today, {"status": "done", "data": F.LIVE_LABEL, "candidates": [
+        {"ticker": "A", "screened": "turnover 1"},
+        {"ticker": "B", "signal": False, "why": NO_PREV_CLOSE}]})  # fmt: skip
+    used = R.decision_data(cfg, today)["asx_announcements_v2"]
+    no_prices = R.NO_PRICES.format(F.LIVE_LABEL)
+    assert used == {F.FALLBACK_LABEL: 3, F.LIVE_LABEL: 1, R.NOT_RECORDED: 1, no_prices: 2}
+    line = R.data_line(SimpleNamespace(data_basis="x"), used)
+    assert "3 on delayed data (Yahoo)" in line and "2 on no usable prices" in line

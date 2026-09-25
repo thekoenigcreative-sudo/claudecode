@@ -25,6 +25,7 @@ from asxbot.arena.levels import Playbook
 from asxbot.arena.liquid import size_rule
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.reaction_v2 import (
+    NO_PREV_CLOSE,
     bot_order_terms,
     load_bot_state,
     load_queue,
@@ -325,6 +326,9 @@ def place_decision(
 # --------------------------------------------------------------------------
 # the reaction look
 # --------------------------------------------------------------------------
+_NO_PREV_WARNED: set[tuple[date, str]] = set()
+
+
 def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None = None) -> list:
     """Every queued stock whose look is due gets it: one decider call each, most interesting
     first. Stocks the agent already holds, or has an entry working in, are skipped."""
@@ -359,6 +363,15 @@ def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None =
         if exposed:
             continue
         r = reaction(view, code, now, st.ref, st.base)
+        if r.get("why") == NO_PREV_CLOSE:
+            # The feed has no previous close yet: a data failure, not a quiet stock. Looked
+            # at again next cycle, until its window closes ("missed"). On 25 Sep 2026 six
+            # looks were closed as quiet this way at 10:16 (LEARNINGS #25).
+            if (day, code) not in _NO_PREV_WARNED:
+                _NO_PREV_WARNED.add((day, code))
+                log.warning("reaction look on %s waits: %s (%s)", code, NO_PREV_CLOSE,
+                            r.get("data_label"))  # fmt: skip
+            continue
         ok, why = wakes(r, pb)
         item["reaction"] = {k: v for k, v in r.items() if k != "bars"}
         if not ok:
@@ -563,7 +576,7 @@ def v2_bot_cycle(
             why=(
                 f"not decided by {latest:%H:%M}: first reached at {now:%H:%M} with the feed "
                 + (f"at {data_time:%H:%M}" if data_time else "holding no index bars")
-                + ("" if state.get("status") != "waiting" else ", still waiting for 10:29")
+                + ("" if state.get("status") != "waiting" else f", waiting: {state.get('why')}")
                 + "; nothing is traded late"
             ),
         )
@@ -576,6 +589,13 @@ def v2_bot_cycle(
         save_bot_state(cfg.data_dir, day, state)
         return []
 
+    if view.prev_close(view.index) is None:
+        # Every candidate is measured against the index: without its previous close the rule
+        # cannot be run, and "no signal" would be a data failure dressed as a verdict (25 Sep
+        # 2026: 13 of 13 candidates). Wait for it, until latest_decision_time.
+        state.update(status="waiting", why=f"{NO_PREV_CLOSE} for the index ({view.label})")
+        save_bot_state(cfg.data_dir, day, state)
+        return []
     prev = previous_session(day)
     if ann is None:
         ann = seen_announcements(cfg, pb, prev - timedelta(days=1), day)
@@ -779,6 +799,7 @@ def pre_open_decider(
             "model_expected": expected_model(cfg, "decider"),
             "decision": d,
             "reply": reply.text,
+            "data": (ctx.get("reaction") or {}).get("data_label"),
             "v2": "pre_open",
         },
     )

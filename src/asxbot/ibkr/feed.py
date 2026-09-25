@@ -7,8 +7,9 @@ feed and never touches IB Gateway). With ibkr:
     real-time data. If any of those fails it switches to Yahoo's delayed feed at once -
     logged as an ERROR, written to data/arena/live_data.json (which the `live_data`
     self-check reads) and to the `live_data` event log - and tries IBKR again every
-    `ibkr.reconnect_every_s`. Every decision records the label of the feed it used, so the
-    evening report can say which prices each decision was made on.
+    `ibkr.reconnect_every_s`. The watcher calls `check` every cycle, before the open too, so
+    the switch and the status never wait for a price request. Every decision records the
+    label of the prices it used, so the evening report can say which each was made on.
   * "Usual volume" and the previous close come from IBKR's own prior sessions when IBKR is
     the feed, so today's volume is never divided by another vendor's volume. They are held
     in memory for the day and never written into the Yahoo minute cache.
@@ -53,10 +54,23 @@ LIVE_LABEL = "live data (IBKR)"
 FALLBACK_LABEL = "delayed data (Yahoo) - IBKR unavailable"
 PROBE_EVERY = timedelta(minutes=10)
 STATUS_EVERY = timedelta(minutes=5)
+HISTORY_TRIES = 3  # asks for a stock's prior sessions that come back empty before giving up
 
 
 def status_path(data_dir: Path) -> Path:
     return Path(data_dir) / "arena" / "live_data.json"
+
+
+def quote_label(q, provider: str = "ibkr") -> str:
+    """The label of the prices a quote came from, in the words the feeds use: a decision
+    made on a quote records this (the evening report counts decisions by it)."""
+    from asxbot.arena.intraday import DELAYED_LABEL
+
+    if q is None:
+        return "no quote"
+    if str(q.source).startswith("ibkr"):
+        return "delayed data (IBKR, not real-time)" if q.delayed else LIVE_LABEL
+    return FALLBACK_LABEL if provider == "ibkr" else DELAYED_LABEL
 
 
 def read_status(data_dir: Path) -> dict:
@@ -81,7 +95,8 @@ class IBKRLiveFeed(IntradayFeed):
         self.events = events
         self.frames: dict[tuple[str, date], pd.DataFrame] = {}
         self.hist: dict[tuple[str, date], pd.DataFrame] = {}
-        self.hist_tried: set[tuple[str, date]] = set()
+        self.hist_tried: set[tuple[str, date]] = set()  # returned, or given up on for the day
+        self.hist_misses: dict[tuple[str, date], int] = {}
         self.last_refresh: dict[str, datetime] = {}
 
     @property
@@ -126,16 +141,19 @@ class IBKRLiveFeed(IntradayFeed):
         if not chosen:
             return []
         got = self.gw.bars({c: (self._duration(c, day, now), None) for c in chosen})
-        for c in chosen:
+        if not self.gw.ready:  # the batch found the link down
+            raise FeedNotConnected(self.gw.health.last_error or "IB Gateway not ready")
+        answered = [c for c in chosen if c not in self.gw.unanswered]
+        for c in answered:  # the late ones keep their place at the front of the next cycle
             self.last_refresh[c] = now
         for c, df in got.items():
             self._merge(c, day, df)
-        if len(chosen) >= 10 and len(got) < 0.2 * len(chosen):
-            why = f"IBKR returned bars for {len(got)} of {len(chosen)} stocks"
+        if len(answered) >= 10 and len(got) < 0.2 * len(answered):
+            why = f"IBKR returned bars for {len(got)} of {len(answered)} stocks"
             self.gw.health.last_error = why
             self.gw.health.server_ok = False
             raise FeedNotConnected(why)
-        return chosen
+        return answered
 
     def fetch_one(self, code: str, now: datetime) -> None:
         self.refresh([code], now)
@@ -157,24 +175,39 @@ class IBKRLiveFeed(IntradayFeed):
 
     def prepare(self, codes: list[str], day: date, sessions: int) -> int:
         """Fetch the prior sessions for codes that do not have them yet, as many as the
-        pacing allows now. Returns how many were asked for."""
+        pacing allows now. Returns how many were asked for.
+
+        A code is done for the day once IBKR returns its bars, or after HISTORY_TRIES asks
+        that came back empty. One the batch ran out of time for is simply asked again: on
+        25 Sep 2026 every code in a batch that timed out at 07:30 - the index among them -
+        was marked done with nothing, so when IBKR came back no reaction look and no v2 rule
+        bot candidate had a previous close all day (LEARNINGS #25)."""
         if not self.gw.ready:
             return 0
-        need = [c for c in codes if (c, day) not in self.hist_tried][: self.gw.room()]
+        todo = [c for c in dict.fromkeys(codes) if (c, day) not in self.hist_tried]
+        todo.sort(key=lambda c: self.hist_misses.get((c, day), 0))  # stable: new ones first
+        need = todo[: self.gw.room()]
         if not need:
             return 0
         days = prior_sessions(day, int(sessions))
         got = self.gw.bars({c: (f"{int(sessions) + 1} D", end_of(day)) for c in need})
+        late = self.gw.unanswered
         for c in need:
-            self.hist_tried.add((c, day))
             df = got.get(c)
             if df is None:
+                if c in late:
+                    continue
+                n = self.hist_misses[(c, day)] = self.hist_misses.get((c, day), 0) + 1
+                if n >= HISTORY_TRIES:
+                    self.hist_tried.add((c, day))
                 continue
+            self.hist_tried.add((c, day))
             for d in days:
                 part = df[[x == d for x in df.index.date]]
                 if len(part):
                     self.hist[(c, d)] = part
-        log.info("IBKR prior sessions: %d asked, %d returned", len(need), len(got))
+        log.info("IBKR prior sessions: %d asked, %d returned%s", len(need), len(got),
+                 f", {len(late)} asked again next cycle" if late else "")  # fmt: skip
         return len(need)
 
     def ensure_history(self, code: str, day: date, sessions: int) -> bool:
@@ -322,6 +355,7 @@ class FailoverFeed(IntradayFeed):
             "at": now.isoformat(timespec="seconds"),
             "provider_config": "ibkr",
             "provider_in_use": "ibkr" if self.using_primary else "yfinance",
+            "quotes_from": "ibkr" if self.primary.gw.ready else "yfinance",
             "label": self.label,
             "why": self.why,
             "gateway": self.primary.gw.health.to_dict(),
