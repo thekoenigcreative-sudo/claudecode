@@ -686,6 +686,7 @@ def v2_bot_cycle(
             orders.append({"ticker": sig.ticker, "refused": str(e)})
             if alert:
                 alert.refused("bot", sig.ticker, sig.side, qty, str(e))
+    state.pop("why", None)  # a "waiting" reason from an earlier cycle is not the outcome
     state.update(
         status="done",
         decided_at=arena.broker.clock().isoformat(timespec="seconds"),
