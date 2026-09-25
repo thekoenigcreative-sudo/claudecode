@@ -18,7 +18,14 @@ from zoneinfo import ZoneInfo
 from asxbot.announcements.model import Announcement
 from asxbot.arena import notify
 from asxbot.arena.accounts import Account
-from asxbot.arena.agents import DECIDER, READER, AgentCallFailed, call_agent, parse_decision
+from asxbot.arena.agents import (
+    DECIDER,
+    READER,
+    AgentCallFailed,
+    call_agent,
+    fresh_sessions_on,
+    parse_decision,
+)
 from asxbot.arena.broker import OPENING_SIDES
 from asxbot.arena.intraday import MarketView, entries_allowed
 from asxbot.arena.levels import Playbook
@@ -676,6 +683,7 @@ def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: 
                 expect_model=expected_model(cfg, "reader"),
                 data_dir=cfg.data_dir,
                 purpose=f"read {a.code} {a.ids_id} (v2 reaction look)",
+                fresh_session=fresh_sessions_on(cfg),
             )
             summaries = [reply.text]
             ev.append(
@@ -712,13 +720,14 @@ def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: 
             data_dir=cfg.data_dir,
             purpose=f"v2 reaction look {code}",
             timeout_s=240,
+            fresh_session=fresh_sessions_on(cfg),
         )
     except AgentCallFailed as e:
         # 26 Sep 2026 (review, agent unavailable): the caller keeps the look queued.
         kind = str(getattr(e, "kind", "error"))
         ev.append(
             "arena_decisions",
-            {"ticker": code, "outcome": "decider_failed", "kind": kind, "why": str(e),
+            {"ticker": code, "outcome": "agent_unavailable", "kind": kind, "why": str(e),
              "v2": "reaction"},
         )  # fmt: skip
         return {"agent_unavailable": kind, "error": f"decider failed: {e}"}
@@ -1109,13 +1118,16 @@ def pre_open_decider(
             data_dir=cfg.data_dir,
             purpose=f"v2 pre-open {a.code} {a.ids_id}",
             timeout_s=240,
+            fresh_session=fresh_sessions_on(cfg),
         )
     except AgentCallFailed as e:
+        kind = str(getattr(e, "kind", "error"))
         ev.append(
             "arena_decisions",
-            {"ticker": a.code, "outcome": "decider_failed", "why": str(e), "v2": "pre_open"},
-        )
-        return {"error": str(e)}
+            {"ticker": a.code, "outcome": "agent_unavailable", "kind": kind, "why": str(e),
+             "v2": "pre_open"},
+        )  # fmt: skip
+        return {"error": str(e), "agent_unavailable": kind}
     d = parse_decision(reply.text)
     ev.append(
         "arena_decisions",

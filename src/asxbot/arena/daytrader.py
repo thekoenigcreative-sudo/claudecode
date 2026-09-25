@@ -973,8 +973,11 @@ def setup_context(
 def ask_agent(
     arena, pb: Playbook, s: Setup, t: dict, context: dict, now: datetime, data: str = ""
 ) -> dict:
-    """One decider call, answer within the configured seconds, or it is a rejection."""
-    from asxbot.arena.agents import expected_model, parse_decision
+    """One decider call, answer within the configured seconds, or it is a rejection. A call
+    that could not be made at all (the plan's usage limit, OpenClaw down) is "unavailable",
+    never a rejection (26 Sep 2026, review G1: the agent's side would otherwise read as a day
+    of judgement it never made)."""
+    from asxbot.arena.agents import expected_model, fresh_sessions_on, parse_decision
 
     limit_s = int((pb.raw.get("agent") or {}).get("timeout_s", 60))
     started = time_mod.monotonic()
@@ -987,9 +990,15 @@ def ask_agent(
             data_dir=arena.cfg.data_dir,
             purpose=f"day trader {s.setup} {s.ticker}",
             process_timeout_s=limit_s + 15,
+            fresh_session=fresh_sessions_on(arena.cfg),
         )
     except AgentCallFailed as e:
-        return {"action": "reject", "why": f"no answer within {limit_s}s ({e})", "model": ""}
+        kind = str(getattr(e, "kind", "error"))
+        if kind == "timeout":  # the rule: no answer within the limit is a rejection
+            return {"action": "reject", "why": f"no answer within {limit_s}s ({e})",
+                    "model": ""}  # fmt: skip
+        return {"action": "unavailable", "kind": kind, "why": f"agent unavailable ({kind}): {e}",
+                "model": ""}  # fmt: skip
     took = time_mod.monotonic() - started
     d = parse_decision(reply.text) if "action" in reply.text else {"action": "reject"}
     # The rule: "No answer within 60 s is a rejection." 26 Sep 2026 (review B9): this was
@@ -1368,8 +1377,12 @@ def _agent_take(arena, pb, view, s: Setup, now: datetime, day: date, rows: dict)
             "side": s.side,
             "decision": answer,
             "model": answer.get("model", ""),
+            **({"outcome": "agent_unavailable", "kind": answer.get("kind")}
+               if answer["action"] == "unavailable" else {}),  # fmt: skip
         },
     )
+    if answer["action"] == "unavailable":
+        return {"unavailable": answer.get("kind"), "why": answer.get("why", "")}
     if answer["action"] != "take":
         # Not queued for the hourly digest: the scan can find dozens of setups a day and
         # the digest is for passes worth reading (#37). They are counted in the evening

@@ -4,6 +4,14 @@ Rules (SPEC section 4): descriptive user agent, pause between requests, cache ev
 never re-download what is cached, back off on errors, and STOP on refusal. A refusal
 (403, 429, or a bot-challenge page) raises AccessRefused; callers must stop and alert,
 never work around it.
+
+Two ways to use it (26 Sep 2026). The collector (history, the stand-alone poller) keeps the
+patient settings: a 60 s timeout, 4 retries backing off 10-80 s, 4 attempts per PDF - up to
+about half an hour on one PDF in an outage, which is fine for a batch job. The watcher is
+single-threaded: while it waits on asx.com.au nothing else happens - no fills, no stops, no
+10:30 rule, no 15:50 sweep. It builds its client with `inline()`: 15 s timeout, one retry
+after 5 s, one attempt per PDF. A PDF that fails is not lost: the poller retries it on later
+cycles (announcements/live.py). Pacing and the %PDF checks are the same in both.
 """
 
 from __future__ import annotations
@@ -42,6 +50,13 @@ class PdfFetchFailed(RuntimeError):
 
 def _is_pdf(body: bytes) -> bool:
     return body[:5].startswith(b"%PDF")
+
+
+def head_bytes(path: Path, n: int = 5) -> bytes:
+    """The first `n` bytes of a file: enough for the %PDF check, without reading a 20 MB
+    document whole to look at five of its bytes."""
+    with open(path, "rb") as fh:
+        return fh.read(n)
 
 
 def _pdf_url_from_terms(body: bytes) -> str | None:
@@ -90,6 +105,7 @@ class PacedClient:
         max_retries: int = 4,
         backoff_base_s: float = 10.0,
         timeout_s: float = 60.0,
+        pdf_attempts: int | None = None,
     ):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -97,10 +113,24 @@ class PacedClient:
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
         self.timeout_s = timeout_s
+        # Whole attempts per PDF (each request inside one also gets max_retries retries).
+        self.pdf_attempts = max(1, int(pdf_attempts if pdf_attempts is not None else max_retries))
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent, "Accept-Language": "en-AU,en"})
         self._last_request = 0.0
         self.requests_made = 0
+
+    INLINE_TIMEOUT_S = 15.0
+    INLINE_RETRIES = 1
+    INLINE_BACKOFF_S = 5.0
+
+    @classmethod
+    def inline(cls, cache_dir: Path, user_agent: str, pause_s: float = 3.0) -> PacedClient:
+        """The watcher's client: bounded waits, so an asx.com.au outage costs a cycle about
+        half a minute per URL, not half an hour (module docstring)."""
+        return cls(cache_dir, user_agent, pause_s=pause_s, max_retries=cls.INLINE_RETRIES,
+                   backoff_base_s=cls.INLINE_BACKOFF_S, timeout_s=cls.INLINE_TIMEOUT_S,
+                   pdf_attempts=1)  # fmt: skip
 
     # -- cache -----------------------------------------------------------
     def _cache_path(self, url: str) -> Path:
@@ -153,13 +183,14 @@ class PacedClient:
         """
         dest = Path(dest)
         if dest.exists():
-            if _is_pdf(dest.read_bytes()):
+            if _is_pdf(head_bytes(dest)):
                 return dest
             log.warning("%s is not a PDF (a saved terms page?); fetching it again", dest.name)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         reason = detail = ""
-        for attempt in range(1, self.max_retries + 1):
+        attempts = self.pdf_attempts
+        for attempt in range(1, attempts + 1):
             reason = detail = ""  # each attempt says its own reason, never the last one's
             try:
                 body = self._download(url)
@@ -191,11 +222,11 @@ class PacedClient:
                 tmp.write_bytes(body)
                 tmp.replace(dest)
                 return dest
-            if attempt < self.max_retries:
+            if attempt < attempts:
                 wait = self.backoff_base_s * attempt
                 log.warning("%s: %s; retry %d in %.0fs", url, reason, attempt, wait)
                 time.sleep(wait)
-        raise PdfFetchFailed(reason, f"{detail} (after {self.max_retries} attempts)")
+        raise PdfFetchFailed(reason, f"{detail} (after {attempts} attempt(s))")
 
     def _download(self, url: str) -> bytes:
         """The body, read in chunks and refused past MAX_PDF_BYTES."""

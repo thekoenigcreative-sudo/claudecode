@@ -18,12 +18,48 @@ from asxbot.log import setup_logging
 SYD = ZoneInfo("Australia/Sydney")
 
 
-def _arena():
+def _arena(log_file: str | None = None, cfg=None):
     from asxbot.arena.runtime import build_arena
 
-    cfg = load_config()
-    log = setup_logging(cfg.logs_dir)
+    cfg = cfg or load_config()
+    log = setup_logging(cfg.logs_dir, **({"filename": log_file} if log_file else {}))
     return cfg, log, build_arena(cfg)
+
+
+def _event(cfg, kind: str, rec: dict) -> None:
+    """A record of a guarded command, in data/events (best effort)."""
+    from asxbot.log import EventLog
+
+    try:
+        EventLog(cfg.data_dir).append(kind, rec)
+    except OSError as e:
+        print(f"(could not record the {kind} event: {e})")
+
+
+def _testing(arena) -> list:
+    """Every enabled playbook in its frozen test (status: test)."""
+    return [p for p in arena.playbooks() if str(p.status) == "test"]
+
+
+def _hand_order_refused(cfg, arena, pb, args, what: str) -> str:
+    """Why a hand-placed order (arena place-order / close) is refused, or "" (26 Sep 2026).
+
+    `--by bot` is never allowed: the bot's book is the frozen rule bot's alone, and an order
+    placed there by hand is a trade the yardstick never made. In a playbook's test, an order
+    by hand in the agent's book needs --force and a written reason, and is recorded; the
+    watcher's own orders do not come through here."""
+    if args.by == "bot":
+        return ("REFUSED: --by bot places an order in the rule bot's book, which only the "
+                "frozen rule itself trades. Nothing was placed.")  # fmt: skip
+    if str(pb.status) == "test":
+        reason = (getattr(args, "reason", "") or "").strip()
+        if not (getattr(args, "force", False) and reason):
+            return (f"REFUSED: {pb.key} is in its frozen test; an order by hand ({what}) "
+                    'needs --force --reason "why" (it is recorded). Nothing was placed.')
+        _event(cfg, "arena_hand_orders", {"playbook": pb.key, "what": what, "by": args.by,
+                                          "ticker": str(args.ticker).upper(),
+                                          "why": reason})  # fmt: skip
+    return ""
 
 
 def _pb(arena, key: str | None):
@@ -150,6 +186,10 @@ def cmd_place_order(args) -> int:
 
     cfg, log, arena = _arena()
     pb = _pb(arena, args.playbook)
+    refused = _hand_order_refused(cfg, arena, pb, args, f"place-order {args.side}")
+    if refused:
+        print(refused)
+        return 3
     acct = arena.account(pb, args.by)
     try:
         o = arena_place_order(
@@ -173,6 +213,10 @@ def cmd_close(args) -> int:
 
     cfg, log, arena = _arena()
     pb = _pb(arena, args.playbook)
+    refused = _hand_order_refused(cfg, arena, pb, args, "close")
+    if refused:
+        print(refused)
+        return 3
     acct = arena.account(pb, args.by)
     pos = acct.positions.get(args.ticker.upper())
     if pos is None:
@@ -233,7 +277,13 @@ def cmd_mark(args) -> int:
 
 
 def cmd_report(args) -> int:
-    from asxbot.arena.agents import DECIDER, AgentCallFailed, call_agent, expected_model
+    from asxbot.arena.agents import (
+        DECIDER,
+        AgentCallFailed,
+        call_agent,
+        expected_model,
+        fresh_sessions_on,
+    )
     from asxbot.arena.report import agent_brief, gather, mark_report_sent, render_plain
 
     cfg, log, arena = _arena()
@@ -246,6 +296,7 @@ def cmd_report(args) -> int:
             reply = call_agent(
                 DECIDER, agent_brief(facts), expect_model=expected_model(cfg, "decider"),
                 data_dir=cfg.data_dir, purpose="evening report",
+                fresh_session=fresh_sessions_on(cfg),
             )  # fmt: skip
             if reply.text.strip():
                 text = reply.text.strip()
@@ -291,10 +342,15 @@ def watch_playbooks(arena) -> tuple:
     return ann[0], tuple(p for p in pbs if p is not ann[0])
 
 
-def cmd_watch(args) -> int:
-    from asxbot.arena.watch import watch
+EXIT_ALREADY_WATCHING = 4
 
-    cfg, log, arena = _arena()
+
+def cmd_watch(args) -> int:
+    from asxbot.arena.watch import WatcherAlreadyRunning, watch
+    from asxbot.log import WATCH_LOG
+
+    # The watcher logs to its own file (26 Sep 2026): its self-checks read only its lines.
+    cfg, log, arena = _arena(log_file=WATCH_LOG)
     if args.playbook:
         pb, others = _pb(arena, args.playbook), ()
     else:
@@ -303,7 +359,13 @@ def cmd_watch(args) -> int:
         print(f"playbook {pb.key} is not enabled in config.yaml")
         return 2
     log.info("watching: %s", ", ".join(p.key for p in (pb, *others)))
-    watch(arena, pb, once=args.once, interval_s=args.interval, until=args.until, others=others)
+    try:
+        watch(arena, pb, once=args.once, interval_s=args.interval, until=args.until,
+              others=others)  # fmt: skip
+    except WatcherAlreadyRunning as e:
+        log.error("REFUSING TO START: %s", e)
+        print(f"REFUSED: {e}")
+        return EXIT_ALREADY_WATCHING
     return 0
 
 
@@ -311,9 +373,28 @@ def cmd_fake(args) -> int:
     """Prove the whole chain with a fake announcement. Nothing here touches asx.com.au."""
     from asxbot.announcements.model import Announcement
     from asxbot.arena.watch import handle_announcement
+    from asxbot.config import Config
     from asxbot.live.quotes import Quote, StaticQuotes
 
-    cfg, log, arena = _arena()
+    cfg = load_config()
+    if args.data_dir:
+        # A scratch arena (26 Sep 2026): its own books, events and queue; no Telegram, and
+        # Yahoo's quotes rather than a second connection to IB Gateway beside the watcher's.
+        raw = {**cfg.raw, "data": {**(cfg.raw.get("data") or {}), "dir": str(args.data_dir),
+                                   "live_provider": "yfinance"}}  # fmt: skip
+        arena_raw = dict(raw.get("arena") or {})
+        arena_raw["alerts"] = {**(arena_raw.get("alerts") or {}), "telegram": False}
+        raw["arena"] = arena_raw
+        cfg = Config(raw, cfg.root, cfg.env, None)
+        print(f"scratch arena in {cfg.data_dir}: nothing here touches the live books")
+    cfg, log, arena = _arena(cfg=cfg)
+    if not args.data_dir and _testing(arena):
+        # 26 Sep 2026: a fake announcement run on the live data wrote into the frozen test -
+        # queue entries, reader and decider records, orders in the test books, Telegram.
+        names = ", ".join(p.key for p in _testing(arena))
+        print(f"REFUSED: {names} is in its frozen test, and a fake announcement would write "
+              "into its books, queue and records. Use --data-dir <a scratch folder>.")
+        return 3
     pb = _pb(arena, args.playbook)
     ticker = args.ticker.upper()
     now = datetime.now(SYD)
@@ -377,22 +458,6 @@ def cmd_fake(args) -> int:
     return 0
 
 
-def cmd_replay(args) -> int:
-    """The plumbing replay of the v2 and day-trader rule bots (never the agent)."""
-    from datetime import date as date_cls
-
-    from asxbot.arena.replay import run
-
-    cfg = load_config()
-    setup_logging(cfg.logs_dir)
-    days = [date_cls.fromisoformat(d) for d in args.days.split(",")]
-    delays = [int(x) for x in args.delays.split(",")]
-    md = run(cfg, days, delays, cfg.root / "reports")
-    print(f"written: {md}")
-    print("PLUMBING REPLAY - plumbing test, not a go/no-go")
-    return 0
-
-
 def cmd_replay_ibkr(args) -> int:
     """The replay of the frozen rule bots over IBKR 1-minute history (replay_ibkr.py)."""
     from datetime import date as date_cls
@@ -425,21 +490,19 @@ def cmd_hours(args) -> int:
 
 
 def cmd_evening_due(args) -> int:
-    """Exit 0 if now is today's evening-report slot. The scheduled task fires at both
-    19:30 and 20:30; the wrong one for today exits here and does nothing."""
-    from asxbot.arena.hours import evening_slot, is_dst, is_evening_slot
+    """Exit 0 if the evening routine should run now: in today's slot, or late the same
+    evening when today's report has not gone (a start the PC missed at 19:30; hours.
+    evening_due, 26 Sep 2026). The scheduled task fires at both 19:30 and 20:30; the wrong
+    one for today exits here and does nothing."""
+    from asxbot.arena.hours import evening_due, is_dst
+    from asxbot.arena.report import last_report_sent
 
     cfg = load_config()
     setup_logging(cfg.logs_dir)
     now = datetime.now(SYD)
-    if is_evening_slot(cfg, now):
-        print(f"due: today's slot is {evening_slot(cfg, now.date()):%H:%M} Sydney")
-        return 0
-    print(
-        f"not due: today's slot is {evening_slot(cfg, now.date()):%H:%M} Sydney "
-        f"(daylight saving {'ON' if is_dst(now.date()) else 'off'}), now {now:%H:%M}"
-    )
-    return 1
+    due, why = evening_due(cfg, now, last_report_sent(cfg))
+    print(f"{why} (daylight saving {'ON' if is_dst(now.date()) else 'off'})")
+    return 0 if due else 1
 
 
 def cmd_preclose(args) -> int:
@@ -448,6 +511,13 @@ def cmd_preclose(args) -> int:
 
     cfg, log, arena = _arena()
     pb = _pb(arena, args.playbook)
+    if pb.flat_at_close:
+        # 26 Sep 2026: this is v1's hold-or-close sweep. Run on a flat-at-close playbook (v2,
+        # the day trader) it asked the decider about the live test book, at any hour, and
+        # could hold a position the playbook's own rule closes by code from 15:50.
+        print(f"REFUSED: {pb.key} is flat at the close; the watcher closes it by code from "
+              "the pre-close sweep time (v2_flow.flatten). Nothing was asked or placed.")
+        return 3
     results = sweep_before_close(arena, pb)
     if not results:
         print("nothing to settle (no open agent positions, or this level is not intraday)")
@@ -510,7 +580,7 @@ def cmd_filter_cost(args) -> int:
         from asxbot.arena.notify import build_notifier
 
         rows = " · ".join(
-            f"{c.test} {c.measured}/{c.rejected} median {c.median:+.2f}%"
+            f"{c.test} ({c.playbook or '?'}) {c.measured}/{c.rejected} median {c.median:+.2f}%"
             for c in sorted(costs.values(), key=lambda c: -c.rejected)
             if c.measured
         )
@@ -539,11 +609,31 @@ def cmd_selfcheck(args) -> int:
 
 
 def cmd_reset(args) -> int:
-    """Wipe arena accounts back to their opening balance. Fake money only, never live."""
+    """Wipe arena accounts back to their opening balance. Fake money only, never live.
+
+    Refused (26 Sep 2026) inside the market-hours lock, and for any account of a playbook
+    in its frozen test (status: test): `reset --yes` deleted the test's books, marks and
+    the day's handled list, and the record of the test with them. Every reset and every
+    refusal is an `arena_reset` event."""
+    from asxbot.arena.lock import in_market_lock
+
     cfg, log, arena = _arena()
     if not args.yes:
         print("this deletes every arena account, mark and trade record. Re-run with --yes.")
         return 2
+    now = datetime.now(SYD)
+    protected = [n for p in arena.playbooks(only_enabled=False) if str(p.status) == "test"
+                 for n in (p.agent_account, p.bot_account)]  # fmt: skip
+    hit = [n for n in protected if not args.account or args.account in n]
+    why = ""
+    if in_market_lock(now, cfg=cfg):
+        why = f"{now:%H:%M} Sydney is inside the market-hours lock on a trading day"
+    elif hit:
+        why = f"it would delete the frozen test's books: {', '.join(hit)}"
+    if why:
+        _event(cfg, "arena_reset", {"refused": why, "account": args.account or "(all)"})
+        print(f"REFUSED: {why}. Nothing was removed.")
+        return 3
     root = cfg.data_dir / "arena"
     removed = []
     for sub in ("accounts", "marks", "handled"):
@@ -558,6 +648,7 @@ def cmd_reset(args) -> int:
         print(f"removed {name}")
     print(f"{len(removed)} file(s) removed; accounts reopen at their starting balance")
     log.info("arena reset: %d files removed", len(removed))
+    _event(cfg, "arena_reset", {"removed": removed, "account": args.account or "(all)"})
     return 0
 
 
@@ -607,7 +698,10 @@ def add_parsers(sub) -> None:
 
     pl = a.add_parser("place-order", help="send ONE order to the arena broker (fake money)")
     pl.add_argument("--playbook")
-    pl.add_argument("--by", choices=["agent", "bot"], default="agent")
+    pl.add_argument("--by", choices=["agent", "bot"], default="agent",
+                    help="bot is refused: only the frozen rule trades the bot's book")
+    pl.add_argument("--force", action="store_true",
+                    help="allow an order by hand in a playbook's test (needs --reason)")
     pl.add_argument("--ticker", required=True)
     pl.add_argument("--side", choices=["buy", "sell", "short", "cover"], required=True)
     pl.add_argument("--qty", type=int, required=True)
@@ -620,7 +714,10 @@ def add_parsers(sub) -> None:
 
     cl = a.add_parser("close", help="close a position")
     cl.add_argument("--playbook")
-    cl.add_argument("--by", choices=["agent", "bot"], default="agent")
+    cl.add_argument("--by", choices=["agent", "bot"], default="agent",
+                    help="bot is refused: only the frozen rule trades the bot's book")
+    cl.add_argument("--force", action="store_true",
+                    help="allow a close by hand in a playbook's test (needs --reason)")
     cl.add_argument("--ticker", required=True)
     cl.add_argument("--qty", type=int)
     cl.add_argument("--limit", type=float)
@@ -646,8 +743,8 @@ def add_parsers(sub) -> None:
     w.add_argument("--once", action="store_true")
     w.add_argument("--interval", type=float)
     w.add_argument(
-        "--until", help='stop at this Sydney time, HH:MM, or "auto" for just before '
-        "announcements end (19:25, or 20:25 on daylight saving)"
+        "--until", help='stop at this Sydney time, HH:MM, or "auto" for just after '
+        "announcements end, with one last poll (19:31, or 20:31 on daylight saving)"
     )
     w.set_defaults(fn=cmd_watch)
 
@@ -662,18 +759,13 @@ def add_parsers(sub) -> None:
     fk.add_argument("--text-file", help="file holding the fake announcement's text")
     fk.add_argument("--no-bot", action="store_true")
     fk.add_argument("--no-agent", action="store_true")
+    fk.add_argument("--data-dir", help="a scratch data folder; required while a playbook is "
+                    "in its test (the live books are never written)")  # fmt: skip
     fk.set_defaults(fn=cmd_fake)
 
     hr = a.add_parser("hours", help="today's announcement window (daylight-saving aware)")
     hr.add_argument("--day")
     hr.set_defaults(fn=cmd_hours)
-
-    rp = a.add_parser(
-        "replay", help="plumbing replay of the v2 and day-trader rule bots on cached bars"
-    )
-    rp.add_argument("--days", required=True, help="comma-separated YYYY-MM-DD")
-    rp.add_argument("--delays", default="20,0", help="feed delays in minutes, e.g. 20,0")
-    rp.set_defaults(fn=cmd_replay)
 
     ri = a.add_parser(
         "replay-ibkr",

@@ -54,10 +54,18 @@ def test_25_september_is_a_partial_day_for_v2_with_the_reason(cfg):
 
 
 def _closed(acct, oid, ticker, realised, commission):
+    """A round trip: 100 bought at 1.00 and sold at 1.00 + realised/100, the brokerage split
+    between the two legs. Trades are round trips since 26 Sep 2026 (D4), so an exit needs
+    its entry on the books."""
+    acct.orders[f"{oid}-in"] = ArenaOrder(
+        order_id=f"{oid}-in", account=acct.name, ticker=ticker, side="buy", qty=100, limit=1.0,
+        decided_at="2026-09-25T10:30:00+10:00", status="filled", filled_qty=100,
+        avg_price=1.0, commission=commission / 2,
+    )  # fmt: skip
     acct.orders[oid] = ArenaOrder(
         order_id=oid, account=acct.name, ticker=ticker, side="sell", qty=100, limit=1.0,
         decided_at="2026-09-25T11:00:00+10:00", status="filled", filled_qty=100,
-        realised=realised, commission=commission,
+        avg_price=1.0 + realised / 100, realised=realised, commission=commission / 2,
     )  # fmt: skip
 
 

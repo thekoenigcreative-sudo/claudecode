@@ -155,6 +155,7 @@ def arena_broker(cfg: Config) -> ArenaBroker:
         adv,
         short_borrow_pct_annual=float(cfg.get("arena.costs.short_borrow_pct_annual", 3.0)),
         resolve_after_minutes=int(fill.get("resolve_after_minutes", 22)),
+        live_expiry_minutes=fill.get("live_expiry_minutes"),
         max_wait_minutes=int(fill.get("max_wait_minutes", 390)),
         max_volume_share=float(fill.get("max_volume_share", 0.20)),
         settle_minutes=int(fill.get("settle_minutes", 0)),

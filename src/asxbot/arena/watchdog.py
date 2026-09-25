@@ -8,8 +8,8 @@ Run every 5 minutes by its own scheduled task (scripts/schedule_watchdog.ps1) wi
 pythonw, so it has no window. Each run is one check:
 
   * Should the watcher be running? On an ASX trading day, from a few minutes after the
-    warm-up task starts it (07:30) until its own stop time (19:25, or 20:25 on daylight
-    saving). Outside that, the check does nothing.
+    warm-up task starts it (07:30) until its own stop time (19:31, or 20:31 on daylight
+    saving; 19:25 until 26 Sep 2026). Outside that, the check does nothing.
   * Is it? It reads the heartbeat the watcher writes every minute (heartbeat.py). The
     watcher is DOWN if there is no heartbeat from a run started today, if that run has
     ended, if its process is gone, or if its heartbeat is more than 5 minutes old. It is
@@ -17,6 +17,12 @@ pythonw, so it has no window. Each run is one check:
     a wait (a sleep, or a model call that may run to its timeout).
   * A heartbeat that is stale while the process still exists is looked at again 90
     seconds later before anything is sent, so a PC waking from sleep is not an outage.
+  * Is its cycle moving? (26 Sep 2026.) A watcher that is up and logging can still be stuck
+    inside one cycle: on 25 Sep one ran 10:52-11:17, and fills, stops and the 10:30 rule
+    waited on it while the watchdog said nothing. The heartbeat carries when the current
+    cycle started and when the last one finished; a cycle running more than 6 minutes
+    outside any wait it announced (a sleep, a model call) is STUCK. One message when it is
+    first seen, one when the cycle finishes.
 
 One Telegram message when an outage is first seen, and one when the watcher is back.
 If a message cannot be sent it is tried again on the next run. The outage is kept in
@@ -45,6 +51,7 @@ from asxbot.io import write_text_atomic
 
 SYD = ZoneInfo("Australia/Sydney")
 SILENT_AFTER = timedelta(minutes=5)
+STALL_AFTER = timedelta(minutes=6)  # a cycle this long outside an announced wait is stuck
 START_GRACE = timedelta(minutes=3)  # the warm-up task starts at 07:30; python takes a moment
 RECHECK_S = 90
 TASK = "ASXBot Arena Warmup"
@@ -134,6 +141,37 @@ def assess(hb: dict | None, now: datetime, window, pid_alive) -> Verdict:
     return Verdict(True, True, pid=pid)
 
 
+def stuck_cycle(hb: dict | None, now: datetime) -> str:
+    """Why the running watcher's current cycle counts as stuck, or "" if it does not.
+
+    Pure. Stuck: the cycle has not finished, no announced wait is running now, and it has
+    been busy more than STALL_AFTER since it started or since its last announced wait ended,
+    whichever is later - so a cycle of several model calls, each announced, is slow but not
+    stuck, and a cycle grinding through the feed for 24 minutes (25 Sep) is stuck."""
+    if not hb or str(hb.get("state") or "") != "running":
+        return ""
+    now = now.astimezone(SYD)
+    started = _t(hb.get("cycle_started"))
+    if started is None:
+        return ""
+    finished = _t(hb.get("cycle_finished"))
+    if finished is not None and finished >= started:
+        return ""
+    quiet_until = _t(hb.get("quiet_until"))
+    if quiet_until is not None and now <= quiet_until:
+        return ""  # inside a wait it announced
+    ended = _t(hb.get("wait_ended"))
+    busy_since = ended if ended is not None and ended > started else started
+    if now - busy_since <= STALL_AFTER:
+        return ""
+    mins = (now - started).total_seconds() / 60.0
+    waited = f", {(now - busy_since).total_seconds() / 60.0:.0f} of them outside any announced " \
+             "wait" if busy_since != started else ""  # fmt: skip
+    return (f"the watcher (pid {hb.get('pid')}) is running, but its cycle that started at "
+            f"{_hm(started)} has not finished after {mins:.0f} minutes{waited}; its last log "
+            f"line was {_hm(_t(hb.get('last_activity')))}.")  # fmt: skip
+
+
 def pid_alive(pid: int) -> bool:
     """True if a process with this id is running."""
     if os.name != "nt":
@@ -174,10 +212,42 @@ def load_state(path: Path) -> dict:
 
 def down_message(v: Verdict, now: datetime) -> str:
     what = "WATCHER DOWN" if v.problem == "down" else "WATCHER SILENT"
+    if v.problem == "down":
+        # 26 Sep 2026: until then this said to run the task by hand, and scripts\watcher.py
+        # start (the sanctioned way) refused a dead watcher whenever a position was open -
+        # exactly when it is needed. A start is now allowed whenever no watcher is running.
+        fix = ("To bring it back it is started again through scripts\\watcher.py start, which "
+               f"runs its scheduled task ({TASK}). That is allowed at any hour and with "
+               "positions open, because no watcher is running; once started it catches up "
+               "the missed fills and stops from the minute bars.")  # fmt: skip
+    else:
+        fix = ("It is still running, so it is not started again. A restart stops it first: "
+               "never while a position or order is open, and in market hours only with a "
+               "written reason (scripts\\watcher.py restart --force --reason).")  # fmt: skip
     return (
         f"<b>{what}</b> (watchdog, {now:%H:%M})\n{escape(v.detail)}\n"
         "Until it is back nothing is watched, filled, stopped or taken at a target.\n"
-        f"Restart it only through its task: <code>schtasks /run /tn \"{TASK}\"</code>"
+        f"{escape(fix)}"
+    )
+
+
+def stuck_message(detail: str, now: datetime) -> str:
+    return (
+        f"<b>WATCHER CYCLE STUCK</b> (watchdog, {now:%H:%M})\n{escape(detail)}\n"
+        "Until the cycle moves on, fills, stops, targets, the 10:30 rule and the flat sweep "
+        "wait on it. One more message when it finishes."
+    )
+
+
+def unstuck_message(stall: dict, now: datetime, hb: dict | None) -> str:
+    started = _t(stall.get("cycle_started"))
+    finished = _t((hb or {}).get("cycle_finished"))
+    unsent = "" if stall.get("alerted_at") else " (the stuck alert could not be sent)"
+    return (
+        f"<b>WATCHER CYCLE MOVING AGAIN</b> (watchdog, {now:%H:%M})\n"
+        f"The cycle that started at {_hm(started)} finished"
+        + (f" at {_hm(finished)}" if finished is not None else "")
+        + f"; it was first seen stuck at {_hm(_t(stall.get('since')))}{unsent}."
     )
 
 
@@ -232,10 +302,41 @@ def run_once(cfg, now: datetime, send, hb_reader=None, alive=pid_alive, sleep=ti
             result = "back up: message NOT sent, will retry"
             _log(cfg.logs_dir, "BACK UP, but the message could not be sent; will retry")
 
+    stall, stall_note = _check_stall(cfg, state.get("stall"), v, hb, now, send)
+    if stall_note:
+        result = f"{result}; {stall_note}"
     state = {"last_check": now.isoformat(timespec="seconds"), "last_result": result,
-             "outage": outage}  # fmt: skip
+             "outage": outage, "stall": stall}  # fmt: skip
     write_text_atomic(json.dumps(state, indent=2), state_path)
     return result
+
+
+def _check_stall(cfg, stall: dict | None, v: Verdict, hb, now: datetime, send):
+    """The stuck-cycle alert: once when a cycle is first seen stuck, once when it moves.
+    Returns (the stall state to keep, a note for the result). Only for a watcher that is
+    up: a down or silent watcher has its own message, which says more."""
+    if not (v.expected and v.ok):
+        return None, ""
+    detail = stuck_cycle(hb, now)
+    cycle = str((hb or {}).get("cycle_started") or "")
+    if detail:
+        if not stall or stall.get("cycle_started") != cycle:
+            stall = {"cycle_started": cycle, "since": now.isoformat(timespec="seconds"),
+                     "detail": detail, "alerted_at": None}  # fmt: skip
+        if stall.get("alerted_at"):
+            return stall, f"cycle stuck: already reported at {stall['alerted_at']}"
+        if send(stuck_message(detail, now)):
+            stall["alerted_at"] = now.isoformat(timespec="seconds")
+            _log(cfg.logs_dir, f"STUCK: {detail} [alert sent]")
+            return stall, "cycle stuck: alert sent"
+        _log(cfg.logs_dir, f"STUCK: {detail} [alert NOT sent, will retry]")
+        return stall, "cycle stuck: alert NOT sent, will retry"
+    if stall:
+        if send(unstuck_message(stall, now, hb)):
+            _log(cfg.logs_dir, f"CYCLE MOVING AGAIN: the {stall.get('cycle_started')} cycle")
+            return None, "cycle moving again: message sent"
+        return stall, "cycle moving again: message NOT sent, will retry"
+    return None, ""
 
 
 def _log(log_dir: Path, text: str) -> None:

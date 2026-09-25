@@ -259,7 +259,7 @@ def test_a_working_pre_open_order_postpones_the_look_rather_than_cancelling_it(
     assert "trader-decider" in calls
 
 
-def test_the_evening_report_says_day_n_of_10_and_delayed_data_for_each_playbook(arena, cfg):
+def test_the_evening_report_says_day_n_of_10_and_what_data_for_each_playbook(arena, cfg):
     from datetime import date
 
     from asxbot.arena.report import agent_brief, gather, render_plain
@@ -268,7 +268,9 @@ def test_the_evening_report_says_day_n_of_10_and_delayed_data_for_each_playbook(
     text = render_plain(facts)
     assert "ASX announcements v2 (trade the reaction)</b>: day 1 of 10 (v2)" in text
     assert "ASX day trader</b>: day 1 of 10 (v1)" in text
-    assert text.count("delayed data - rehearsal until IBKR live prices") >= 2
+    # A day with no entry decisions says so; until 26 Sep 2026 it printed the frozen
+    # "delayed data - rehearsal until IBKR live prices", on IBKR days too (H5).
+    assert text.count("no entry decisions today") >= 2
     brief = agent_brief(facts)
     assert "day 1 of 10 (v2)" in brief and "word for word" in brief
 
@@ -316,12 +318,14 @@ def test_the_v2_rule_bot_waits_for_the_index_previous_close(arena, cfg, mb):
 
 
 @pytest.mark.parametrize(
-    "source, delayed, want",
-    [("ibkr (real-time)", False, "live data (IBKR)"),
-     ("yfinance (delayed)", True, "delayed data (Yahoo) - IBKR unavailable")],
+    "source, delayed, want, decider",
+    [("ibkr (real-time)", False, "live data (IBKR)", "live data (IBKR)"),
+     # 26 Sep 2026 (A5): a Yahoo quote no longer gets a decision at all - the look is paused
+     ("yfinance (delayed)", True, "delayed data (Yahoo) - IBKR unavailable",
+      "paused: no live IBKR quote")],
 )  # fmt: skip
 def test_a_pre_open_look_records_the_prices_its_quote_came_from(
-    arena, cfg, monkeypatch, source, delayed, want
+    arena, cfg, monkeypatch, source, delayed, want, decider
 ):
     from asxbot.log import EventLog
 
@@ -333,4 +337,4 @@ def test_a_pre_open_look_records_the_prices_its_quote_came_from(
     monkeypatch.setattr(v2_flow, "call_agent", lambda *a, **k: Reply(_decision(net=0.2)))
     W.handle_announcement(arena, pb, _announcement(), at(8, 30))
     recs = EventLog(cfg.data_dir).read("arena_decisions")
-    assert [(r["stage"], r["data"]) for r in recs] == [("reader", want), ("decider", want)]
+    assert [(r["stage"], r["data"]) for r in recs] == [("reader", want), ("decider", decider)]

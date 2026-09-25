@@ -29,7 +29,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from asxbot.arena.accounts import Account, AccountStore, ArenaOrder, Mark, Position
+from asxbot.arena.accounts import FLAT_MODEL, Account, AccountStore, ArenaOrder, Mark, Position
 from asxbot.arena.minutes import (
     AUCTION_MINUTE,
     MinuteBars,
@@ -56,6 +56,35 @@ class FillOutcome:
     detail: str
 
 
+_RELEASE: list[str] = []
+
+
+def release_stamp() -> str:
+    """The code recording an order (26 Sep 2026, G10): the commit of the release the task
+    runs (ASXBOT_RELEASE's RELEASE.json, first 10 characters), or "checkout" when the code
+    runs from the Drive checkout. Read once per process: a release never changes under a
+    running process."""
+    if _RELEASE:
+        return _RELEASE[0]
+    stamp = "checkout"
+    try:
+        import os
+
+        from asxbot.release import RELEASE_ENV, release_info
+
+        env = os.environ.get(RELEASE_ENV)
+        info = release_info(Path(env)) if env else release_info()
+        commit = str(info.get("commit") or "")
+        if commit:
+            stamp = commit[:10]
+        elif env:
+            stamp = f"release {Path(env).name}"
+    except Exception as e:  # noqa: BLE001 - a stamp must never stop an order
+        log.warning("could not read the release for the order stamp: %s", e)
+    _RELEASE.append(stamp)
+    return stamp
+
+
 class ArenaBroker:
     def __init__(
         self,
@@ -72,6 +101,7 @@ class ArenaBroker:
         opening_auction: str = "daily_open",
         auction_volume_share: float = 0.20,
         auction_wait_minutes: int = 30,
+        live_expiry_minutes: int | None = None,
     ):
         self.store = AccountStore(data_dir)
         self.costs = costs
@@ -103,6 +133,15 @@ class ArenaBroker:
             )
         self.auction_volume_share = float(auction_volume_share)
         self.auction_wait_minutes = int(auction_wait_minutes)
+        # An order that stops filling before its session ends (good_till) is done this many
+        # minutes after that minute when its stock's bars today come from the live IBKR
+        # stream and the stream is up (26 Sep 2026, D8). None keeps the old allowance,
+        # `resolve_after_minutes` (22: the Yahoo feed's delay), which is still used whenever
+        # the bars are Yahoo's. With live bars, 22 minutes held a stale entry's slot for no
+        # reason; a live minute is final about a minute after it ends.
+        self.live_expiry_minutes = (
+            None if live_expiry_minutes is None else max(1, int(live_expiry_minutes))
+        )
         self.events = EventLog(data_dir)
         self.notifier = None  # set by build_arena; alerts are best effort (notify.py)
         # callable(ticker) -> median daily dollar turnover, 20 sessions; set by arena_broker.
@@ -132,6 +171,7 @@ class ArenaBroker:
         stop_pct: float | None = None,
         good_till: datetime | None = None,
         manage: dict | None = None,
+        flat: bool = False,
     ) -> ArenaOrder:
         """Record an order. It is NOT filled here - fills happen in resolve_pending().
 
@@ -139,6 +179,11 @@ class ArenaBroker:
         can supply it: a caller's `now` is the time its picture of the market was taken,
         which may be minutes old by the time an agent has finished deciding, and it is kept
         as `data_as_of` so the gap is visible.
+
+        `flat` (or the flat sweep's model, FLAT_MODEL) marks the flat-by-close sweep's order.
+        It replaces any resting take-profit in the ticker - a target exit or a half-off that
+        has not finished - which is cancelled here, so the sweep's order is what takes the
+        position out before the close (26 Sep 2026, B2/D2).
         """
         decided = self.clock().astimezone(SYD)
         as_of = (data_as_of or decided).astimezone(SYD)
@@ -168,7 +213,12 @@ class ArenaBroker:
                 else ""
             ),
             manage=dict(manage or {}),
+            release=release_stamp(),
         )
+        o.flat = side in CLOSING_SIDES and (bool(flat) or str(model).startswith(FLAT_MODEL))
+        if o.flat:
+            for tp in acct.resting_take_profits(o.ticker):
+                self._cancel(acct, tp, f"the flat-by-close sweep ({oid}) takes the position out")
         acct.orders[oid] = o
         self.store.save(acct)
         self.events.append("arena_orders", {**o.to_dict(), "event": "submitted"})
@@ -330,6 +380,9 @@ class ArenaBroker:
                 acct.kind == "agent"
                 and pos.target is not None
                 and not any(o.order_type in ("stop", "target") for o in live)
+                # The flat sweep's order is taking the position out: a target reached now
+                # must not cancel it and rest again overnight (26 Sep 2026, B2/D2).
+                and not any(o.is_flat for o in live)
                 and ts > _aware(_later(pos.opened_at, pos.target_from))
                 and _reaches(bar, float(pos.target), "up" if long else "down")
             ):
@@ -435,6 +488,7 @@ class ArenaBroker:
             **self._resting_times(ts, rests), order_type=kind, trigger_price=trigger,
             reason=reason, model=model, placed_by="code", hold=pos.hold,
             message=f"{kind} reached in the {ts:%Y-%m-%d %H:%M} bar; working",
+            release=release_stamp(),
         )  # fmt: skip
         acct.orders[o.order_id] = o
         self.events.append("arena_orders", {**o.to_dict(), "event": f"{kind}_reached"})
@@ -463,9 +517,11 @@ class ArenaBroker:
             decided = _aware(o.decided_at)
             day = _session_day(decided)
             close = datetime.combine(day, SESSION_CLOSE, tzinfo=SYD)
+            allowance = self.resolve_after_minutes
             if o.good_till and _aware(o.good_till) < close:
                 close = _aware(o.good_till)  # it stops filling before its session ends
-            if now < close + timedelta(minutes=self.resolve_after_minutes):
+                allowance = self._expiry_allowance(o.ticker, day)
+            if now < close + timedelta(minutes=allowance):
                 continue
             if o.filled_qty:
                 o.status = "partial"
@@ -493,6 +549,41 @@ class ArenaBroker:
                 self._notify("expired", o)
             out.append(FillOutcome(o.order_id, o.status, o.message))
         return out
+
+    def _expiry_allowance(self, ticker: str, day: date) -> int:
+        """Minutes after its good-till minute an order is done (26 Sep 2026, D8): the live
+        allowance when it is set, the stock's bars that day come from the live stream, and
+        the stream is up now; otherwise `resolve_after_minutes`, so an order is never ended
+        before the delayed feed has shown the bars it could have filled in. Applied to the
+        good-till minute only: the session close keeps the old allowance (the closing
+        auction's bar is the one bar worth waiting for, and no entry is placed then)."""
+        if self.live_expiry_minutes is None:
+            return self.resolve_after_minutes
+        live = getattr(self.minutes, "live", None)
+        try:
+            up = live is not None and bool(live.live_ok())
+        except Exception:  # noqa: BLE001 - a feed that cannot say is not a live feed
+            up = False
+        served = getattr(self.minutes, "_live_days", set())
+        if up and (ticker.upper(), day) in served:
+            return min(self.live_expiry_minutes, self.resolve_after_minutes)
+        return self.resolve_after_minutes
+
+    def _feed_of(self, ticker: str, ts: datetime, bar) -> str:
+        """Which feed priced a fill slice (26 Sep 2026, D15): the opening auction, a live IBKR
+        minute (the bar is in the live stream's frame for that day), or the minute feed's own
+        bars (`source_label` on the minute store; Yahoo's unless a store says otherwise)."""
+        if is_auction(bar):
+            return f"opening auction ({bar.get('source') or 'Yahoo daily open'})"
+        live = getattr(self.minutes, "live", None)
+        if live is not None:
+            try:
+                frame = live.bars_today(ticker, ts.date())
+                if frame is not None and len(frame) and ts in frame.index:
+                    return "IBKR live minute"
+            except Exception:  # noqa: BLE001 - a label must never stop a fill
+                pass
+        return str(getattr(self.minutes, "source_label", "") or "Yahoo minute")
 
     # -- trade management, bar by bar (the day trader, 2026-09-24) -----------
     def _manage(self, acct: Account, pos: Position, ts: datetime, bar, live: list) -> None:
@@ -525,7 +616,7 @@ class ArenaBroker:
             and not m.get("half_done")
             and gained >= float(half_at)
             and abs(pos.qty) >= 2
-            and not any(o.order_type == "stop" for o in live)
+            and not any(o.order_type == "stop" or o.is_flat for o in live)
         ):
             level = round(entry + sign * float(half_at) * r, 4)
             self._raise_partial(acct, pos, abs(pos.qty) // 2, level, ts, bar)
@@ -566,6 +657,7 @@ class ArenaBroker:
             reason=f"HALF at +{half}R ({level:.4f})",
             model="code (trade management, not the agent)", placed_by="code", hold=pos.hold,
             message=f"half at +{half}R reached in the {ts:%Y-%m-%d %H:%M} bar; working",
+            release=release_stamp(),
         )  # fmt: skip
         acct.orders[o.order_id] = o
         self.events.append("arena_orders", {**o.to_dict(), "event": "half_reached"})
@@ -592,12 +684,16 @@ class ArenaBroker:
             "price": price, "bar_price": raw,
             "bar_volume": float(bar["volume"]),
             **({"auction": True} if is_auction(bar) else {}),
+            # Which feed priced this slice (26 Sep 2026, D15).
+            "feed": self._feed_of(o.ticker, ts, bar),
         })  # fmt: skip
         o.filled_qty += int(qty)
         avg = sum(f["qty"] * f["price"] for f in o.fills) / o.filled_qty
         pos = acct.positions.get(o.ticker)
         realised = 0.0
         if o.side in OPENING_SIDES:
+            # The stop this order last gave the position, before this slice re-derives it.
+            order_stop_before = o.stop
             if o.stop_pct is not None:
                 d = float(o.stop_pct) / 100.0
                 o.stop = round(avg * (1 - d) if o.side == "buy" else avg * (1 + d), 4)
@@ -620,7 +716,15 @@ class ArenaBroker:
                 pos.avg_cost = (pos.avg_cost * abs(pos.qty) + price * qty) / total
                 pos.qty = sign * total
                 if o.stop is not None:
-                    pos.stop = o.stop
+                    if first_slice or pos.stop is None or pos.stop == order_stop_before:
+                        # An add naming a stop moves it, and so does a later slice of the
+                        # same entry while the stop is still the one the entry set.
+                        pos.stop = o.stop
+                    else:
+                        # Trade management has moved the stop since the last slice
+                        # (breakeven, trailing): a later slice never loosens it. Until 26 Sep
+                        # 2026 every slice reset it to the entry's stop (B6).
+                        pos.stop = _tighter(pos.stop, float(o.stop), o.side == "buy")
                 if first_slice:
                     _move_target(pos, o, ts)
                 if o.manage and pos.manage:
@@ -638,6 +742,7 @@ class ArenaBroker:
                 pos.qty += qty
             acct.realised_pnl += realised
             if pos.qty == 0:
+                o.borrow = round(o.borrow + float(pos.borrow_accrued), 2)
                 del acct.positions[o.ticker]
         acct.fees_paid += fee
         o.realised = round(o.realised + realised, 2)
@@ -851,17 +956,55 @@ class ArenaBroker:
             log.info("arena %s short borrow charged %.2f", acct.name, charged)
         return charged
 
-    def prices(self, acct: Account, day: date | None = None) -> dict[str, float]:
-        out: dict[str, float] = {}
+    def price_marks(self, acct: Account, day: date | None = None) -> dict[str, tuple[float, str]]:
+        """{ticker: (price, what the price is)} for every open position: the day's last trade;
+        with no trade that day, the last traded close before it; and only with no traded
+        price known at all, the position's cost. Until 26 Sep 2026 a position that had not
+        traded that day was marked at cost (D13), which hid an overnight move from the
+        equity, the daily loss limit and the scoreboard."""
+        out: dict[str, tuple[float, str]] = {}
         for t, pos in acct.positions.items():
             px = self.minutes.last_price(t, day)
-            out[t] = px if px is not None else pos.avg_cost
+            if px is not None:
+                out[t] = (px, "last trade that day")
+                continue
+            prior = self._last_close_before(t, day or datetime.now(SYD).date())
+            if prior is not None:
+                out[t] = (prior[0], f"last traded close {prior[1]:%d %b} (no trade that day)")
+            else:
+                out[t] = (pos.avg_cost, "cost (no traded price known)")
         return out
 
+    def _last_close_before(self, ticker: str, day: date, days_back: int = 7):
+        """(close, day) of the last traded minute on an earlier day the minute cache holds,
+        or None. The cache only: prices are read on every order check, and a lookback that
+        asked Yahoo for each earlier day would be a request per day per check."""
+        for k in range(1, days_back + 1):
+            d = day - timedelta(days=k)
+            if d.weekday() >= 5:
+                continue
+            try:
+                df = self.minutes.cached(ticker, d)
+            except Exception:  # noqa: BLE001 - no cache is no price, never an error
+                df = None
+            if df is None or not len(df):
+                continue
+            traded = df[df["volume"] > 0]
+            if len(traded):
+                return float(traded["close"].iloc[-1]), d
+        return None
+
+    def prices(self, acct: Account, day: date | None = None) -> dict[str, float]:
+        return {t: px for t, (px, _) in self.price_marks(acct, day).items()}
+
     def mark_to_market(self, acct: Account, day: date | None = None, note: str = "") -> Mark:
-        """Write today's mark. Open positions count at their current price."""
+        """Write today's mark. Open positions count at their current price; one that did not
+        trade that day at its last traded price before it, and the mark's note says so."""
         day = day or datetime.now(SYD).date()
-        prices = self.prices(acct, day)
+        marks = self.price_marks(acct, day)
+        prices = {t: px for t, (px, _) in marks.items()}
+        stale = [f"{t} at {px:.4f}, {why}" for t, (px, why) in marks.items()
+                 if why != "last trade that day"]  # fmt: skip
         prior = [m for m in self.store.marks(acct.name) if m.day < day.isoformat()]
         prev_equity = prior[-1].equity if prior else acct.starting_cash
         prev_realised = sum(m.realised_day for m in prior)
@@ -875,7 +1018,8 @@ class ArenaBroker:
             positions=len(acct.positions),
             realised_day=round(acct.realised_pnl - prev_realised, 2),
             fees_day=round(acct.fees_paid + acct.borrow_paid - prev_fees, 2),
-            note=note or f"prev equity {prev_equity:,.2f}",
+            note=(note or f"prev equity {prev_equity:,.2f}")
+            + (f"; marked: {'; '.join(stale)}" if stale else ""),
         )
         self.store.write_mark(acct.name, mark)
         self.events.append("arena_marks", {"account": acct.name, **mark.to_dict()})

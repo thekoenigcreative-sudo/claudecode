@@ -470,3 +470,31 @@ def test_a_replay_or_yahoo_feed_never_reports_history(cfg, mb, monkeypatch):
     arena = SimpleNamespace(cfg=cfg)
     view = MarketView(mb, DAY, ReplayFeed(mb, 0), "^AXJO", 5, 3)
     assert DT._history_report_once(arena, pb, view, at(10, 5)) is False
+
+
+# -- G1: a call that could not be made is "unavailable", not a rejection ------------------
+def test_a_usage_limit_is_agent_unavailable_not_a_rejection(cfg, monkeypatch):
+    from asxbot.arena.agents import AgentCallFailed
+
+    pb = load_playbook(cfg, "asx_daytrader")
+    monkeypatch.setattr(DT, "agent_packet", lambda *a, **k: "packet")
+
+    def limit(*a, **k):
+        e = AgentCallFailed("You've hit your session limit - resets 11pm")
+        e.kind = "usage_limit"
+        raise e
+
+    monkeypatch.setattr(DT, "call_agent", limit)
+    s = DT.Setup("DTX", "gap_and_go", "buy", at(10, 15).isoformat(), 1.07, 1.04, 3.0, "")
+    t = {"qty": 100, "limit": 1.085, "stop": 1.04, "risk": 4.5, "value": 108.5}
+    d = DT.ask_agent(SimpleNamespace(cfg=cfg), pb, s, t, {}, at(10, 18))
+    assert d["action"] == "unavailable" and d["kind"] == "usage_limit"
+
+    def slow(*a, **k):
+        e = AgentCallFailed("trader-decider timed out after 60s")
+        e.kind = "timeout"
+        raise e
+
+    monkeypatch.setattr(DT, "call_agent", slow)
+    d = DT.ask_agent(SimpleNamespace(cfg=cfg), pb, s, t, {}, at(10, 18))
+    assert d["action"] == "reject" and "no answer within 60s" in d["why"]  # the rule

@@ -52,6 +52,12 @@ def _read(data_dir: Path, kind: str, day: date) -> list[dict]:
     return out
 
 
+OPENING = ("buy", "short")
+# A screen record that is not a verdict: v2 defers an announcement while the live feed is
+# down and screens it again when the feed is back (watch._handle_v2, LEARNINGS #25).
+NOT_A_VERDICT = ("deferred",)
+
+
 @dataclass
 class Counts:
     seen: int = 0
@@ -60,9 +66,14 @@ class Counts:
     read: int = 0
     to_decider: int = 0
     passed: int = 0
-    traded: int = 0
-    orders_bot: int = 0
+    traded: int = 0  # the agent's OPENING orders (26 Sep 2026, D10)
+    orders_bot: int = 0  # the rule bot's opening orders
     gate_disagreements: int = 0
+    exits: int = 0  # closing orders placed (the flat sweep, pre-close, horizon), both books
+    agent_unavailable: int = 0  # agent calls that failed (G1)
+    agent_unavailable_first: str = ""  # HH:MM of the first
+    agent_unavailable_why: str = ""  # usage limit / no answer in time / error
+    deferred: int = 0  # announcements waiting for the feed, not screened out
 
     def line(self) -> str:
         """The one-line summary that heads every digest."""
@@ -80,13 +91,30 @@ def counts_for(data_dir: Path, day: date | None = None) -> Counts:
     decisions = _read(data_dir, "arena_decisions", day)
     orders = _read(data_dir, "arena_orders", day)
 
-    rejected = {r["ids_id"]: r.get("test") or "?" for r in screened if not r.get("ok")}
+    # A deferral is not a rejection (26 Sep 2026, H13): an announcement deferred while the
+    # feed was down and screened later counted as screened out under "deferred".
+    rejected = {
+        r["ids_id"]: r.get("test") or "?" for r in screened
+        if not r.get("ok") and r.get("test") not in NOT_A_VERDICT
+    }  # fmt: skip
+    deferred = {r["ids_id"] for r in screened if r.get("test") in NOT_A_VERDICT}
+    judged = {r["ids_id"] for r in screened if r.get("test") not in NOT_A_VERDICT}
     readers = {r["ids_id"] for r in decisions if r.get("stage") == "reader"}
     # Counted from the same deduplicated list the summary prints, so the header can never
     # say 31 above a list of 33.
     deciders = decider_items(data_dir, day)
     passed = [r for r in deciders if r["action"] != "trade"]
     placed = [o for o in orders if o.get("event") == "submitted"]
+    # Openings only (26 Sep 2026, D10): the flat sweep's exits are placed in the agent's and
+    # the bot's names and made "traded 4" of a day with 2 entries.
+    opened = [o for o in placed if o.get("side") in OPENING]
+    fails = [
+        r for r in _read(data_dir, "arena_agent_calls", day)
+        if r.get("ok") is False and not str(r.get("purpose", "")).startswith("chat")
+    ]  # fmt: skip
+    kinds = Counter(str(r.get("kind") or "error") for r in fails)
+    from asxbot.arena.agents import FAILURE_WORDS
+
     return Counts(
         seen=len({r["ids_id"] for r in alerts if r.get("ids_id")}),
         screened=len(rejected),
@@ -94,11 +122,16 @@ def counts_for(data_dir: Path, day: date | None = None) -> Counts:
         read=len(readers),
         to_decider=len(deciders),
         passed=len(passed),
-        traded=len([o for o in placed if o.get("placed_by") == "agent"]),
-        orders_bot=len([o for o in placed if o.get("placed_by") == "bot"]),
+        traded=len([o for o in opened if o.get("placed_by") == "agent"]),
+        orders_bot=len([o for o in opened if o.get("placed_by") == "bot"]),
         gate_disagreements=len(
             [r for r in _read(data_dir, "arena_gate_compare", day) if not r.get("agrees")]
         ),
+        exits=len([o for o in placed if o.get("side") not in OPENING]),
+        agent_unavailable=len(fails),
+        agent_unavailable_first=f"{min(r['syd'] for r in fails):%H:%M}" if fails else "",
+        agent_unavailable_why=", ".join(FAILURE_WORDS.get(k, k) for k, _ in kinds.most_common()),
+        deferred=len(deferred - judged),
     )
 
 
@@ -156,8 +189,17 @@ def session_summary_text(arena, pb, now: datetime | None = None) -> str:
     out = [
         f"🔔 <b>SESSION DONE {now:%a %d %b}</b> (ASX closed 16:10)",
         escape(c.line()),
-        f"reached the decider: {c.to_decider} · bot orders: {c.orders_bot}",
+        f"reached the decider: {c.to_decider} · bot orders: {c.orders_bot} · "
+        f"exits placed: {c.exits}",
     ]
+    if c.agent_unavailable:
+        out.append(
+            f"⚠️ the agent could not be asked {c.agent_unavailable} time"
+            f"{'s' if c.agent_unavailable != 1 else ''} from {c.agent_unavailable_first}: "
+            f"{escape(c.agent_unavailable_why)}"
+        )
+    if c.deferred:
+        out.append(f"{c.deferred} announcement(s) still waiting for the live feed to screen")
     if c.gate_disagreements:
         out.append(
             f"reader's CAN_SIZE_AND_EXIT disagreed with the arithmetic {c.gate_disagreements}×"

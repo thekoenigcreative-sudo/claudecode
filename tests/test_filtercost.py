@@ -97,14 +97,30 @@ def test_each_test_is_scored_on_what_it_excluded(cfg):
     arena = _FakeArena(cfg, {"WIN": winner, "LOSE": loser, "^AXJO": index})
     costs = F.measure(arena, weeks=4, now=NOW)
 
-    tick = costs["tick"]
+    tick = costs[F.cost_key(F.V1, "tick")]  # keyed by playbook since 26 Sep 2026 (H13)
     assert tick.rejected == 2 and tick.measured == 2
     assert tick.median == pytest.approx(5.0, abs=0.01)  # +30 and -20
     assert tick.win_rate == pytest.approx(50.0) and tick.big_movers == 1
     assert tick.best[0] == "WIN" and tick.best[2] == pytest.approx(30.0, abs=0.01)
 
-    turnover = costs["turnover"]
+    turnover = costs[F.cost_key(F.V1, "turnover")]
     assert turnover.rejected == 2 and turnover.measured == 1 and turnover.no_prices == 1
 
     text = F.render(costs, weeks=4, now=NOW)
     assert "measurement, not an instruction" in text and "| tick |" in text
+
+
+def test_v2_is_scored_apart_from_v1_and_a_deferral_is_not_a_rejection(cfg):
+    """26 Sep 2026 (H13): v2's `deferred` records (the feed was down) were counted as
+    rejections, and v1's retired records were mixed into the same rows."""
+    at = datetime(2026, 9, 1, 10, 0, tzinfo=SYD)
+    _reject(cfg, "1", "AAA", "tick", at)  # v1
+    _reject(cfg, "2", "BBB", "tick", at, v2=True)
+    _reject(cfg, "3", "CCC", "deferred", at, v2=True)  # feed down: screened again later
+    rows = F.rejections(cfg.data_dir, weeks=4, now=NOW)
+    assert sorted(r["ids_id"] for r in rows) == ["1", "2"]
+    index = _frame("2026-09-01", [100.0] * 12)
+    costs = F.measure(_FakeArena(cfg, {"^AXJO": index}), weeks=4, now=NOW)
+    assert set(costs) == {F.cost_key(F.V1, "tick"), F.cost_key(F.V2, "tick")}
+    assert all(c.rejected == 1 for c in costs.values())
+    assert "| asx_announcements_v2 | tick |" in F.render(costs, weeks=4, now=NOW)

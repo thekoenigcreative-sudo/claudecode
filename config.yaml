@@ -52,6 +52,11 @@ ibkr:
   # A try against a closed port is refused at once; against a live Gateway it is one
   # read-only handshake.
   reconnect_every_s: 60
+  # (2026-09-26, comment only, values unchanged: reconnect_every_s, max_requests_per_cycle,
+  # max_concurrent_requests, min_refetch_s and max_quote_lines are read only by the batch
+  # client in ibkr/gateway.py - `asxbot ibkr check` and the supervisor's probe. The watcher's
+  # persistent connection (ibkr/live.py) reconnects on its heartbeat with
+  # reconnect_backoff_max_s.)
   quote_wait_s: 3
   generic_ticks: "225"        # 225 = the auction's indicative price, volume and imbalance
   probe_code: BHP             # quoted every 10 min in market hours to confirm real-time
@@ -81,6 +86,8 @@ universe:
   turnover_floor_aud: 250000  # median daily dollar turnover over turnover_window_days
   turnover_window_days: 20
   asx300_source: vas_holdings # current membership only until Norgate (survivorship-biased)
+  # (2026-09-26, comment only: asx300_source is documentary - read nowhere; the list comes
+  # from data/universe (build_universes).)
 
 strategy:
   frozen_on: "2026-09-22"
@@ -101,7 +108,7 @@ baseline:
   skip_months: 1
   top_n: 4                    # same capital, same position count and costs as the strategy
   rebalance: monthly
-  regime_index: "^AXJO"
+  regime_index: "^AXJO"  # (2026-09-26 comment: documentary; the backtest uses index_ticker)
   regime_sma_days: 200
 
 costs:
@@ -278,6 +285,15 @@ arena:
     # (src/asxbot/arena/settings_history.py) and committed: a DELIBERATE CHANGE by Rick, not
     # a finding. Newest last. The evening report lists those since the previous report.
     history: []
+    # 2026-09-26, a DELIBERATE CHANGE to infrastructure, not to a rule or a model (review
+    # G2): every watcher and evening-report call gets a NEW OpenClaw session of its own
+    # (agents.fresh_session_key). Since 22 Sep every call resumed ONE conversation per agent:
+    # each day-trader call re-sent ~593k tokens of history (the reader's ~879k, near its
+    # context limit) - v1's rules, PING tests, every packet, past evening reports with the
+    # bot's trades and P&L. That history was never meant to be an input: each packet is
+    # self-contained. It also drew on the same Claude plan whose limit the builds hit on
+    # 25 Sep 22:41. No result prompted this. The Trader chat keeps its own session.
+    fresh_session_per_call: true
   selfcheck:
     repeat_minutes: 60         # a standing failure is re-alerted at most this often
 
@@ -311,6 +327,8 @@ arena:
       leverage_crypto: 10.0          # unused until a crypto playbook starts
       daily_loss_limit_pct: 15.0     # then no NEW positions until tomorrow; exits stay allowed
       holding: intraday              # overnight only with a written reason
+      # (2026-09-26 comment: "with a written reason" was v1's; v2 and the day trader are flat
+      # at 15:50 by code, no reason asked.)
       wake_sensitivity: most
     2:
       name: weekly
@@ -345,6 +363,8 @@ arena:
     allowed_hours: { start: "07:00", end: "19:30", end_dst: "20:30", tz: "Australia/Sydney" }
 
   # Deferred fills (decided 2026-09-22 with Rick).
+  # (2026-09-26, comment only: this paragraph describes the Yahoo feed; the arena's prices
+  # have been IBKR real-time since 25 Sep, Yahoo only filling in while the stream is down.)
   # Free quotes are ~20 minutes delayed, so the true price at the moment of a decision is
   # not knowable when the decision is made. Every arena order is therefore recorded as
   # pending with its decision timestamp and filled later, from the 1-minute bar covering
@@ -358,6 +378,12 @@ arena:
                              # comment change only; the value is unchanged.
     max_wait_minutes: 390    # give up if no traded minute is found within one session
     resolve_after_minutes: 22  # don't try to resolve a fill until the free feed has caught up
+    # 2026-09-26, a DELIBERATE CHANGE to plumbing, not a rule (review D8): with the live IBKR
+    # stream up, an order with a good-till (the day trader's 10-minute entries) ends this many
+    # minutes after its good-till, not resolve_after_minutes (22, Yahoo's delay): an expired
+    # entry held one of the 3 slots for 22 more minutes. The session close keeps 22.
+    live_expiry_minutes: 1
+    # (2026-09-26, comment only: documentary - broker.py hard-codes worse-of; not a switch.)
     stop_gap_rule: worse_of  # a stop fills at the stop price, or at the bar open if the
                              # bar opened through it (a gap) - whichever is worse for us
     # Added 2026-09-23 evening, in force from the 24 Sep 07:30 start (TRACKER #25). A DELIBERATE CHANGE to the fill model, not a finding
@@ -421,6 +447,7 @@ arena:
 
   shorts:
     asx_universe: asx200     # ASX shorts allowed only in the realistic borrowable set
+    # (2026-09-26, comment only: documentary - the ASX 200 list is hard-coded; not a switch.)
     crypto_requires_futures: true
 
   telegram:
@@ -557,6 +584,9 @@ arena:
       # then stops filling: with the delayed feed a later fill would not be visible to the
       # sweep before the 16:10 close.
       last_entry_time: "15:40"
+      # (2026-09-26, comment only, value unchanged - it is part of the frozen block: this label
+      # describes 23-24 Sep. Since 25 Sep the prices are IBKR real-time and every decision
+      # records the prices it used; the report no longer prints this label.)
       data_basis: "delayed data - rehearsal until IBKR live prices"
       screen:
         # Kept from v1: a halt or suspension notice is out. (A reinstatement passes, as in v1.)
@@ -659,6 +689,8 @@ arena:
     # trading days from 25 Sep 2026. Every rule below is exact; a change after it has run is
     # a new dated version.
     #
+    # (2026-09-26, comment only: the DATA HONESTY note below describes the Yahoo rehearsal of
+    # 24 Sep; since 25 Sep the day trader runs on IBKR real-time bars.)
     # DATA HONESTY: Yahoo's ASX 1-minute bars are ~20 minutes delayed. Decisions use only
     # the bars the feed holds at the moment of the decision; a fill is the first bar that
     # starts after the order is recorded, so on the delayed feed a setup is entered ~20
@@ -679,6 +711,9 @@ arena:
       accounts: asx_daytrader_v1
       holding: intraday
       preclose: flat             # flat by the 15:50 pre-close sweep, no overnight holds
+      # (2026-09-26, comment only, value unchanged - it is part of the frozen block: this label
+      # describes 23-24 Sep. Since 25 Sep the prices are IBKR real-time and every decision
+      # records the prices it used; the report no longer prints this label.)
       data_basis: "delayed data - rehearsal until IBKR live prices"
       # Risk per trade, |entry - stop| x shares, at most 0.5% of equity (the level allows 5%).
       risk_per_trade_pct: 0.5

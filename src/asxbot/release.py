@@ -28,6 +28,9 @@ from pathlib import Path
 
 HOME_ENV = "ASXBOT_HOME"
 RELEASE_ENV = "ASXBOT_RELEASE"
+# Where a shim that cannot start its task says so (26 Sep 2026: overridable, because the
+# shim tests wrote real "ABORTED (probe shim)" lines into Rick's task-failures.log).
+FAILURES_ENV = "ASXBOT_TASK_FAILURES"
 TASK_SCRIPTS = (
     "arena_warmup", "arena_watchdog", "arena_evening", "chat", "ibgateway",
     "ibgateway_supervisor", "ibkr_preflight", "arena_filter_cost", "ibkr_fetch_history",
@@ -102,7 +105,8 @@ HOME = r"@HOME@"  # the checkout: config.yaml, .env, data/ and reports/
 _local = os.environ.get("ASXBOT_LOCAL")
 BASE = Path(_local) if _local else Path(
     os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")) / "asx-bot"
-FAILURES = Path(r"C:\venvs\asx-bot\task-failures.log")
+# ASXBOT_TASK_FAILURES moves it (the tests: a probe shim must not write the real one).
+FAILURES = Path(os.environ.get("ASXBOT_TASK_FAILURES") or r"C:\venvs\asx-bot\task-failures.log")
 
 
 def note(text):
@@ -172,7 +176,7 @@ def describe() -> str:
 
 
 __all__ = [
-    "HOME_ENV", "RELEASE_ENV", "SHIM_TEMPLATE", "TASK_SCRIPTS", "bin_dir", "current_release",
-    "describe", "local_base", "pointer", "release_info", "releases_dir", "running_from",
-    "shim_source",
+    "FAILURES_ENV", "HOME_ENV", "RELEASE_ENV", "SHIM_TEMPLATE", "TASK_SCRIPTS", "bin_dir",
+    "current_release", "describe", "local_base", "pointer", "release_info", "releases_dir",
+    "running_from", "shim_source",
 ]  # fmt: skip

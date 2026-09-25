@@ -23,6 +23,13 @@ from typing import Any
 
 _configured = False
 KEEP_DAYS = 30
+# The watcher's own log (26 Sep 2026). Until then the watcher, the history fetch, the replay
+# workers, the evening steps and the tests all wrote asxbot.log, and the watcher's
+# errors_logged self-check read every one of them as its own: an 18:57 chaos-test line on
+# 25 Sep reached Rick as a SELF-CHECK. `asxbot arena watch` now logs here, and only here;
+# the self-checks read this file. The evening routine copies it to data/logs/ like the rest.
+WATCH_LOG = "arena_watch.log"
+DEFAULT_LOG = "asxbot.log"
 
 
 def logs_dir() -> Path:
@@ -45,11 +52,13 @@ def setup_logging(
     name: str = "asxbot",
     file: bool = True,
     stream=None,
+    filename: str = DEFAULT_LOG,
 ) -> logging.Logger:
-    """Console plus asxbot.log. `file=False` is console only (to `stream`, default stderr):
-    the Trader chat runs all day beside the watcher, and its launcher writes what it prints
-    to chat.log, so it must not hold asxbot.log open too (two processes rotating one file
-    at midnight is a fight on Windows). The first call wins; later calls are no-ops."""
+    """Console plus asxbot.log (or `filename`: the watcher's is WATCH_LOG). `file=False` is
+    console only (to `stream`, default stderr): the Trader chat runs all day beside the
+    watcher, and its launcher writes what it prints to chat.log, so it must not hold
+    asxbot.log open too (two processes rotating one file at midnight is a fight on
+    Windows). The first call wins; later calls are no-ops."""
     global _configured
     logger = logging.getLogger(name)
     if _configured:
@@ -63,7 +72,7 @@ def setup_logging(
         log_dir = Path(log_dir) if log_dir is not None else logs_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         fileh = logging.handlers.TimedRotatingFileHandler(
-            log_dir / "asxbot.log", when="midnight", backupCount=KEEP_DAYS, encoding="utf-8"
+            log_dir / filename, when="midnight", backupCount=KEEP_DAYS, encoding="utf-8"
         )
         fileh.setFormatter(fmt)
         logger.addHandler(fileh)
@@ -116,7 +125,9 @@ def mirror_logs(src: Path, dest: Path) -> list[str]:
     dest.mkdir(parents=True, exist_ok=True)
     copied = []
     for p in sorted(src.iterdir()) if src.exists() else []:
-        if not p.is_file() or p.suffix == ".tmp":
+        # A .lock file is a process's single-instance lock, not a log (26 Sep 2026): a held
+        # one cannot be read on Windows, and a copy of one means nothing on the other PC.
+        if not p.is_file() or p.suffix in (".tmp", ".lock"):
             continue
         target = dest / p.name
         s = p.stat()

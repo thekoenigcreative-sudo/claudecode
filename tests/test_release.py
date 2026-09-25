@@ -61,7 +61,10 @@ def _run_shim(tmp_path, base: Path, home: Path, args=()):
     shim.parent.mkdir(parents=True, exist_ok=True)
     shim.write_text(R.shim_source("probe", home), encoding="utf-8")
     out = tmp_path / "out.json"
-    env = {**os.environ, "ASXBOT_LOCAL": str(base), "SHIM_OUT": str(out)}
+    # A scratch failures log (26 Sep 2026): these probes wrote real "ABORTED (probe shim)"
+    # lines into C:\venvs\asx-bot\task-failures.log.
+    env = {**os.environ, "ASXBOT_LOCAL": str(base), "SHIM_OUT": str(out),
+           R.FAILURES_ENV: str(tmp_path / "task-failures.log")}  # fmt: skip
     env.pop("PYTHONPATH", None)
     r = proc.run([sys.executable, str(shim), *args], env=env, capture_output=True, text=True,
                  timeout=60)  # fmt: skip
@@ -94,6 +97,9 @@ def test_the_shim_fails_loudly_without_a_current_release(tmp_path):
     r, _ = _run_shim(tmp_path, base, home)
     assert r.returncode == 1
     assert "does not exist" in (base / "logs" / "releases.log").read_text(encoding="utf-8")
+    # Both went to the scratch failures log, not the real one (fails on the old shim).
+    failures = (tmp_path / "task-failures.log").read_text(encoding="utf-8")
+    assert failures.count("ABORTED (probe shim)") == 2
 
 
 def test_the_shim_template_names_every_task_and_imports_no_asxbot():
@@ -176,8 +182,11 @@ def test_pointers_shims_and_prune(tmp_path, monkeypatch):
         (datetime(2026, 9, 25, 7, 24, tzinfo=SYD), False),
         (datetime(2026, 9, 25, 7, 25, tzinfo=SYD), True),
         (datetime(2026, 9, 25, 12, 0, tzinfo=SYD), True),
-        (datetime(2026, 9, 25, 19, 24, tzinfo=SYD), True),
-        (datetime(2026, 9, 25, 19, 25, tzinfo=SYD), False),
+        # The end is the watcher's stop time (26 Sep 2026): 19:31, or 20:31 on daylight saving.
+        (datetime(2026, 9, 25, 19, 30, tzinfo=SYD), True),
+        (datetime(2026, 9, 25, 19, 31, tzinfo=SYD), False),
+        (datetime(2026, 10, 7, 20, 30, tzinfo=SYD), True),
+        (datetime(2026, 10, 7, 20, 31, tzinfo=SYD), False),
         (datetime(2026, 9, 26, 12, 0, tzinfo=SYD), False),  # Saturday
     ],
 )
@@ -196,7 +205,7 @@ def _book(data_dir: Path, name: str, positions=None, orders=None):
 def test_a_restart_is_refused_in_hours_unless_forced_with_a_reason(tmp_path):
     _book(tmp_path, "flat__bot")
     noon = datetime(2026, 9, 25, 12, 0, tzinfo=SYD)
-    with pytest.raises(L.Locked, match="07:25 and 19:25"):
+    with pytest.raises(L.Locked, match="07:25 and 19:31"):
         L.check_restart(tmp_path, noon, is_trading_day=lambda d: True)
     with pytest.raises(L.Locked):
         L.check_restart(tmp_path, noon, force=True, reason="  ", is_trading_day=lambda d: True)
@@ -223,7 +232,7 @@ def test_a_restart_is_never_allowed_with_a_position_or_working_order_open(tmp_pa
 
 def test_the_rule_is_written_in_claude_md():
     text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "07:25" in text and "19:25" in text and "scripts/watcher.py" in text
+    assert "07:25" in text and "19:31" in text and "scripts/watcher.py" in text
     assert "releases" in text and "deploy.py" in text
 
 

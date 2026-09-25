@@ -12,20 +12,27 @@ All arithmetic and file checks. No judgement, no model, nothing that needs inter
                      reason: a fetch that failed, or a reader called with no document
   screen_dominated   one screen test rejecting more than 80% of the day's announcements
   agent_mismatch     an agent call whose model or thinking level was not what config asks
+  agent_unavailable  agent calls that got no answer in the last hour, by kind (usage_limit,
+                     timeout, error) and since when; the plan's usage limit is told once
+                     when it starts and once when calls are answered again (26 Sep 2026)
   stuck_pending      a pending_fill order older than the resolve window plus an hour
   fill_before_order  a filled order whose fill bar does not start strictly after the order
                      was recorded (or, for a stop or target, after it began resting)
-  errors_logged      an ERROR line in the last hour
+  errors_logged      an ERROR line in the watcher's own log (arena_watch.log, 26 Sep 2026;
+                     it was the shared asxbot.log) in the last hour; repeats of one kind of
+                     error within 30 minutes are one finding
   log_silent         the watcher logged something 5+ minutes after the last line in
-                     asxbot.log (or the launcher's arena_warmup.log): the file is not being
-                     written. Google Drive did exactly this at 08:14 on 24 Sep 2026
+                     arena_watch.log (or the launcher's arena_warmup.log): the file is not
+                     being written. Google Drive did exactly this at 08:14 on 24 Sep 2026
   short_universe     the ASX 200 list is short, stale, or not a constituent list at all
   console_launcher   the venv's pythonw.exe, which every scheduled task starts, is a console
                      program, so each start flashes a window (scripts/install_gui_launcher.py)
-  live_data          with data.live_provider: ibkr, the feed has fallen back to Yahoo (IB
+  live_data          with data.live_provider: ibkr, IBKR prices are not available (IB
                      Gateway down, logged out, cut off from IBKR, or sending delayed data),
-                     or its status has gone stale in market hours. When Gateway needs a
-                     login, Rick is told once, in one line, instead of every hour
+                     so new entries are paused, or the status has gone stale in market hours.
+                     While the connection doctor has an episode open, this and
+                     gateway_supervisor are recorded but not sent: the doctor and the
+                     Gateway supervisor tell Rick (26 Sep 2026)
 
 A failure is loud: CRITICAL in the log, an `arena_selfcheck` event, an alerts flag file,
 and a Telegram message. The same failure is not repeated more often than
@@ -105,16 +112,59 @@ def recent_events(data_dir: Path, kind: str, since: datetime) -> list[dict]:
 
 
 # -- the checks -------------------------------------------------------------
+# path -> (size, mtime_ns, finding or "") for every saved PDF already looked at.
+_PDF_SEEN: dict[str, tuple[int, int, str]] = {}
+
+
+def _pdf_entries(root: Path):
+    """Every *.pdf under root, with the stat the directory listing already carries (on
+    Windows os.scandir needs no extra call per file)."""
+    try:
+        it = os.scandir(root)
+    except OSError:
+        return
+    with it:
+        for e in it:
+            if e.is_dir(follow_symlinks=False):
+                yield from _pdf_entries(Path(e.path))
+            elif e.name.lower().endswith(".pdf"):
+                yield e
+
+
 def check_pdfs_are_pdfs(cfg) -> Check:
-    """Any saved announcement document whose first bytes are not %PDF."""
+    """Any saved announcement document whose first bytes are not %PDF.
+
+    Reads five bytes of each file, once (26 Sep 2026). It used to read every stored PDF
+    whole, every cycle: 250 MB a minute on 26 Sep, heading for 1 GB by the end of the test.
+    A file is read again only if its size or modified time changes; a finding stands until
+    the file is replaced or deleted."""
     bad = []
     root = cfg.data_dir / "announcements" / "pdf"
-    for p in sorted(root.rglob("*.pdf")) if root.exists() else []:
+    present = set()
+    for e in sorted(_pdf_entries(root), key=lambda e: e.path):
+        present.add(e.path)
+        p = Path(e.path)
         try:
-            if not p.read_bytes()[:5].startswith(b"%PDF"):
-                bad.append(f"{p.parent.name}/{p.name} ({p.stat().st_size} bytes)")
-        except OSError as e:  # noqa: PERF203 - a file we cannot read is itself the finding
-            bad.append(f"{p.name} unreadable: {e}")
+            st = e.stat()
+        except OSError as err:  # noqa: PERF203 - a file we cannot read is itself the finding
+            bad.append(f"{p.name} unreadable: {err}")
+            continue
+        seen = _PDF_SEEN.get(e.path)
+        if seen is None or seen[:2] != (st.st_size, st.st_mtime_ns):
+            try:
+                with open(p, "rb") as fh:
+                    head = fh.read(5)
+            except OSError as err:
+                bad.append(f"{p.name} unreadable: {err}")  # not remembered: read next time
+                continue
+            finding = "" if head.startswith(b"%PDF") else \
+                f"{p.parent.name}/{p.name} ({st.st_size} bytes)"  # fmt: skip
+            seen = (st.st_size, st.st_mtime_ns, finding)
+            _PDF_SEEN[e.path] = seen
+        if seen[2]:
+            bad.append(seen[2])
+    for gone in [k for k in _PDF_SEEN if k.startswith(str(root)) and k not in present]:
+        _PDF_SEEN.pop(gone, None)
     if not bad:
         return Check("pdf_not_pdf", True, "every saved announcement document is a PDF")
     return Check(
@@ -160,10 +210,12 @@ def check_screen_not_dominated(cfg, now: datetime) -> Check:
     a 50-cent price floor, and a count alone never said so.
     """
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # A deferral (the live feed was down; the announcement is screened again once it is
+    # back) is not a verdict of any screen test (26 Sep 2026): left out of both counts.
     rows = [
         r
         for r in recent_events(cfg.data_dir, "arena_screened", day_start)
-        if not r.get("is_test")
+        if not r.get("is_test") and str(r.get("test") or "") != "deferred"
     ]
     total = len({str(r.get("ids_id")) for r in rows})
     if total < SCREEN_MIN_SAMPLE:
@@ -226,6 +278,59 @@ def check_agent_calls(cfg, now: datetime, expected: dict[str, tuple[str, str]]) 
         count=len(bad),
         items=sorted(set(bad)),
     )
+
+
+AGENT_KINDS = ("usage_limit", "timeout", "error")
+
+
+def check_agent_unavailable(cfg, now: datetime) -> Check:
+    """Agent calls that got no answer in the last hour (arena_agent_calls records with ok
+    false, 26 Sep 2026), by why - usage_limit (the Claude plan refused), timeout or error -
+    and since when. A reader or decider that cannot be reached is not a pass; the decisions
+    it would have made are simply not being made."""
+    calls = recent_events(cfg.data_dir, "arena_agent_calls", now - timedelta(hours=1))
+    failed = [c for c in calls if c.get("ok") is False]
+    if not failed:
+        return Check("agent_unavailable", True,
+                     f"{len(calls)} agent call(s) in the last hour, none unanswered")  # fmt: skip
+    kinds: dict[str, list] = {}
+    for c in failed:
+        kind = str(c.get("kind") or "error")
+        kinds.setdefault(kind if kind in AGENT_KINDS else "error", []).append(c)
+    parts = []
+    for kind in AGENT_KINDS:
+        rows = kinds.get(kind)
+        if rows:
+            agents = ", ".join(sorted({str(r.get("agent", "?")) for r in rows}))
+            parts.append(f"{kind} x{len(rows)} since {rows[0]['syd']:%H:%M} "
+                         f"(last {rows[-1]['syd']:%H:%M}; {agents})")  # fmt: skip
+    return Check(
+        "agent_unavailable", False,
+        f"{len(failed)} agent call(s) got no answer in the last hour: " + "; ".join(parts),
+        count=len(failed),
+        facts={"kinds": {k: len(v) for k, v in kinds.items()}},
+        items=sorted(kinds),  # a new KIND is news; another call failing the same way is not
+    )
+
+
+def usage_limit_state(cfg, now: datetime, hours: int = 6) -> dict:
+    """The Claude plan's usage limit from the calls themselves: {"since": first refusal of
+    the current run, "active": no call has succeeded since the last refusal, "back": the
+    first success after it}."""
+    calls = sorted(recent_events(cfg.data_dir, "arena_agent_calls", now - timedelta(hours=hours)),
+                   key=lambda r: r["syd"])  # fmt: skip
+    last_limit = None
+    for i, c in enumerate(calls):
+        if c.get("ok") is False and str(c.get("kind")) == "usage_limit":
+            last_limit = i
+    if last_limit is None:
+        return {}
+    first = last_limit
+    while first > 0 and not calls[first - 1].get("ok"):
+        first -= 1  # back through the run of failures to where it started
+    since = next(c["syd"] for c in calls[first:] if str(c.get("kind")) == "usage_limit")
+    back = next((c["syd"] for c in calls[last_limit + 1:] if c.get("ok")), None)
+    return {"since": since, "active": back is None, "back": back}
 
 
 def _could_first_fill(decided: datetime) -> datetime:
@@ -358,10 +463,11 @@ def check_live_data(cfg, now: datetime) -> Check:
     }  # fmt: skip
     if fresh and st.get("provider_in_use") != "ibkr":
         why = st.get("why") or gwh.get("last_error") or "IBKR unavailable"
+        # Worded 26 Sep 2026: nothing decides on Yahoo any more; entries wait for IBKR.
         return Check(
             "live_data", False,
-            f"IBKR live prices unavailable ({why}); NEW ENTRIES ARE PAUSED until it is back "
-            "(exits keep working from the last bars held and Yahoo's delayed bars)",
+            f"IBKR prices are not available ({why}); new entries are paused, exits keep "
+            "working",
             facts=facts, items=[why],
         )  # fmt: skip
     if market_hours(now) and not fresh:
@@ -389,14 +495,14 @@ def check_live_data(cfg, now: datetime) -> Check:
 
 
 SUPERVISOR_STALE_MIN = 6
-BACK_LINE = "IB Gateway is back: the arena is on live IBKR prices again."
 
 
 def check_gateway_supervisor(now: datetime) -> Check:
     """The IB Gateway supervisor (ibkr/supervisor.py, a task every 2 minutes) and what it
     is waiting on. Fails when the task has not checked for a while in the hours it should,
-    or when Gateway is in an outage - and says when that outage needs Rick (the phone
-    approval, or a login on the PC), so the watcher can tell him once."""
+    or when Gateway is in an outage, and says when that outage needs Rick (the phone
+    approval, or a login on the PC). Telling Rick is the supervisor's job, not this check's
+    (26 Sep 2026; see report)."""
     from asxbot.ibkr.supervisor import SUPERVISOR_STATE, login_window, read_json
 
     st = read_json(SUPERVISOR_STATE)
@@ -438,10 +544,36 @@ def check_gateway_supervisor(now: datetime) -> Check:
                  facts=facts)  # fmt: skip
 
 
-LOGIN_LINE = (
-    "IB Gateway needs you to log in again (it is not reaching IBKR) - the arena is on "
-    "delayed Yahoo prices until you do."
-)
+# Who speaks for an IBKR outage (26 Sep 2026). Until then this module sent its own lines:
+# "IB Gateway needs you to log in again ... the arena is on delayed Yahoo prices until you
+# do" for ANY down state - wrong on both counts since entries pause instead of falling back
+# - and "IB Gateway is back". Now the Gateway supervisor tells Rick when his phone or login
+# is needed and when Gateway is back, and the connection doctor (ibkr/doctor.py, inside the
+# watcher) tells him about every other connection problem. While the doctor is ticking and
+# has an episode open, these two checks' failures are recorded (alerts file, event, log)
+# and not sent. If the doctor's state is stale or missing, they are sent as any check is.
+IBKR_CHECKS = ("live_data", "gateway_supervisor")
+DOCTOR_FRESH = timedelta(minutes=5)
+
+
+def doctor_speaking(now: datetime, path: Path | None = None) -> str:
+    """The open episode's cause if the connection doctor is ticking (its last tick under
+    5 minutes old) and has one open, else "" (it is not there to speak for the outage)."""
+    try:
+        if path is None:
+            from asxbot.ibkr.doctor import state_path
+
+            path = state_path()
+        st = json.loads(Path(path).read_text(encoding="utf-8"))
+        at = datetime.fromisoformat(str((st.get("last") or {}).get("at")))
+    except Exception:  # noqa: BLE001 - missing or unreadable: the doctor is not speaking
+        return ""
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=SYD)
+    episode = st.get("episode")
+    if not episode or abs(now - at) > DOCTOR_FRESH:
+        return ""
+    return str(episode.get("cause") or "an open episode")
 
 
 def check_short_universe(cfg) -> Check:
@@ -495,31 +627,79 @@ ERROR_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ (ERROR|CRIT
 SELF_LOGGERS = ("asxbot.alerts", "asxbot.arena.selfcheck")
 
 
+GROUP_ERRORS = timedelta(minutes=30)
+# (log, error class) -> runs of that class: [first, last, the first line]. Kept in memory,
+# so a run keeps its name after its first line leaves the hour the check reads.
+_ERROR_RUNS: dict[tuple[str, str], list[list]] = {}
+
+
+def error_class(logger: str, msg: str) -> str:
+    """Lines that differ only in their numbers (ids, times, sizes, status codes) are one
+    kind of error."""
+    return f"{logger}: {re.sub(r'[0-9]+', '#', msg)[:110]}"
+
+
 def check_errors_logged(cfg, now: datetime) -> Check:
-    """Any ERROR or CRITICAL logged in the last hour.
+    """Any ERROR or CRITICAL the WATCHER logged in the last hour.
 
     An exception that only reaches the log has, in practice, not been reported at all.
+
+    Two changes on 26 Sep 2026. It reads the watcher's own log (asxbot.log.WATCH_LOG): it
+    used to read asxbot.log, which every other process writes too, and an 18:57 chaos-test
+    line on 25 Sep reached Rick as a SELF-CHECK. And repeats are grouped: each finding is a
+    run of one kind of error (error_class) with no gap over 30 minutes, named by its first
+    line, so the same 404 at 08:02 and 08:03 is one message, not two. A kind that comes back
+    after a quiet half hour is a new run, and said again.
     """
+    from asxbot.log import WATCH_LOG
+
     since = now - timedelta(hours=1)
-    hits = []
-    for line in tail_lines(cfg.logs_dir / "asxbot.log"):
+    path = cfg.logs_dir / WATCH_LOG
+    runs_seen: list[list] = []
+    count: dict[int, int] = {}
+    hits = 0
+    for line in tail_lines(path):
         m = ERROR_LINE.match(line)
         if not m:
             continue
         logger = m.group(3)
         if logger in SELF_LOGGERS:
             continue  # an alert about an error is not itself an error
+        if logger == "asxbot.arena.agents" and m.group(4).startswith("AGENT UNAVAILABLE"):
+            continue  # the agent_unavailable check reports these, by kind
         when = datetime.fromisoformat(m.group(1)).replace(tzinfo=SYD)
-        if when >= since:
-            hits.append(f"{m.group(1)[11:]} {logger}: {m.group(4)[:110]}")
+        if when < since:
+            continue
+        hits += 1
+        runs = _ERROR_RUNS.setdefault((str(path), error_class(logger, m.group(4))), [])
+        run = next((r for r in runs if r[0] <= when <= r[1]), None)
+        if run is None and runs and when > runs[-1][1] and when - runs[-1][1] <= GROUP_ERRORS:
+            run = runs[-1]
+            run[1] = when
+        if run is None:
+            run = [when, when, f"{m.group(1)[11:]} {logger}: {m.group(4)[:110]}"]
+            runs.append(run)
+            runs.sort(key=lambda r: r[0])
+        if id(run) not in count:
+            runs_seen.append(run)
+        count[id(run)] = count.get(id(run), 0) + 1
+    for key in [k for k, v in _ERROR_RUNS.items() if v and now - v[-1][1] > timedelta(hours=3)]:
+        _ERROR_RUNS.pop(key, None)
     if not hits:
         return Check("errors_logged", True, "no ERROR logged in the last hour")
+    runs_seen.sort(key=lambda r: r[0])
+
+    def said(r: list) -> str:
+        n = count[id(r)]
+        return r[2] + (f" (x{n}, the last at {r[1]:%H:%M:%S})" if n > 1 else "")
+
     return Check(
         "errors_logged",
         False,
-        f"{len(hits)} ERROR line(s) in the last hour: " + " | ".join(hits[-3:]),
-        count=len(hits),
-        items=hits,
+        f"{hits} ERROR line(s) in the last hour, {len(runs_seen)} kind(s): "
+        + " | ".join(said(r) for r in runs_seen[-3:]),
+        count=hits,
+        items=[r[2] for r in runs_seen],
     )
 
 
@@ -547,6 +727,7 @@ def check_log_growing(cfg, hb: dict | None = None, stdout_log: str | None = None
     is not being written.
     """
     from asxbot.arena import heartbeat
+    from asxbot.log import WATCH_LOG
 
     hb = hb if hb is not None else (heartbeat.current() or heartbeat.read(cfg.data_dir))
     if not hb or hb.get("state") != "running":
@@ -556,7 +737,8 @@ def check_log_growing(cfg, hb: dict | None = None, stdout_log: str | None = None
         return Check("log_silent", True, "the watcher has logged nothing yet")
     record = datetime.fromisoformat(record).astimezone(SYD)
     stdout_log = stdout_log if stdout_log is not None else os.environ.get("ASXBOT_STDOUT_LOG")
-    logs = [cfg.logs_dir / "asxbot.log"] + ([Path(stdout_log)] if stdout_log else [])
+    # The watcher's own log (26 Sep 2026; it was asxbot.log, which other processes write).
+    logs = [cfg.logs_dir / WATCH_LOG] + ([Path(stdout_log)] if stdout_log else [])
     stale, facts = [], {"last_record": record.isoformat(timespec="seconds")}
     # A log with no line yet is measured from the watcher's start, not called silent at once.
     started = datetime.fromisoformat(hb.get("started") or record.isoformat()).astimezone(SYD)
@@ -629,6 +811,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("pdf_fetch_failed", lambda: check_pdf_fetches(cfg, now)),
         ("screen_dominated", lambda: check_screen_not_dominated(cfg, now)),
         ("agent_mismatch", lambda: check_agent_calls(cfg, now, expected)),
+        ("agent_unavailable", lambda: check_agent_unavailable(cfg, now)),
         ("stuck_pending", lambda: check_pending_orders(arena, pb, now)),
         ("fill_before_order", lambda: check_fills_after_orders(arena, pb)),
         ("errors_logged", lambda: check_errors_logged(cfg, now)),
@@ -675,13 +858,12 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
     state = _load_state(cfg)
     repeat = timedelta(minutes=int(cfg.get("arena.selfcheck.repeat_minutes", REPEAT_MINUTES)))
     alert = notify.get(arena)
+    state.pop("_ibkr_login_told", None)  # the retired login line's marker (26 Sep 2026)
+    doctor = ""
+    if any(c.key in IBKR_CHECKS and not c.ok for c in checks):
+        doctor = doctor_speaking(now)
 
     for c in checks:
-        if c.key in ("live_data", "gateway_supervisor") and c.ok and state.get("_ibkr_login_told"):
-            # One line when Gateway needed Rick, one when it is back (Rick's brief, 25 Sep).
-            state.pop("_ibkr_login_told", None)
-            if alert:
-                alert.send(BACK_LINE)
         if c.ok:
             if state.pop(c.key, None) is not None:
                 alerts.clear(c.key)
@@ -696,7 +878,14 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
         # appeared. Tracking only "is it failing" meant a genuinely new error arriving
         # inside the hour was silent, hidden behind a fault already reported.
         new_items = [i for i in c.items if i not in seen]
-        overdue = last is None or (now - datetime.fromisoformat(last)) >= repeat
+        told_by = ""
+        if doctor and c.key in IBKR_CHECKS:
+            told_by = f"the connection doctor ({doctor})"
+        elif c.key == "agent_unavailable" and set(c.facts.get("kinds") or {}) == {"usage_limit"}:
+            told_by = "the usage-limit line (once when it starts, once when calls work again)"
+        # A failure held back while the doctor spoke is said as soon as it no longer does.
+        unmuted = bool(prior.get("muted")) and not told_by
+        overdue = last is None or unmuted or (now - datetime.fromisoformat(last)) >= repeat
         due = force or overdue or bool(new_items)
 
         events.append(
@@ -704,6 +893,7 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
             {
                 "check": c.key, "ok": False, "detail": c.detail, "count": c.count,
                 "new_items": new_items[:20], **c.facts,
+                **({"not_sent": f"told by {told_by}"} if told_by else {}),
             },  # fmt: skip
         )
         if due:
@@ -713,13 +903,10 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
             alerts.raise_alert(c.key, c.detail)
         else:
             log.info("self-check %s still failing (already reported): %s", c.key, c.detail)
-        if c.facts.get("login_needed"):
-            # One line, once an outage (Rick's brief, 24 Sep), not the hourly repeat.
-            if alert and not state.get("_ibkr_login_told"):
-                alert.send(LOGIN_LINE if c.key == "live_data" else
-                           f"IB Gateway needs you: {c.detail.split(';')[-1].strip()}. The arena "
-                           "makes no new entries until it is back.")  # fmt: skip
-                state["_ibkr_login_told"] = now.isoformat(timespec="seconds")
+        if told_by:
+            # Recorded above; Rick hears it from the doctor or the Gateway supervisor.
+            if due:
+                log.info("self-check %s not sent to Telegram: %s is telling Rick", c.key, told_by)
         elif due and alert:
             body = notify.escape_text(c.detail)
             if new_items and not overdue:
@@ -730,8 +917,38 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
             state[c.key] = {
                 "at": now.isoformat(timespec="seconds"),
                 "items": (seen + new_items)[-200:],
+                **({"muted": True} if told_by else {}),
             }
         elif new_items:  # nothing to say, but do not forget what was seen
-            state[c.key] = {"at": last, "items": (seen + new_items)[-200:]}
+            state[c.key] = {"at": last, "items": (seen + new_items)[-200:],
+                            **({"muted": True} if prior.get("muted") else {})}  # fmt: skip
+    _usage_limit_lines(cfg, now, state, alert)
     write_text_atomic(json.dumps(state, indent=2), _state_path(cfg))
     return failures
+
+
+def _usage_limit_lines(cfg, now: datetime, state: dict, alert) -> None:
+    """The Claude plan's usage limit is urgent (26 Sep 2026): one line when it starts
+    refusing agent calls, one when a call is answered again - not the hourly repeat."""
+    try:
+        ul = usage_limit_state(cfg, now)
+    except Exception as e:  # noqa: BLE001 - a check must never stop the watcher
+        log.warning("could not read the agent calls for the usage limit: %s", e)
+        return
+    told = state.get("_usage_limit")
+    if ul.get("active") and not told:
+        text = (f"🛑 <b>AGENT UNAVAILABLE: usage limit</b> - the Claude plan has refused agent "
+                f"calls since {ul['since']:%H:%M}. The reader and deciders make no decisions "
+                "until it resets; the rule bots, stops, targets and the flat sweep carry on.")
+        log.critical("AGENT UNAVAILABLE: usage limit since %s", f"{ul['since']:%H:%M}")
+        if alert:
+            alert.send(text)
+        state["_usage_limit"] = {"since": ul["since"].isoformat(timespec="seconds"),
+                                 "told_at": now.isoformat(timespec="seconds")}  # fmt: skip
+    elif told and ul.get("back"):
+        since = datetime.fromisoformat(told["since"])
+        log.info("agent calls answered again at %s", f"{ul['back']:%H:%M}")
+        if alert:
+            alert.send(f"✅ Agent calls are answered again ({ul['back']:%H:%M}), after the usage "
+                       f"limit from {since:%H:%M}.")  # fmt: skip
+        state.pop("_usage_limit", None)

@@ -88,7 +88,13 @@ class Notifier:
         self.queue_path = Path(cfg.data_dir) / "arena" / "pass_digest.json"
 
     def send(self, text: str) -> bool:
-        self.events.append("arena_notify", {"text": text, "enabled": self.enabled})
+        try:
+            # The record of the message is on Google Drive. Until 26 Sep 2026 this append sat
+            # outside any try, so a moment of Drive holding the file raised out of "never
+            # raises" and up through the watcher's main loop. The message still goes.
+            self.events.append("arena_notify", {"text": text, "enabled": self.enabled})
+        except Exception as e:  # noqa: BLE001 - an alert must never break trading
+            log.warning("could not record the alert in arena_notify (%s); sending it anyway", e)
         if not self.enabled:
             return False
         try:
@@ -99,7 +105,8 @@ class Notifier:
             self._bot.send(text)
             return True
         except Exception as e:  # noqa: BLE001 - an alert must never break trading
-            log.warning("telegram alert NOT sent (%s): %s", e, text.splitlines()[0][:80])
+            first = (str(text).splitlines() or [""])[0][:80]
+            log.warning("telegram alert NOT sent (%s): %s", e, first)
             return False
 
     # -- decisions ----------------------------------------------------------

@@ -116,10 +116,11 @@ def test_a_silent_log_during_an_announced_wait_is_not_an_outage():
 def test_the_watchers_hours_follow_the_trading_calendar(cfg):
     thu = datetime(2026, 9, 24, 12, 0, tzinfo=SYD)
     start, stop = W.expected_window(cfg, thu)
-    assert (start.hour, start.minute) == (7, 33) and (stop.hour, stop.minute) == (19, 25)
+    # 19:31 since 26 Sep 2026: one last poll after announcements end at 19:30
+    assert (start.hour, start.minute) == (7, 33) and (stop.hour, stop.minute) == (19, 31)
     assert W.expected_window(cfg, datetime(2026, 9, 26, 12, 0, tzinfo=SYD)) is None  # Sat
     dst = W.expected_window(cfg, datetime(2026, 10, 7, 12, 0, tzinfo=SYD))
-    assert (dst[1].hour, dst[1].minute) == (20, 25)  # daylight saving from 4 Oct
+    assert (dst[1].hour, dst[1].minute) == (20, 31)  # daylight saving from 4 Oct
 
 
 # -- one alert per outage, one on recovery ----------------------------------------------
@@ -224,19 +225,20 @@ def test_the_watchers_sleeps_are_announced(monkeypatch, tmp_path):
 
 def test_agent_calls_are_announced(monkeypatch, tmp_path):
     """A model call can take up to its timeout; the watchdog must not call that silence."""
-    import subprocess
-
     from asxbot.arena import agents
 
     beat = H.Heartbeat(tmp_path, beat_s=3600).start()
     seen = []
 
-    def fake_run(cmd, **kw):
-        seen.append(beat.quiet_why)
-        return subprocess.CompletedProcess(cmd, 0, stdout='{"status": "ok"}', stderr="")
+    class FakePopen:  # since 26 Sep 2026 the call is a Popen, so a timeout can stop its tree
+        pid, returncode = 1, 0
+
+        def communicate(self, timeout=None):
+            seen.append(beat.quiet_why)
+            return '{"status": "ok"}', ""
 
     monkeypatch.setattr(agents, "_openclaw_bin", lambda: "openclaw")
-    monkeypatch.setattr(agents.hidden, "run", fake_run)  # asxbot.proc: windowless
+    monkeypatch.setattr(agents.hidden, "popen", lambda cmd, **kw: FakePopen())  # windowless
     try:
         agents.call_agent("trader-decider", "hello", timeout_s=600)
     finally:

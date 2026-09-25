@@ -52,16 +52,25 @@ def order_window(cfg: Config, day: date | None = None) -> tuple[time_cls, time_c
     )
 
 
-def watcher_stop_time(cfg: Config, day: date | None = None, minutes_before: int = 5) -> time_cls:
-    """When the day's watcher should exit: just before announcements stop, so the evening
-    report has the machine to itself. 19:25 normally, 20:25 on daylight saving.
+STOP_AFTER_END_MIN = 1
 
-    Anything released in those last few minutes is picked up by the next morning's
-    catch-up and queued for the pre-open, which is what ARENA.md asks for anyway.
+
+def watcher_stop_time(
+    cfg: Config, day: date | None = None, minutes_after: int = STOP_AFTER_END_MIN
+) -> time_cls:
+    """When the day's watcher stops: one minute after announcements end, 19:31 normally and
+    20:31 on daylight saving. At its stop it polls the page one last time (arena/watch.py),
+    so the last poll is at or after 19:31 and catches everything released up to 19:30.
+
+    Changed 26 Sep 2026 (was 5 minutes BEFORE the end: 19:25 / 20:25). Anything released
+    19:25-19:30 was never polled, so it was in no day file: the morning catch-up (which reads
+    those files) could not see it, and neither could the day trader's news list or the v2
+    rule's candidates. The evening routine, due at 19:30, now waits for the watcher to exit
+    before it settles the books (scripts/arena_evening.pyw), so it still has them to itself.
     """
     _, end = announcement_window(cfg, day)
-    dt = datetime.combine(day or datetime.now(SYD).date(), end) - timedelta(
-        minutes=minutes_before
+    dt = datetime.combine(day or datetime.now(SYD).date(), end) + timedelta(
+        minutes=minutes_after
     )
     return dt.time()
 
@@ -85,6 +94,34 @@ def is_evening_slot(cfg: Config, now: datetime | None = None, tolerance_min: int
     slot = evening_slot(cfg, now.date())
     target = datetime.combine(now.date(), slot, tzinfo=SYD)
     return abs((now - target).total_seconds()) <= tolerance_min * 60
+
+
+def evening_due(
+    cfg: Config, now: datetime | None = None, last_sent: datetime | None = None,
+    tolerance_min: int = 25,
+) -> tuple[bool, str]:  # fmt: skip
+    """Should the evening routine run now? (due, why).
+
+    Due in today's slot (is_evening_slot), as before. And, from 26 Sep 2026, LATE: after the
+    slot, the same day before midnight, when today's report has not been sent. The task
+    starts a missed run late (StartWhenAvailable: the PC was asleep or off at 19:30), and
+    until then that late start was skipped as "not today's evening slot", so the day got no
+    settle, no mark and no report. `last_sent` is when a report was last delivered
+    (report.last_report_sent); one sent in or after today's slot means today is done, so
+    the slot an hour later (the task fires at both 19:30 and 20:30) still does nothing."""
+    now = (now or datetime.now(SYD)).astimezone(SYD)
+    slot = datetime.combine(now.date(), evening_slot(cfg, now.date()), tzinfo=SYD)
+    if is_evening_slot(cfg, now, tolerance_min):
+        return True, f"due: today's slot is {slot:%H:%M} Sydney"
+    opens = slot - timedelta(minutes=tolerance_min)
+    if now < slot:
+        return False, f"not due: today's slot is {slot:%H:%M} Sydney, now {now:%H:%M}"
+    sent = last_sent.astimezone(SYD) if last_sent is not None else None
+    if sent is not None and sent >= opens:
+        return False, (f"not due: today's report went at {sent:%H:%M} (slot {slot:%H:%M}), "
+                       f"now {now:%H:%M}")  # fmt: skip
+    return True, (f"due LATE: today's slot was {slot:%H:%M} Sydney and no report has gone "
+                  f"since; running now, {now:%H:%M}")  # fmt: skip
 
 
 def describe(cfg: Config, day: date | None = None) -> str:

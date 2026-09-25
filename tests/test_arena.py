@@ -683,11 +683,12 @@ def test_preclose_asks_once_a_day(setup, monkeypatch):
 @pytest.mark.parametrize(
     "day,dst,ann_end,stop,slot",
     [
-        (date(2026, 9, 23), False, "19:30", "19:25", "19:30"),
-        (date(2026, 10, 3), False, "19:30", "19:25", "19:30"),  # the day before it starts
-        (date(2026, 10, 4), True, "20:30", "20:25", "20:30"),  # Sydney DST starts
-        (date(2027, 4, 3), True, "20:30", "20:25", "20:30"),  # the day before it ends
-        (date(2027, 4, 4), False, "19:30", "19:25", "19:30"),  # Sydney DST ends
+        # The watcher stops a minute AFTER announcements end (26 Sep 2026; it was 5 before).
+        (date(2026, 9, 23), False, "19:30", "19:31", "19:30"),
+        (date(2026, 10, 3), False, "19:30", "19:31", "19:30"),  # the day before it starts
+        (date(2026, 10, 4), True, "20:30", "20:31", "20:30"),  # Sydney DST starts
+        (date(2027, 4, 3), True, "20:30", "20:31", "20:30"),  # the day before it ends
+        (date(2027, 4, 4), False, "19:30", "19:31", "19:30"),  # Sydney DST ends
     ],
 )
 def test_hours_follow_sydney_daylight_saving(cfg, day, dst, ann_end, stop, slot):

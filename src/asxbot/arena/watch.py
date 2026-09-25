@@ -41,6 +41,7 @@ from asxbot.arena.agents import (
     AgentCallFailed,
     call_agent,
     expected_model,
+    fresh_sessions_on,
     parse_can_size,
     parse_decision,
     parse_verdict,
@@ -89,6 +90,7 @@ def pdf_text(data_dir: Path, a: Announcement) -> str:
 
 def pdf_text_why(data_dir: Path, a: Announcement) -> tuple[str, str]:
     """(text, why there is none). `why` is empty when there is text."""
+    from asxbot.announcements.http import head_bytes
     from asxbot.announcements.live import pdf_path
 
     p = pdf_path(data_dir, a)
@@ -96,7 +98,7 @@ def pdf_text_why(data_dir: Path, a: Announcement) -> tuple[str, str]:
         log.warning("no PDF on disk for %s %s; the agents will judge the headline alone",
                     a.code, a.ids_id)  # fmt: skip
         return "", "no PDF on disk"
-    if not p.read_bytes()[:5].startswith(b"%PDF"):
+    if not head_bytes(p).startswith(b"%PDF"):
         # Never hand this to pypdf: on 23 Sep every one of these was ASX's terms page
         # saved with a .pdf name, and "Stream has ended unexpectedly" was the only sign.
         log.error("%s is not a PDF (%d bytes); refusing to parse it, and deleting it so "
@@ -137,14 +139,14 @@ def _ensure_pdf(arena: Arena, a: Announcement) -> None:
     """Fetch the PDF now if it is not on disk and the watcher gave us a way to (TRACKER #8).
     Low volume: only announcements that passed the screen get here. A refusal raises the
     collector's alert (the poller stops) and this one is judged on its headline."""
-    from asxbot.announcements.http import AccessRefused
+    from asxbot.announcements.http import AccessRefused, head_bytes
     from asxbot.announcements.live import pdf_path
 
     fetch = getattr(arena, "fetch_pdf", None)
     if fetch is None or is_test_id(a.ids_id):
         return
     p = pdf_path(arena.cfg.data_dir, a)
-    if p.exists() and p.read_bytes()[:5].startswith(b"%PDF"):
+    if p.exists() and head_bytes(p).startswith(b"%PDF"):
         return
     log.info("no PDF on disk for %s %s; fetching it before the reader", a.code, a.ids_id)
     try:
@@ -236,12 +238,38 @@ def live_reaction(arena: Arena, ticker: str, now: datetime, quotes=None) -> dict
         "volume_multiple_session_adjusted": round(r.vol_mult, 2),
         "median_turnover_20d_aud": round(r.median_turnover, 0),
         "quote_source": q.source,
+        "prices": _prices_label(arena.cfg, q),
         "delayed": q.delayed,
+        # From the quote's own source (26 Sep 2026): it said "about 20 minutes delayed"
+        # whatever the source, which has been false since IBKR's real-time prices (25 Sep).
         "warning": (
-            "This quote is about 20 minutes delayed. It is what you decide on; the fill "
-            "will be taken from the first true 1-minute bar after your order is recorded."
+            ("This quote is delayed (about 20 minutes on Yahoo). " if q.delayed else
+             "This is a real-time quote. ")
+            + "It is what you decide on; the fill will be taken from the first true 1-minute "
+            "bar after your order is recorded."
         ),
     }
+
+
+def _prices_label(cfg, q) -> str:
+    """The label of the prices a quote came from (ibkr/feed.quote_label), in the feeds'
+    words; the playbook's configured source when the quote cannot say."""
+    try:
+        from asxbot.arena.intraday import live_provider
+        from asxbot.ibkr.feed import quote_label
+
+        return quote_label(q, live_provider(cfg))
+    except Exception:  # noqa: BLE001 - a label must never stop a packet
+        return str(getattr(q, "source", "unknown source"))
+
+
+def reaction_header(reaction: dict) -> str:
+    """The packets' heading for the price reaction, from what the prices actually are (26
+    Sep 2026: it said "delayed feed" always, false since IBKR's real-time prices)."""
+    label = reaction.get("prices") or reaction.get("data_label")
+    if not label and reaction.get("quote_source"):
+        label = reaction["quote_source"]
+    return f"LIVE PRICE REACTION ({label})" if label else "LIVE PRICE REACTION"
 
 
 # --------------------------------------------------------------------------
@@ -273,7 +301,7 @@ ANNOUNCEMENT
 COMPANY DOSSIER (from our own data)
 {json.dumps(ctx["dossier"], indent=2, default=str)}
 
-LIVE PRICE REACTION (delayed feed)
+{reaction_header(ctx["reaction"])}
 {json.dumps(ctx["reaction"], indent=2, default=str)}
 
 ANNOUNCEMENT TEXT
@@ -403,7 +431,7 @@ INDEX MEMBERSHIP - authoritative and dated
   believe it is wrong, say so only in "flag_for_claude" in your JSON block - a question for
   Claude to check, never a fact in your reasoning.
 
-LIVE PRICE REACTION (delayed feed)
+{reaction_header(ctx["reaction"])}
 {json.dumps(ctx["reaction"], indent=2, default=str)}
 
 YOUR ACCOUNT  ({acct.name}, playbook "{pb.title}", level {lvl.number} - {lvl.name})
@@ -641,11 +669,12 @@ def handle_announcement(
         reader = call_agent(
             READER, reader_packet(arena, a, ctx), expect_model=expected_model(cfg, "reader"),
             data_dir=cfg.data_dir, purpose=f"read {a.code} {a.ids_id}",
+            fresh_session=fresh_sessions_on(cfg),
         )  # fmt: skip
     except AgentCallFailed as e:
         log.error("trader-reader failed: %s", e)
         out["agent"] = {"stage": "reader", "error": str(e)}
-        record("arena_decisions", {"ticker": a.code, "outcome": "reader_failed", "why": str(e)})
+        record("arena_decisions", _unavailable("reader", a, e))
         return out
 
     # Two gates, both the reader's, and the decider is called only when both are YES:
@@ -700,14 +729,12 @@ def handle_announcement(
             DECIDER,
             decider_packet(arena, pb, acct, a, ctx, reader.text, now, relook_note(prior_why)),
             expect_model=expected_model(cfg, "decider"), data_dir=cfg.data_dir,
-            purpose=f"decide {a.code} {a.ids_id}",
+            purpose=f"decide {a.code} {a.ids_id}", fresh_session=fresh_sessions_on(cfg),
         )  # fmt: skip
     except AgentCallFailed as e:
         log.error("trader-decider failed: %s", e)
         out["agent"] = {"stage": "decider", "error": str(e)}
-        record(
-            "arena_decisions", {"ticker": a.code, "outcome": "decider_failed", "why": str(e)}
-        )
+        record("arena_decisions", _unavailable("decider", a, e))
         return out
 
     d = parse_decision(decider.text)
@@ -773,6 +800,32 @@ def handle_announcement(
         if alert:
             alert.refused("agent", str(d.get("ticker", a.code)), str(d.get("side")), qty, str(e))
     return out
+
+
+def live_quote_problem(cfg, quote) -> str:
+    """Why this quote may not carry an entry decision, or "" if it may. With
+    data.live_provider: ibkr a decision needs IBKR's own real-time quote: not missing, not
+    Yahoo's (FailoverQuotes' silent fallback), not delayed. On the Yahoo rehearsal feed there
+    is nothing better to require (intraday.entries_allowed says the same)."""
+    from asxbot.arena.intraday import live_provider
+
+    if live_provider(cfg) != "ibkr":
+        return ""
+    if quote is None:
+        return "no quote for this stock"
+    if not str(getattr(quote, "source", "")).startswith("ibkr"):
+        return f"its quote came from {getattr(quote, 'source', '?')}, not IBKR"
+    if getattr(quote, "delayed", False):
+        return f"IBKR's quote is delayed, not real-time ({quote.source})"
+    return ""
+
+
+def _unavailable(stage: str, a: Announcement, e: Exception) -> dict:
+    """The record of an agent call that got no answer (26 Sep 2026): "agent_unavailable"
+    with why (usage_limit, timeout, error), never a pass or a "reader_failed" that reads
+    like a verdict. The agent_unavailable self-check reads the calls themselves."""
+    return {"stage": stage, "ticker": a.code, "ids_id": a.ids_id, "outcome": "agent_unavailable",
+            "kind": getattr(e, "kind", "error"), "why": str(e)}  # fmt: skip
 
 
 def reaction_day(released: datetime) -> date:
@@ -870,10 +923,11 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
         reader = call_agent(
             READER, reader_packet(arena, a, ctx), expect_model=expected_model(cfg, "reader"),
             data_dir=cfg.data_dir, purpose=f"read {a.code} {a.ids_id}",
+            fresh_session=fresh_sessions_on(cfg),
         )  # fmt: skip
     except AgentCallFailed as e:
         log.error("trader-reader failed: %s", e)
-        record("arena_decisions", {"ticker": a.code, "outcome": "reader_failed", "why": str(e)})
+        record("arena_decisions", {**_unavailable("reader", a, e), "v2": True})
         return {**out, "agent": {"stage": "reader", "error": str(e)}}
     worthy, why = parse_verdict(reader.text)
     can_size, size_why = parse_can_size(reader.text)
@@ -895,6 +949,14 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
         log.info("v2: no pre-open look for %s (%s); the reaction look follows", a.code, why)
         return out
     ok, feed_why = _entries_allowed(arena, now, [a.code])
+    data = "paused: live feed down"
+    if ok:
+        # 26 Sep 2026: the feed being up was not enough. FailoverQuotes hands back Yahoo's
+        # quote whenever IBKR's is None, and the decider would then decide on it. The look
+        # needs the quote it is shown to be IBKR's own, and real-time.
+        feed_why = live_quote_problem(cfg, quote)
+        ok = not feed_why
+        data = "paused: no live IBKR quote"
     if not ok:
         # Rick, 25 Sep: never an entry decision on anything but live IBKR prices. The look
         # is skipped, not made on Yahoo; the reaction look follows once the feed is back.
@@ -903,7 +965,7 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
         record(
             "arena_decisions",
             {"stage": "decider", "ticker": a.code, "ids_id": a.ids_id, "outcome": "paused",
-             "why": feed_why, "v2": "pre_open", "data": "paused: live feed down"},
+             "why": feed_why, "v2": "pre_open", "data": data},
         )  # fmt: skip
         return {**out, "paused": feed_why}
     out["decider"] = v2_flow.pre_open_decider(arena, pb, a, ctx, reader.text, now, seen_at)
@@ -927,19 +989,116 @@ def day_view(arena: Arena, now: datetime):
             # Fills, stops, targets and trailing work from the live bars as they complete
             # (minutes.py), not from Yahoo's ~20-minute-late copy of them.
             arena.broker.minutes.set_live(feed)
-        _VIEW.update(
-            day=day, feed=feed,
-            view=MarketView(
-                arena.broker.minutes, day, feed, str(cfg.get("backtest.index_ticker", "^AXJO")),
-                int(conf.get("baseline_sessions", 5)), int(conf.get("baseline_min_sessions", 3)),
-            ),
+        view = MarketView(
+            arena.broker.minutes, day, feed, str(cfg.get("backtest.index_ticker", "^AXJO")),
+            int(conf.get("baseline_sessions", 5)), int(conf.get("baseline_min_sessions", 3)),
         )  # fmt: skip
+        view.pause_dir = cfg.data_dir  # Rick's "no new entries today" (arena/pause.py)
+        _VIEW.update(day=day, feed=feed, view=view)
     return _VIEW["view"]
 
 
 # --------------------------------------------------------------------------
 # the loop
 # --------------------------------------------------------------------------
+class WatcherAlreadyRunning(RuntimeError):
+    """Another `asxbot arena watch` holds the single-instance lock."""
+
+
+class WatcherLock:
+    """One watcher per PC (26 Sep 2026): an OS lock on a local file, held for the life of the
+    process and released by the OS if it dies. Until then nothing stopped a second
+    `asxbot arena watch` (or a `--once` test) from running beside the scheduled one, and
+    two would work the same announcements and place the same orders twice. The same
+    msvcrt/fcntl lock as the Trader chat's (chat.SingleInstance). The file is on the local
+    disk, beside the logs folder, never on Google Drive."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = Path(path) if path is not None else watch_lock_path()
+        self.fh = None
+
+    def acquire(self, wait_s: float = 0.0) -> bool:
+        deadline = time.monotonic() + wait_s
+        while True:
+            if self._try():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1)
+
+    def _try(self) -> bool:
+        import os
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self.path, "a+b")  # noqa: SIM115 - held open for the life of the lock
+        try:
+            fh.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            return False
+        fh.truncate(0)
+        fh.write(str(os.getpid()).encode())
+        fh.flush()
+        self.fh = fh
+        return True
+
+    def holder(self) -> str:
+        try:
+            return self.path.read_text(encoding="utf-8").strip() or "?"
+        except OSError:
+            return "?"
+
+    def release(self) -> None:
+        if self.fh is None:
+            return
+        try:
+            import os
+
+            self.fh.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        self.fh.close()
+        self.fh = None
+
+
+LOCK_WAIT_S = 30.0  # a restart's old watcher may take a few seconds to let go
+
+
+def watch_lock_path() -> Path:
+    from asxbot.log import logs_dir
+
+    return logs_dir().parent / "arena_watch.lock"
+
+
+# The watcher's asx.com.au budget (26 Sep 2026, LEARNINGS #25's lesson for the collector):
+# at most this long per cycle fetching new PDFs, and this long retrying earlier failures.
+PDF_BUDGET_S = 45.0
+PDF_RETRY_BUDGET_S = 20.0
+
+
+def _guard(what: str, fn, *args, **kwargs):
+    """Run one stage of the cycle; log its failure and carry on. Every stage that touches
+    Google Drive or the network goes through here or its own try (E2, 26 Sep 2026: an
+    unguarded write in the loop could end the watcher, and with it every stop)."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001 - one stage failing must never stop the watcher
+        log.exception("%s failed: %s", what, e)
+        return None
+
+
 def watch(
     arena: Arena,
     pb: Playbook,
@@ -952,26 +1111,49 @@ def watch(
 
     `pb` is the announcements playbook; `others` are the other enabled playbooks run in the
     same loop (from 2026-09-24, the day trader). Every playbook's fills, stops and flat
-    sweep are worked every cycle.
+    sweep are worked every cycle - since 26 Sep 2026 at the top of the cycle and again
+    between the slow stages (each announcement, the reaction looks, the day trader's scan
+    can each cost minutes of model calls), with the v2 rule bot's 10:30 decision alongside
+    them, so none of them waits behind an agent.
 
     `until` is an HH:MM Sydney time to stop at, so the scheduled task starts a fresh
-    process each morning rather than leaving one running for days.
+    process each morning rather than leaving one running for days. With "auto" it is the
+    day's watcher stop time, one minute after announcements end; at the stop the page is
+    polled one last time, so what was released up to 19:30 (20:30) is seen.
+
+    Refuses to run beside another watcher (WatcherLock): raises WatcherAlreadyRunning.
     """
+    lock = WatcherLock()
+    if not lock.acquire(wait_s=LOCK_WAIT_S):
+        raise WatcherAlreadyRunning(
+            f"another arena watcher is already running (pid {lock.holder()}, lock "
+            f"{lock.path}); refusing to start a second one, which would trade twice"
+        )
+    try:
+        _watch(arena, pb, once, interval_s, until, others)
+    finally:
+        lock.release()
+
+
+def _watch(arena, pb, once, interval_s, until, others) -> None:
     from asxbot.alerts import Alerts
     from asxbot.announcements.http import PacedClient
     from asxbot.announcements.live import LivePoller, in_hours, is_trading_day
 
     cfg = arena.cfg
     interval_s = interval_s or float(cfg.get("collector.poll_interval_s", 60))
-    client = PacedClient(
+    # The watcher's own client (26 Sep 2026): a 15 s timeout and one retry, not the
+    # collector's 60 s x 5 tries x 4 attempts, which could hold this single-threaded loop
+    # for half an hour per PDF in an asx.com.au outage - fills, stops, the 10:30 rule and
+    # the 15:50 sweep all waiting. Same pacing, same %PDF checks.
+    client = PacedClient.inline(
         cfg.data_dir / "announcements" / "cache",
         cfg.get("collector.user_agent"),
         pause_s=float(cfg.get("collector.request_pause_s", 3.0)),
-        max_retries=int(cfg.get("collector.max_retries", 4)),
-        backoff_base_s=float(cfg.get("collector.backoff_base_s", 10)),
     )
     alerts = Alerts(cfg.data_dir)
-    poller = LivePoller(cfg.data_dir, client, alerts, arena.universe, fetch_pdfs=True)
+    poller = LivePoller(cfg.data_dir, client, alerts, arena.universe, fetch_pdfs=True,
+                        pdf_budget_s=PDF_BUDGET_S)  # fmt: skip
     arena.fetch_pdf = poller.fetch_pdf  # a missed PDF is fetched again when it matters
     win = announcement_window(cfg)
     hours = (win[0].strftime("%H:%M"), win[1].strftime("%H:%M"))
@@ -1006,15 +1188,32 @@ def watch(
     # which is a manual test and must not overwrite the scheduled watcher's heartbeat.
     hb = None if once else Heartbeat(cfg.data_dir, stop_at).start()
     ended = "crashed"
+
+    def rest(seconds: float, why: str) -> None:
+        """End the cycle (the watchdog's stuck-cycle check) and wait, never past the stop."""
+        if hb is not None:
+            hb.cycle_end()
+        if stop_at is not None:
+            seconds = max(1.0, min(seconds, (stop_at - datetime.now(SYD)).total_seconds()))
+        _sleep(seconds, why)
+
     try:
         while True:
             now = datetime.now(SYD)
+            if hb is not None:
+                hb.cycle_start(now)
             if alert:
-                alert.flush_passes(now)  # a digest an hour, only if the hour had something
+                # a digest an hour, only if the hour had something (Drive: guarded)
+                _guard("the hourly digest", alert.flush_passes, now)
             if stop_at is not None and now >= stop_at:
+                if is_trading_day(now.date()):
+                    # One last poll, at or after the stop (19:31), so what the ASX released
+                    # up to 19:30 is seen (26 Sep 2026; the watcher stopped at 19:25).
+                    _poll_and_handle(arena, pb, others, poller, handled, datetime.now(SYD),
+                                     final=True)  # fmt: skip
                 if alert:
                     # The last part-hour, if it had anything; nothing after today's summary.
-                    alert.flush_passes(now, force=True)
+                    _guard("the last digest", alert.flush_passes, datetime.now(SYD), force=True)
                 log.info("reached the stop time %s; the watcher is done for today", until)
                 ended = "stopped"
                 return
@@ -1026,17 +1225,25 @@ def watch(
                 )  # fmt: skip
                 if once:
                     return
-                wait = min(300, max(30, (start - now).total_seconds()))
-                _sleep(wait, "waiting for the warm-up to start")
+                rest(min(300, max(30, (start - now).total_seconds())),
+                     "waiting for the warm-up to start")  # fmt: skip
                 continue
             if not is_trading_day(now.date()):
                 log.info("not an ASX trading day; nothing to watch")
                 if once:
                     return
-                _sleep(1800, "not an ASX trading day")
+                rest(1800, "not an ASX trading day")
                 continue
+            fed = False
             if not caught_up:
+                # The feed is checked BEFORE the catch-up (26 Sep 2026): a catch-up look is
+                # a decision like any other, and the feed's state (IBKR or not, paused or
+                # not) must be this morning's, not the default of a feed never checked.
+                _feed_check(arena, now)
+                fed = True
                 caught_up = True
+                # A (re)start in hours: the books' stops before the catch-up's model calls.
+                _fast_stages(arena, pb, others)
                 try:
                     done = catch_up(arena, pb, now)
                     if done:
@@ -1045,33 +1252,22 @@ def watch(
                     log.exception("catch-up failed: %s", e)
             if not in_hours(now, *hours) and not once:
                 log.info("outside announcement hours %s-%s Sydney; sleeping", *hours)
-                _sleep(300, "outside announcement hours")
+                rest(300, "outside announcement hours")
                 continue
             # The live-data feed checks IB Gateway and writes its status every cycle, before
             # the open too. Until 25 Sep 2026 it did so only when prices were asked for: from
             # 07:30 to 10:00 the status sat unwritten and the feed said "IBKR" while Gateway
             # was not ready (and then dead), so the pre-open looks were labelled IBKR live
             # though their quotes came from Yahoo (LEARNINGS #25).
-            _feed_check(arena, now)
-            try:
-                new = poller.poll_once(now)
-            except Exception as e:  # noqa: BLE001
-                log.error("poll failed: %s", e)
-                new = []
-            for a in new:
-                if not a.price_sensitive or a.code not in arena.universe:
-                    continue
-                if a.ids_id in handled:
-                    continue
-                handled.add(a.ids_id)
-                _save_handled(cfg.data_dir, now.date(), handled)
-                log.info("working announcement %s %s", a.code, a.headline[:70])
-                try:
-                    # Its own time, not the cycle's: the announcement before it may have
-                    # spent minutes in model calls.
-                    handle_announcement(arena, pb, a, datetime.now(SYD))
-                except Exception as e:  # noqa: BLE001
-                    log.exception("handling %s failed: %s", a.code, e)
+            if not fed:
+                _feed_check(arena, now)
+
+            # The time-critical work first (26 Sep 2026): fills, stops, targets, the v2
+            # rule bot's 10:30 decision and the flat sweep, before anything that calls an
+            # agent. On 25 Sep the 10:30 decision could wait behind reaction looks.
+            _fast_stages(arena, pb, others)
+
+            _poll_and_handle(arena, pb, others, poller, handled, now)
 
             # Every stage below reads the clock again. `now` from the top of the cycle can be
             # minutes old by here - each announcement above may have cost two model calls -
@@ -1081,29 +1277,20 @@ def watch(
 
             # The yardstick's entries (v1): once a day, before the open.
             if pb.version < 2:
-                try:
-                    yardstick_entries(arena, pb, now)
-                except Exception as e:  # noqa: BLE001
-                    log.exception("the yardstick's entries failed: %s", e)
+                _guard("the yardstick's entries", yardstick_entries, arena, pb, now)
 
             # Fills, stops and targets, every cycle, for every playbook.
             _work_all(arena, (pb, *others))
 
             # Keep the short universe current. Stale means the arena starts refusing shorts in
             # real index members, silently, which is how TUA was refused twice on 23 September.
-            _refresh_short_universe(arena, now)
+            _guard("the short-universe refresh", _refresh_short_universe, arena, now)
 
             # The system checks itself, every cycle. A fault here is shouted, not logged.
-            try:
-                selfcheck.report(arena, pb, now)
-            except Exception as e:  # noqa: BLE001 - the checks must never stop the watcher
-                log.exception("the self-checks failed to run: %s", e)
+            _guard("the self-checks", selfcheck.report, arena, pb, now)
 
             # The horizon exit, every cycle: a position that has run its sessions is closed.
-            try:
-                horizon_exit(arena, pb, now)
-            except Exception as e:  # noqa: BLE001
-                log.exception("the horizon exit failed: %s", e)
+            _guard("the horizon exit", horizon_exit, arena, pb, now)
 
             # Intraday work on the minute bars (from 2026-09-24): announcements v2's rule bot
             # and reaction looks, and the day trader's scan. Each in its own try: one failing
@@ -1124,18 +1311,22 @@ def watch(
                 except Exception as e:  # noqa: BLE001
                     log.exception("the re-look failed: %s", e)
 
+            # PDFs that failed earlier, tried again within a small budget (26 Sep 2026).
+            _guard("the PDF retries", poller.retry_pdfs, datetime.now(SYD), PDF_RETRY_BUDGET_S)
+
             # Before the close, settle the day's Level 1 positions. A flat-at-close playbook
             # (v2, the day trader) is closed by code from the sweep time on, every cycle, so
             # a fill the delayed feed shows late is still closed when it is seen.
             now = datetime.now(SYD)
             sweep_at, deadline = preclose_window(cfg)
             if sweep_at <= now.astimezone(SYD).time() < deadline and not pb.flat_at_close:
-                for r in sweep_before_close(arena, pb, now):
+                for r in _guard("the pre-close sweep", sweep_before_close, arena, pb, now) or []:
                     log.info("pre-close %s: %s", r["ticker"], r["action"])
-            _flat_sweeps(arena, (pb, *others), now)
+            _fast_stages(arena, pb, others)
 
             # The close itself: one message with the day's totals. Once a day, after the
             # pre-close sweep has had its say, so the balances in it are settled ones.
+            now = datetime.now(SYD)
             if alert and now.astimezone(SYD).time() >= deadline:
                 try:
                     if alert.session_summary(session_summary_text(arena, pb, now), now):
@@ -1145,13 +1336,78 @@ def watch(
 
             if once:
                 return
-            _sleep(interval_s, "between polls")
+            rest(interval_s, "between polls")
     except KeyboardInterrupt:
         ended = "interrupted"
         raise
     finally:
         if hb is not None:
             hb.stop(ended)
+
+
+def _poll_and_handle(arena, pb, others, poller, handled: set, now: datetime,
+                     final: bool = False) -> list:  # fmt: skip
+    """One poll of the ASX page, and every new price-sensitive announcement in the universe
+    worked in turn, with the fast stages between them. Never raises."""
+    cfg = arena.cfg
+    try:
+        new = poller.poll_once(now)
+    except Exception as e:  # noqa: BLE001
+        log.error("%spoll failed: %s", "the last " if final else "", e)
+        return []
+    if final:
+        log.info("the last poll of the day, at %s: %d new", f"{now:%H:%M:%S}", len(new))
+    worked = []
+    for a in new:
+        if not a.price_sensitive or a.code not in arena.universe:
+            continue
+        if a.ids_id in handled:
+            continue
+        handled.add(a.ids_id)
+        try:
+            _save_handled(cfg.data_dir, now.date(), handled)
+        except Exception as e:  # noqa: BLE001 - Drive refused; the next save carries it
+            # 26 Sep 2026: this write sat outside the try, so a moment of Drive refusing it
+            # ended the watcher. The set in memory still stops it being worked twice today.
+            log.error("could not save the handled list (%s); working %s anyway", e, a.code)
+        log.info("working announcement %s %s", a.code, a.headline[:70])
+        try:
+            # Its own time, not the cycle's: the announcement before it may have spent
+            # minutes in model calls.
+            handle_announcement(arena, pb, a, datetime.now(SYD))
+            worked.append(a.ids_id)
+        except Exception as e:  # noqa: BLE001
+            log.exception("handling %s failed: %s", a.code, e)
+        # Between slow stages: an announcement can cost minutes of model calls.
+        _fast_stages(arena, pb, others)
+    return worked
+
+
+def _fast_stages(arena: Arena, pb: Playbook, others) -> None:
+    """Fills, stops and targets for every book; the v2 rule bot's decision once it is due
+    (10:30); the flat sweep for flat-at-close playbooks (15:50). Cheap, time-critical, and
+    run before and between the slow stages (26 Sep 2026). Never raises."""
+    pbs = (pb, *others)
+    _work_all(arena, pbs)
+    _v2_bot_now(arena, pb)
+    _flat_sweeps(arena, pbs, datetime.now(SYD))
+
+
+def _v2_bot_now(arena: Arena, pb: Playbook) -> None:
+    """The v2 rule bot's once-a-day decision, if it is due. v2_flow.v2_bot_cycle does nothing
+    once the day is decided or missed, so calling it often costs one small file read."""
+    if getattr(pb, "version", 1) < 2:
+        return
+    from asxbot.arena import v2_flow
+
+    now = datetime.now(SYD)
+    try:
+        measure = time_cls.fromisoformat(str(pb.yardstick().get("measure_at", "10:30")))
+        if now.astimezone(SYD).time() < measure:
+            return
+        v2_flow.v2_bot_cycle(arena, pb, day_view(arena, now), now)
+    except Exception as e:  # noqa: BLE001
+        log.exception("the v2 rule bot failed: %s", e)
 
 
 def _work_all(arena: Arena, pbs) -> None:
@@ -1166,43 +1422,93 @@ def _work_all(arena: Arena, pbs) -> None:
                 log.exception("working %s %s failed: %s", p.key, kind, e)
 
 
+ROTATE_FROM, ROTATE_TO = time_cls(9, 50), time_cls(16, 12)
+
+
 def _feed_check(arena: Arena, now: datetime) -> None:
     try:
         view = day_view(arena, now)
         feed = view.feed
+        day = getattr(view, "day", now.astimezone(SYD).date())
+        codes: list[str] = []
+        if hasattr(feed, "pin") or hasattr(feed, "rotate"):
+            try:
+                codes = pinned_codes(arena, day)
+            except Exception as e:  # noqa: BLE001 - pinning is an optimisation, never a stop
+                log.warning("could not list the tier-1 stocks: %s", e)
         if hasattr(feed, "pin"):
             try:
-                feed.pin(pinned_codes(arena, getattr(view, "day", now.astimezone(SYD).date())))
-            except Exception as e:  # noqa: BLE001 - pinning is an optimisation, never a stop
+                feed.pin(codes)
+            except Exception as e:  # noqa: BLE001
                 log.warning("could not pin the tier-1 stocks: %s", e)
         if hasattr(feed, "check"):
             feed.check(now)
+        if hasattr(feed, "rotate") and _rotation_hours(now):
+            # Every cycle 09:50-16:12 (26 Sep 2026). Until then only the day trader's scan
+            # (10:00-15:45, and not while paused) subscribed and polled, so a v2 position
+            # opened before 10:00 or after 15:45 was never streamed: its stop and target
+            # worked from whatever bars happened to arrive.
+            try:
+                seen = set(codes)
+                rest = [c for c in _daytrader_universe(arena, day) if c not in seen]
+                feed.rotate([*codes, *rest], now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("the streaming rotation failed this cycle: %s", e)
     except Exception as e:  # noqa: BLE001 - a feed check must never stop the watcher
         log.exception("the live-data feed check failed: %s", e)
 
 
-def pinned_codes(arena: Arena, day: date) -> set[str]:
-    """Tier 1 of the streaming rotation (ibkr/feed.py): every stock that must be at
-    1-minute cadence whatever else is - held or with an order working in any arena book,
-    queued for a v2 reaction look, or with price-sensitive news since the last close."""
+def _rotation_hours(now: datetime) -> bool:
+    from asxbot.announcements.live import is_trading_day
+
+    local = now.astimezone(SYD)
+    return (local.weekday() < 5 and ROTATE_FROM <= local.time() <= ROTATE_TO
+            and is_trading_day(local.date()))  # fmt: skip
+
+
+def _daytrader_universe(arena: Arena, day: date) -> list[str]:
+    """The day trader's liquid universe for the day, from its day state (written by its
+    first scan or its pre-open history step); [] when it has none yet."""
+    from asxbot.arena.daytrader import load_state
+
+    try:
+        return [str(c).upper() for c in load_state(arena.cfg.data_dir, day).get("universe") or []]
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not read the day trader's universe: %s", e)
+        return []
+
+
+LIVE_LOOK = ("queued", "looking")  # reaction-queue items not decided yet
+
+
+def pinned_codes(arena: Arena, day: date) -> list[str]:
+    """Tier 1 of the streaming rotation (ibkr/feed.py), IN PRIORITY ORDER (26 Sep 2026; it
+    was an unordered set, and the feed cut it by name): first every stock held or with an
+    order working in any arena book, then those queued for a v2 reaction look not yet
+    decided, then those with price-sensitive news since the last close. A reaction look
+    already finished (looked, quiet, missed, halted, held) is not pinned for it."""
     from asxbot.arena.daytrader import news_today
     from asxbot.arena.reaction_v2 import load_queue
 
-    codes: set[str] = set()
+    held: list[str] = []
     try:
         for p in arena.playbooks():
             for kind in ("agent", "bot"):
                 acct = arena.account(p, kind)
-                codes |= {t for t, pos in acct.positions.items() if pos.qty}
-                codes |= {o.ticker for o in acct.orders.values() if o.working}
+                held += sorted(t for t, pos in acct.positions.items() if pos.qty)
+                held += sorted(o.ticker for o in acct.orders.values() if o.working)
     except Exception as e:  # noqa: BLE001
         log.warning("pinned codes: could not read the books: %s", e)
+    queued: list[str] = []
+    news: list[str] = []
     try:
-        codes |= {c for c in load_queue(arena.cfg.data_dir, day) if not c.startswith("_")}
-        codes |= news_today(arena.cfg.data_dir, day) & set(arena.universe)
+        q = load_queue(arena.cfg.data_dir, day)
+        queued = sorted(c for c, item in q.items() if not c.startswith("_")
+                        and str((item or {}).get("status", "queued")) in LIVE_LOOK)  # fmt: skip
+        news = sorted(news_today(arena.cfg.data_dir, day) & set(arena.universe))
     except Exception as e:  # noqa: BLE001
         log.warning("pinned codes: could not read today's news: %s", e)
-    return {str(c).upper() for c in codes}
+    return list(dict.fromkeys(str(c).upper() for c in (*held, *queued, *news)))
 
 
 def _entries_allowed(arena: Arena, now: datetime, codes=()) -> tuple[bool, str]:
@@ -1243,6 +1549,8 @@ def _intraday(arena: Arena, pb: Playbook, others) -> None:
             v2_flow.reaction_looks(arena, pb, view, datetime.now(SYD))
         except Exception as e:  # noqa: BLE001
             log.exception("the v2 reaction looks failed: %s", e)
+        # Between slow stages (26 Sep 2026): each reaction look is a decider call.
+        _fast_stages(arena, pb, others)
     for other in others:
         if other.key == "asx_daytrader":
             try:
@@ -1308,7 +1616,15 @@ def _handled_path(data_dir: Path, day: date) -> Path:
 
 def _load_handled(data_dir: Path, day: date) -> set[str]:
     p = _handled_path(data_dir, day)
-    return set(json.loads(p.read_text(encoding="utf-8"))) if p.exists() else set()
+    if not p.exists():
+        return set()
+    try:
+        return set(json.loads(p.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as e:
+        # 26 Sep 2026: an unreadable file raised straight out of the watcher's start. The
+        # screen, the queue and the order limits still stand between a repeat and a trade.
+        log.error("the handled list %s could not be read (%s); starting with none", p.name, e)
+        return set()
 
 
 def _save_handled(data_dir: Path, day: date, handled: set[str]) -> None:
@@ -1715,10 +2031,11 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
         )  # fmt: skip
 
         action, reason, model = "close", "the agent could not be reached; the level is intraday", ""
+        unavailable: dict = {}
         try:
             reply = call_agent(
                 DECIDER, prompt, expect_model=expected_model(cfg, "decider"), data_dir=cfg.data_dir,
-                purpose=f"pre-close {ticker}",
+                purpose=f"pre-close {ticker}", fresh_session=fresh_sessions_on(cfg),
             )  # fmt: skip
             model = reply.model
             d = parse_decision_action(reply.text)
@@ -1730,12 +2047,15 @@ def sweep_before_close(arena: Arena, pb: Playbook, now: datetime | None = None) 
         except AgentCallFailed as e:
             log.error("pre-close call failed for %s: %s", ticker, e)
             reason = f"the agent could not be reached ({e}); the level is intraday"
+            # Recorded as unavailable, not as the decider's own choice (26 Sep 2026); the
+            # position is still closed, the playbook's safe default.
+            unavailable = {"outcome": "agent_unavailable", "kind": getattr(e, "kind", "error")}
 
         pos.hold_asked_on = today
         ev.append(
             "arena_decisions",
             {"stage": "preclose", "ticker": ticker, "action": action, "reason": reason,
-             "model": model, "level": pb.level.number},  # fmt: skip
+             "model": model, "level": pb.level.number, **unavailable},  # fmt: skip
         )
 
         if action == "hold":

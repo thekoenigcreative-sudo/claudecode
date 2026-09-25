@@ -14,6 +14,13 @@ Two honest limits, printed with every report:
     days are counted as "not yet measurable" rather than quietly dropped;
   * the prices are yfinance, so a delisted stock is simply absent. That biases this
     measurement the same way it biases everything else here - upward.
+
+Since 26 Sep 2026 (H13): each playbook's screen is scored on its own (v1's retired records
+no longer mix with v2's), and a v2 `deferred` record - an announcement put off while the
+live feed was down, screened again when it was back - is not a rejection and is left out.
+The 10-session horizon is v1's holding period; v2 holds intraday, so its rows measure a
+horizon it does not trade. Changing the horizon is a change to the measurement and waits
+for Rick's OK; the report says so.
 """
 
 from __future__ import annotations
@@ -29,13 +36,23 @@ from asxbot.log import get_logger
 
 log = get_logger("asxbot.arena.filtercost")
 SYD = ZoneInfo("Australia/Sydney")
-HORIZON = 10  # sessions, matching the playbook's holding period
+HORIZON = 10  # sessions: v1's holding period (v2 and the day trader hold intraday)
+# Screen records that are not verdicts (watch._handle_v2: the feed was down).
+NOT_A_VERDICT = ("deferred",)
+V1 = "asx_announcements (v1, retired)"
+V2 = "asx_announcements_v2"
+
+
+def playbook_of(r: dict) -> str:
+    """Which playbook's screen wrote a record: v2's are marked `v2`, v1's are not."""
+    return V2 if r.get("v2") else V1
 
 
 @dataclass
 class TestCost:
     test: str
     rejected: int = 0
+    playbook: str = ""
     measured: int = 0
     pending: int = 0  # not enough forward sessions yet
     no_prices: int = 0
@@ -86,7 +103,9 @@ def rejections(data_dir: Path, weeks: int, now: datetime | None = None) -> list[
                 continue
             if when < since or r.get("ok") or r.get("is_test"):
                 continue
-            key = (str(r.get("ids_id")), str(r.get("test")))
+            if r.get("test") in NOT_A_VERDICT:
+                continue  # put off while the feed was down, not screened out (H13)
+            key = (str(r.get("ids_id")), str(r.get("test")), playbook_of(r))
             if key in seen:
                 continue
             seen.add(key)
@@ -125,8 +144,14 @@ def forward_rel_return(daily, index, on: datetime, horizon: int = HORIZON):
     return s - i, ""
 
 
+def cost_key(playbook: str, test: str) -> str:
+    """How measure() keys a test: 'tick (asx_announcements_v2)'."""
+    return f"{test} ({playbook})"
+
+
 def measure(arena, weeks: int = 4, now: datetime | None = None) -> dict[str, TestCost]:
-    """Group every rejection by the test that made it, and score what it threw away."""
+    """Group every rejection by the playbook and the test that made it, and score what it
+    threw away. Keyed by cost_key(playbook, test)."""
     now = (now or datetime.now(SYD)).astimezone(SYD)
     cfg = arena.cfg
     daily_lookup = arena.daily_lookup()
@@ -136,8 +161,9 @@ def measure(arena, weeks: int = 4, now: datetime | None = None) -> dict[str, Tes
 
     for r in rejections(cfg.data_dir, weeks, now):
         test = str(r.get("test") or "?")
-        c = costs[test]
-        c.test = test
+        playbook = playbook_of(r)
+        c = costs[cost_key(playbook, test)]
+        c.test, c.playbook = test, playbook
         c.rejected += 1
         ticker = str(r.get("ticker", "")).upper()
         if ticker not in cache:
@@ -171,22 +197,27 @@ def render(costs: dict[str, TestCost], weeks: int, now: datetime | None = None) 
         "Prices are yfinance: delisted stocks are absent, so these figures are biased "
         "upward like everything else in this repo.",
         "",
-        "| screen test | rejected | measurable | median rel % | mean rel % | beat index % | "
-        "10%+ movers | biggest one that got away |",
-        "|---|---:|---:|---:|---:|---:|---:|---|",
+        f"Each playbook's screen is scored on its own. The {HORIZON}-session horizon is v1's "
+        "holding period; v2 is flat by the close, so its rows measure a horizon v2 does not "
+        "trade (changing it waits for Rick's OK). Announcements deferred while the live "
+        "feed was down are not rejections and are not counted.",
+        "",
+        "| playbook | screen test | rejected | measurable | median rel % | mean rel % | "
+        "beat index % | 10%+ movers | biggest one that got away |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---|",
     ]
 
     def f(x, nd=1):
         return "n/a" if x != x else f"{x:,.{nd}f}"
 
-    for test in sorted(costs, key=lambda t: -costs[t].rejected):
-        c = costs[test]
+    for key in sorted(costs, key=lambda k: (costs[k].playbook, -costs[k].rejected)):
+        c = costs[key]
         best = (
             f"{c.best[0]} {c.best[1]}: {c.best[2]:+.1f}%" if c.best else "—"
         )
         L.append(
-            f"| {c.test} | {c.rejected} | {c.measured} | {f(c.median, 2)} | {f(c.mean, 2)} | "
-            f"{f(c.win_rate)} | {c.big_movers} | {best} |"
+            f"| {c.playbook or '?'} | {c.test} | {c.rejected} | {c.measured} | "
+            f"{f(c.median, 2)} | {f(c.mean, 2)} | {f(c.win_rate)} | {c.big_movers} | {best} |"
         )
     total = sum(c.rejected for c in costs.values())
     pending = sum(c.pending for c in costs.values())

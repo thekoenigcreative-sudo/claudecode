@@ -14,7 +14,12 @@ build restarted the watcher at 10:52, mid-session. Now:
 The tasks: `ASXBot Arena Warmup`, `Arena Watchdog`, `Arena Evening`, `Chat`, `IB Gateway`,
 `IB Gateway Supervisor`, `IBKR Preflight`, `Filter Cost`, `IBKR History Fetch` (added 25 Sep evening). `scripts\register_release_tasks.ps1`
 points each at its shim (backing up the definition to `data\task_backups\`); only the action
-changes.
+changes. The scripts that create tasks (`register_ibgateway_tasks.ps1`, `register_chat_task.ps1`,
+`schedule_watchdog.ps1`) point them at the shims too (26 Sep; before that they pointed at this
+checkout). Run `deploy.py` before any of them: it writes the shims. Since 26 Sep every task's
+working folder is `%LOCALAPPDATA%\asx-bot` (a task can start while Google Drive is not
+mounted) and no trigger time carries a UTC offset (with one, a 07:30 start fires at 08:30 on
+daylight saving); the scripts do the same.
 
 ## Deploying
 
@@ -31,10 +36,13 @@ or `scripts\watcher.py restart`; the chat's, `schtasks /end` then `/run /tn "ASX
 
 ## The market-hours lock
 
-`scripts\watcher.py stop|start|restart` and `deploy.py` refuse between 07:25 and 19:25 Sydney
-on an ASX trading day unless `--force --reason "..."` (logged to `logs\watcher_control.log`
+`scripts\watcher.py stop|restart` and `deploy.py` refuse between 07:25 and the watcher's stop
+time (19:31 Sydney, 20:31 in daylight saving; 19:25 until 26 Sep) on an ASX trading day
+unless `--force --reason "..."` (logged to `logs\watcher_control.log`
 or `RELEASE.json`), and `watcher.py` refuses whenever any arena account holds a position or
-has an order working, forced or not (`asxbot.arena.lock`). The rule is in CLAUDE.md.
+has an order working, forced or not (`asxbot.arena.lock`). `start` of a watcher that is DOWN
+(its heartbeat not "running", or its process gone) is allowed at any time, positions or not,
+and refused if one is running. The rule is in CLAUDE.md.
 
 ## Checking what runs
 

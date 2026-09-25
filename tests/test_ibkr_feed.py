@@ -431,7 +431,9 @@ def test_the_live_data_check(cfg):
     assert S.check_live_data(cfg, now).ok  # no status yet: the watcher has not started
     _status(cfg, now - timedelta(minutes=2))
     c = S.check_live_data(cfg, now)
-    assert not c.ok and c.facts["login_needed"] and "Yahoo" in c.detail
+    # Worded 26 Sep 2026: entries pause, nothing decides on Yahoo.
+    assert not c.ok and c.facts["login_needed"] and "new entries are paused" in c.detail
+    assert "Yahoo" not in c.detail
     _status(cfg, now - timedelta(minutes=40), "ibkr", connected=True, server_ok=True,
             refused=False)  # fmt: skip
     c = S.check_live_data(cfg, now)
@@ -441,7 +443,11 @@ def test_the_live_data_check(cfg):
     assert S.check_live_data(cfg, now).ok
 
 
-def test_rick_is_told_to_log_in_once_in_one_line(cfg, monkeypatch):
+def test_the_self_check_leaves_an_ibkr_outage_to_the_doctor_while_it_speaks(cfg, monkeypatch):
+    """26 Sep 2026: the self-check's own "log in again ... on delayed Yahoo prices" line is
+    gone (it fired for any down state, and said Yahoo). While the connection doctor has an
+    episode open, the failure is recorded, not sent; without the doctor it is sent as any
+    self-check is. More in tests/test_ops_review.py."""
     sent = []
     arena = SimpleNamespace(cfg=cfg, broker=SimpleNamespace(
         notifier=SimpleNamespace(send=lambda text: sent.append(text))))  # fmt: skip
@@ -449,15 +455,13 @@ def test_rick_is_told_to_log_in_once_in_one_line(cfg, monkeypatch):
     down = S.Check("live_data", False, "IBKR unavailable", facts={"login_needed": True},
                    items=["refused"])  # fmt: skip
     monkeypatch.setattr(S, "run_checks", lambda a, p, n: [down])
+    monkeypatch.setattr(S, "doctor_speaking", lambda now: "login_needed")
     for k in range(4):  # all morning, and past the hourly repeat
         S.report(arena, None, now + timedelta(minutes=45 * k))
-    assert sent == [S.LOGIN_LINE] and "\n" not in S.LOGIN_LINE
-    monkeypatch.setattr(S, "run_checks", lambda a, p, n: [S.Check("live_data", True, "ok")])
+    assert sent == [] and not hasattr(S, "LOGIN_LINE") and not hasattr(S, "BACK_LINE")
+    monkeypatch.setattr(S, "doctor_speaking", lambda now: "")  # the doctor is not there
     S.report(arena, None, now + timedelta(hours=4))
-    assert sent == [S.LOGIN_LINE, S.BACK_LINE]  # one line when it is back (25 Sep)
-    monkeypatch.setattr(S, "run_checks", lambda a, p, n: [down])
-    S.report(arena, None, now + timedelta(hours=5))  # a new outage is told again
-    assert sent == [S.LOGIN_LINE, S.BACK_LINE, S.LOGIN_LINE]
+    assert len(sent) == 1 and "SELF-CHECK: live_data" in sent[0]
 
 
 # --------------------------------------------------------------------------
@@ -468,7 +472,8 @@ def test_the_report_counts_decisions_by_prices(cfg):
     from asxbot.arena.daytrader import save_state
 
     pb = SimpleNamespace(data_basis="delayed data - rehearsal until IBKR live prices")
-    assert R.data_line(pb, {}) == pb.data_basis
+    # A day with no decisions says so (26 Sep 2026, H5), not the frozen label.
+    assert R.data_line(pb, {}) == R.NO_DECISIONS == "no entry decisions today"
     assert R.data_line(pb, {DELAYED_LABEL: 4}) == pb.data_basis
     save_state(cfg.data_dir, DAY, {"signals": [{"data": F.LIVE_LABEL}, {"data": F.LIVE_LABEL},
                                                {"data": F.FALLBACK_LABEL}]})  # fmt: skip

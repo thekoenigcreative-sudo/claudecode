@@ -57,6 +57,7 @@ def main() -> int:
             fh.write(f"{stamp()}  ABORTED (ibgateway): {REPO} is not available. Google Drive "
                      "is not mounted, which usually means nobody is logged in.\n")  # fmt: skip
         return 1
+    os.chdir(REPO)  # 26 Sep 2026: never the folder the task started in
     sys.path.insert(0, str(RELEASE / "src"))
     from asxbot import proc as hidden
     from asxbot.ibkr import credentials

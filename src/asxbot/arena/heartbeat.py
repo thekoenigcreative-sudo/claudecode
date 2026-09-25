@@ -15,6 +15,12 @@ every minute with:
     handle);
   * quiet_until / quiet_why - a wait the watcher announced in advance (a sleep, or a model
     call that may take up to its timeout), during which a silent log is expected;
+  * wait_ended    - when the last announced wait ended;
+  * cycle_started / cycle_finished - when the main loop's current cycle began, and when the
+    last one ended (26 Sep 2026). On 25 Sep a cycle ran 24 minutes (10:52-11:17) while still
+    logging: the watchdog saw a live, talkative watcher, and fills, stops and the 10:30 rule
+    waited. The watchdog now calls a cycle stuck when it has run more than 6 minutes outside
+    any announced wait;
   * state         - running | stopped (reached its stop time) | crashed.
 
 The main loop never writes the file itself, so a slow write (Google Drive) can never
@@ -78,6 +84,9 @@ class Heartbeat:
         self.last_record: datetime | None = None
         self.quiet_until: datetime | None = None
         self.quiet_why = ""
+        self.wait_ended: datetime | None = None
+        self.cycle_started: datetime | None = None
+        self.cycle_finished: datetime | None = None
         self.state = "running"
         self.last_write_error = ""
         self._handler = _Activity(self)
@@ -97,8 +106,18 @@ class Heartbeat:
             "last_record": iso(self.last_record),
             "quiet_until": iso(self.quiet_until),
             "quiet_why": self.quiet_why,
+            "wait_ended": iso(self.wait_ended),
+            "cycle_started": iso(self.cycle_started),
+            "cycle_finished": iso(self.cycle_finished),
             "state": self.state,
         }
+
+    # The main loop only sets these; the background thread writes them (no I/O in the loop).
+    def cycle_start(self, now: datetime | None = None) -> None:
+        self.cycle_started = now or _now()
+
+    def cycle_end(self, now: datetime | None = None) -> None:
+        self.cycle_finished = now or _now()
 
     def write(self) -> bool:
         try:
@@ -144,7 +163,7 @@ class Heartbeat:
             yield
         finally:
             self.quiet_until, self.quiet_why = prior
-            self.last_activity = _now()
+            self.last_activity = self.wait_ended = _now()
 
 
 @contextmanager

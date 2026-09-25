@@ -813,21 +813,24 @@ def test_the_supervisor_check_tells_rick_once_when_gateway_needs_him_and_once_wh
     c = S.check_gateway_supervisor(now)
     assert not c.ok and c.facts["login_needed"] and "approval on the phone" in c.detail
 
+    # 26 Sep 2026: the supervisor tells Rick when Gateway needs him and when it is back; the
+    # self-check no longer sends its own lines. While the connection doctor has an episode
+    # open the failure is recorded, not sent; without the doctor it is an ordinary check.
     sent = []
     arena = SimpleNamespace(cfg=cfg, broker=SimpleNamespace(notifier=SimpleNamespace(
         send=lambda text: sent.append(text) or True)))  # fmt: skip
     monkeypatch.setattr(S, "run_checks", lambda a, p, n: [S.check_gateway_supervisor(n)])
+    monkeypatch.setattr(S, "doctor_speaking", lambda now: "login_needed")
     S.report(arena, None, now)
     S.report(arena, None, now + timedelta(minutes=2))
-    assert len(sent) == 1 and sent[0].startswith("IB Gateway needs you")  # once, one line
+    assert sent == []
     state.write_text(json.dumps({
         "last_check": (now + timedelta(minutes=4)).isoformat(timespec="seconds"),
         "last_result": "NONE: healthy", "outage": None,
     }), encoding="utf-8")  # fmt: skip
     S.report(arena, None, now + timedelta(minutes=5))
-    assert sent[-1] == S.BACK_LINE and sent.count(S.BACK_LINE) == 1
     S.report(arena, None, now + timedelta(minutes=6))
-    assert sent.count(S.BACK_LINE) == 1
+    assert sent == []  # no "back" line from the self-check either
     # the task itself silent in its hours is a failure
     stale = {"last_check": (now - timedelta(minutes=20)).isoformat(), "last_result": "x",
              "outage": None}  # fmt: skip

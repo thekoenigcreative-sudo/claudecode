@@ -80,7 +80,20 @@ def _position(raw: dict) -> Position:
     raw = dict(raw)
     if "target_exit_at_open" in raw:
         raw.setdefault("target_past_when_armed", raw.pop("target_exit_at_open"))
-    return Position(**raw)
+    return Position(**_known(Position, raw))
+
+
+def _known(cls, raw: dict) -> dict:
+    """The keys of `raw` this version knows (26 Sep 2026). A book saved by a newer release
+    can carry fields an older one has never heard of; the older process (the chat, running
+    until its next start) keeps loading it instead of failing on the first new key."""
+    from dataclasses import fields
+
+    names = {f.name for f in fields(cls)}
+    extra = sorted(set(raw) - names)
+    if extra:
+        log.debug("ignoring %s fields this version does not know: %s", cls.__name__, extra)
+    return {k: v for k, v in raw.items() if k in names}
 
 @dataclass
 class ArenaOrder:
@@ -148,6 +161,16 @@ class ArenaOrder:
     good_till: str = ""
     # Trade management to give the position this order opens (Position.manage).
     manage: dict = field(default_factory=dict)
+    # The flat-by-close sweep's order (26 Sep 2026): it takes the whole position out before
+    # the close, so a resting take-profit it replaces is cancelled, and a target reached
+    # while it works does not cancel it (broker.submit, broker._work_bar).
+    flat: bool = False
+    # The code that recorded the order: the release's commit, or "checkout" (26 Sep 2026,
+    # G10), so every decision can be traced to the code that made it.
+    release: str = ""
+    # Short borrow the position had been charged when this order closed it (26 Sep 2026), so
+    # a round trip's net can take it off after the position is gone (scoreboard.round_trips).
+    borrow: float = 0.0
 
     @property
     def remaining(self) -> int:
@@ -156,6 +179,20 @@ class ArenaOrder:
     @property
     def working(self) -> bool:
         return self.status == "pending_fill"
+
+    @property
+    def is_flat(self) -> bool:
+        """The flat sweep's order: marked, or (an order recorded before the mark existed, or
+        by a caller that does not pass it) placed by the sweep, whose model says so."""
+        return bool(self.flat) or (
+            self.side in ("sell", "cover") and str(self.model).startswith(FLAT_MODEL)
+        )
+
+    @property
+    def resting_take_profit(self) -> bool:
+        """A take-profit the broker raised (a target exit or the day trader's half-off): a
+        resting limit at a price the market may never reach again."""
+        return self.order_type == "target"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -168,10 +205,16 @@ class ArenaOrder:
         for k, blank in (
             ("order_type", "limit"), ("fills", []), ("worked_through", ""),
             ("trigger_price", None), ("open_note", ""), ("good_till", ""), ("manage", {}),
+            ("flat", False), ("release", ""), ("borrow", 0.0),
         ):  # fmt: skip
             if d[k] == blank:
                 del d[k]
         return d
+
+
+# The model the flat sweep (v2_flow.flatten) records on its orders. An order whose model
+# starts with this is the sweep's even when `flat` was not passed.
+FLAT_MODEL = "code (pre-close sweep: flat)"
 
 
 def _order(raw: dict) -> ArenaOrder:
@@ -180,7 +223,7 @@ def _order(raw: dict) -> ArenaOrder:
     raw = dict(raw)
     if "decision_at" in raw:
         raw.setdefault("decided_at", raw.pop("decision_at"))
-    return ArenaOrder(**raw)
+    return ArenaOrder(**_known(ArenaOrder, raw))
 
 
 @dataclass
@@ -240,12 +283,27 @@ class Account:
         return sorted(self.positions)
 
     def closing_qty_working(self, ticker: str) -> int:
-        """Shares of `ticker` already working to be sold or covered (unfilled remainders of
-        live closing orders, stop and target exits included)."""
+        """Shares of `ticker` already committed to being sold or covered: the unfilled rest of
+        a stop exit, of the flat sweep's order, and of any exit order someone placed.
+
+        Not a resting take-profit (a target exit or the day trader's half-off) since 26 Sep
+        2026 (B2/D2). Such a limit may never fill, and counting it made the flat sweep sell
+        only the rest of the position: on a part-filled half-off the other half stayed
+        overnight, and a target reached after the sweep began left `flatten` placing 0. The
+        broker never lets two exits sell more than is held (_work_bar), and the flat sweep's
+        order cancels a resting take-profit it replaces (broker.submit)."""
         return sum(
             o.remaining for o in self.orders.values()
             if o.working and o.ticker == ticker and o.side in ("sell", "cover")
+            and not o.resting_take_profit
         )  # fmt: skip
+
+    def resting_take_profits(self, ticker: str) -> list[ArenaOrder]:
+        """Working take-profits in `ticker` the broker raised (targets and half-offs)."""
+        return [
+            o for o in self.orders.values()
+            if o.working and o.ticker == ticker and o.resting_take_profit
+        ]  # fmt: skip
 
 
 class AccountStore:

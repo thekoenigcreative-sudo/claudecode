@@ -38,10 +38,16 @@ The exit code is what the PowerShell version gave the task: 1 if the repo is not
 or asxbot cannot be started, else 0 whatever the steps returned (their codes are in the
 log). The task restarts a failed run up to three times, and a restart must never send a
 second report.
+
+The watcher now stops at 19:31 (20:31), a minute after announcements end, with one last
+poll (26 Sep 2026; it stopped at 19:25). So before settling, this waits - up to 15
+minutes, with a line in the log - for a running watcher to finish, and the books are still
+settled by one process at a time.
 """
 
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -132,6 +138,37 @@ def run_step(log, args, env: dict) -> int:
     return code
 
 
+WATCHER_WAIT_S = 15 * 60
+WATCHER_POLL_S = 10
+
+
+def watcher_still_running() -> str:
+    """What the heartbeat says if the day's watcher is still running, else ""."""
+    try:
+        from asxbot.arena.lock import watcher_running
+
+        running, said = watcher_running(REPO / "data")
+        return said if running else ""
+    except Exception:  # noqa: BLE001 - cannot tell: do not hold the evening up
+        return ""
+
+
+def wait_for_watcher(log, sleep=time.sleep, limit_s: float = WATCHER_WAIT_S) -> bool:
+    """Wait for a running watcher to exit (its last poll is at 19:31). True if it has."""
+    said = watcher_still_running()
+    if not said:
+        return True
+    write(log, f"waiting for the watcher to stop before settling: {said}")
+    waited = 0.0
+    while said and waited < limit_s:
+        sleep(WATCHER_POLL_S)
+        waited += WATCHER_POLL_S
+        said = watcher_still_running()
+    write(log, f"the watcher has stopped ({waited:.0f} s)" if not said else
+          f"the watcher is still running after {limit_s / 60:.0f} min; settling anyway")
+    return not said
+
+
 def open_log():
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -170,6 +207,7 @@ def main() -> int:
             return 0
         write(log, "")
         write(log, f"=== evening report {now} ===")
+        wait_for_watcher(log)
         for args in STEPS:
             run_step(log, args, env)
     mirror()

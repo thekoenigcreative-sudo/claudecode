@@ -18,7 +18,14 @@ Limits enforced here:
     value toward the leverage cap.
 
 Exits are never blocked. A daily loss limit that stopped you closing a losing position
-would be a risk control that increases risk.
+would be a risk control that increases risk. Since 26 Sep 2026 that includes the runaway
+guards (orders per day, largest and smallest order value): until then they ran before the
+closing branch, so a flat sweep of a leftover under the $500 minimum was refused every cycle
+and the shares stayed overnight (D3).
+
+Rick's pause (26 Sep 2026, arena/pause.py): while entries are paused for the day, every
+OPENING order is refused - every playbook, the agent's book and the rule bot's alike, so
+the comparison stays fair. Exits are never paused.
 
 Time: every check here, and the order itself, uses the broker's clock at the moment of the
 call - the decision time. The caller's `now` is only the time its picture of the market was
@@ -32,8 +39,14 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from asxbot.arena.accounts import Account
-from asxbot.arena.broker import CLOSING_SIDES, OPENING_SIDES, SESSION_CLOSE, ArenaBroker
+from asxbot.arena.accounts import FLAT_MODEL, Account
+from asxbot.arena.broker import (
+    CLOSING_SIDES,
+    OPENING_SIDES,
+    SESSION_CLOSE,
+    ArenaBroker,
+    release_stamp,
+)
 from asxbot.arena.hours import order_window
 from asxbot.arena.levels import Playbook
 from asxbot.config import Config
@@ -69,16 +82,23 @@ def arena_place_order(
     now: datetime | None = None,
     good_till: datetime | None = None,
     manage: dict | None = None,
+    flat: bool = False,
 ):
+    """Check one order against every limit and hand it to the broker. `flat` marks the flat
+    sweep's order (also recognised by its model, FLAT_MODEL): it replaces any resting
+    take-profit in the ticker (broker.submit)."""
     decided = broker.clock()
     data_as_of = now or decided
     ticker = ticker.upper().strip()
     side = side.lower().strip()
+    flat = bool(flat) or str(model).startswith(FLAT_MODEL)
     events = EventLog(cfg.data_dir)
     req = {
         "account": acct.name, "playbook": playbook.key, "level": playbook.level.number,
         "ticker": ticker, "side": side, "qty": qty, "limit": limit, "stop": stop,
         "target": target, "placed_by": placed_by, "model": model,
+        # The code that made the decision (26 Sep 2026, G10).
+        "release": release_stamp(),
     }  # fmt: skip
 
     def refuse(why: str) -> ArenaOrderRefused:
@@ -105,24 +125,7 @@ def arena_place_order(
 
     guards = cfg.get("arena.guards") or {}
     local = decided.astimezone(SYD)
-
-    orders_today = sum(
-        1 for o in acct.orders.values() if o.decided_at[:10] == local.date().isoformat()
-    )
-    if orders_today >= int(guards.get("max_orders_per_day", 40)):
-        raise refuse(f"runaway guard: already {orders_today} orders today on {acct.name}")
-
     value = qty * limit
-    if value > float(guards.get("max_order_value_aud", 8000)) + 1e-6:
-        raise refuse(
-            f"order value {value:,.2f} exceeds the guard "
-            f"{float(guards.get('max_order_value_aud', 8000)):,.2f}"
-        )
-    if value < float(guards.get("min_order_aud", 500)) - 1e-6:
-        raise refuse(
-            f"order value {value:,.2f} is below the minimum order "
-            f"{float(guards.get('min_order_aud', 500)):,.2f}"
-        )
 
     pos = acct.positions.get(ticker)
     lvl = playbook.level
@@ -156,6 +159,32 @@ def arena_place_order(
             )
     else:
         # --- opening trades: the full set of limits -------------------------
+        # Rick's "no new entries today" switch, first: nothing else matters while it is on.
+        from asxbot.arena.pause import paused
+
+        stop_entries, why_paused = paused(cfg.data_dir, decided)
+        if stop_entries:
+            raise refuse(f"{why_paused}; exits are unaffected")
+
+        # The runaway guards: opening orders only since 26 Sep 2026 (D3). Every order
+        # recorded today counts toward the daily number, exits and code's stops included,
+        # as before; only the refusal is limited to openings.
+        orders_today = sum(
+            1 for o in acct.orders.values() if o.decided_at[:10] == local.date().isoformat()
+        )
+        if orders_today >= int(guards.get("max_orders_per_day", 40)):
+            raise refuse(f"runaway guard: already {orders_today} orders today on {acct.name}")
+        if value > float(guards.get("max_order_value_aud", 8000)) + 1e-6:
+            raise refuse(
+                f"order value {value:,.2f} exceeds the guard "
+                f"{float(guards.get('max_order_value_aud', 8000)):,.2f}"
+            )
+        if value < float(guards.get("min_order_aud", 500)) - 1e-6:
+            raise refuse(
+                f"order value {value:,.2f} is below the minimum order "
+                f"{float(guards.get('min_order_aud', 500)):,.2f}"
+            )
+
         start, end = order_window(cfg, local.date())  # follows Sydney daylight saving
         if not (start <= local.time() <= end):
             raise refuse(
@@ -324,6 +353,7 @@ def arena_place_order(
         hold=hold,
         good_till=good_till,
         manage=manage,
+        flat=flat and side in CLOSING_SIDES,
     )
     events.append("arena_orders", {**req, "outcome": "accepted", "order_id": o.order_id})
     return o

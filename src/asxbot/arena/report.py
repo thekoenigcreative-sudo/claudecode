@@ -19,7 +19,8 @@ from zoneinfo import ZoneInfo
 from asxbot.alerts import Alerts
 from asxbot.announcements.history import status as archive_status
 from asxbot.arena.runtime import Arena
-from asxbot.arena.scoreboard import Score, agent_vs_bot, format_table, score
+from asxbot.arena.scoreboard import Score, agent_vs_bot, format_table, round_trips, score
+from asxbot.arena.tally import _read as read_day
 from asxbot.data.universe import asx200_provenance
 from asxbot.io import write_text_atomic
 from asxbot.log import EventLog
@@ -93,7 +94,12 @@ def scorecard_facts(arena: Arena, day: date, scores: list[Score]) -> list[dict]:
     """The daily scorecard (Rick's brief, 25 Sep): per playbook and account, today's P&L
     after fees, the running total, green/red days so far, the worst day and the worst
     peak-to-trough drop, how much of the gross profit the best trade is, and which prices
-    today's decisions were made on (playbook_facts carries the per-decision counts)."""
+    today's decisions were made on (playbook_facts carries the per-decision counts).
+
+    Trades are round trips, won after every cost, since 26 Sep 2026 (D4,
+    scoreboard.round_trips). Until then closing orders were counted, each less only its own
+    brokerage: 25 Sep's day-trader bot read "4 trades, 4 won, 56% from the best trade"; it
+    had 3 round trips, 1 won after costs, and 92% of the gross profit from NWL."""
     by_acct = {s.account: s for s in scores}
     out = []
     for pb in arena.playbooks():
@@ -105,10 +111,9 @@ def scorecard_facts(arena: Arena, day: date, scores: list[Score]) -> list[dict]:
             prices = arena.broker.prices(acct, day)
             start = arena.store.day_start_equity(acct, day)
             equity = acct.equity(prices)
-            closed = [o for o in acct.orders.values()
-                      if o.status in ("filled", "partial") and o.filled_qty
-                      and o.side in ("sell", "cover")]  # fmt: skip
-            gains = sorted((float(o.realised) for o in closed if o.realised > 0), reverse=True)
+            trips = round_trips(acct)
+            closed = [t for t in trips if t.is_closed]
+            gains = sorted((t.gross for t in closed if t.gross > 0), reverse=True)
             gross_gain = sum(gains)
             row["accounts"].append({
                 "kind": kind, "name": acct.name,
@@ -118,8 +123,10 @@ def scorecard_facts(arena: Arena, day: date, scores: list[Score]) -> list[dict]:
                 "green_days": s.green_days if s else 0, "red_days": s.red_days if s else 0,
                 "worst_day_pct": s.worst_day_pct if s else 0.0,
                 "max_drawdown_pct": s.max_drawdown_pct if s else 0.0,
-                "trades": len(closed), "wins_after_fees": sum(
-                    1 for o in closed if float(o.realised) - float(o.commission) > 0),
+                "trades": len(closed), "open_trades": len(trips) - len(closed),
+                "wins_after_fees": sum(1 for t in closed if t.net > 0),
+                "round_trips": [t.to_dict() for t in closed
+                                if (t.closed or "")[:10] == day.isoformat()],
                 "best_trade": round(gains[0], 2) if gains else None,
                 "best_trade_share_pct": (round(gains[0] / gross_gain * 100, 1)
                                          if gains and gross_gain > 0 else None),
@@ -139,13 +146,20 @@ def scorecard_lines(facts: dict) -> list[str]:
             best = ("-" if a["best_trade_share_pct"] is None
                     else f"{a['best_trade_share_pct']:.0f}% from the best trade "
                          f"({a['best_trade']:+,.2f})")  # fmt: skip
+            still = f", {a['open_trades']} still open" if a.get("open_trades") else ""
             lines.append(
                 f"  {a['kind'].upper()}: today {a['today_after_fees']:+,.2f} after fees, total "
                 f"{a['total_after_fees']:+,.2f} (fees {a['fees_total']:,.2f}); green/red days "
                 f"{a['green_days']}/{a['red_days']}; worst day {a['worst_day_pct']:+.2f}%, worst "
-                f"drop {a['max_drawdown_pct']:.2f}%; trades {a['trades']} ({a['wins_after_fees']} "
-                f"won after fees); gross profit {best}"
+                f"drop {a['max_drawdown_pct']:.2f}%; round trips {a['trades']} "
+                f"({a['wins_after_fees']} won after all costs{still}); gross profit {best}"
             )
+            for t in a.get("round_trips") or []:
+                lines.append(
+                    f"    {escape(t['ticker'])} {t['side']}: {t['net']:+,.2f} after costs "
+                    f"(gross {t['gross']:+,.2f}, fees {t['entry_fees'] + t['exit_fees']:,.2f}"
+                    + (f", borrow {t['borrow']:,.2f}" if t["borrow"] else "") + ")"
+                )
         pb = next((p for p in facts.get("playbooks", []) if p["key"] == row["key"]), None)
         if pb and pb.get("data_by_decision"):
             lines.append("  prices per decision: " + ", ".join(
@@ -212,14 +226,21 @@ def decision_data(cfg, day: date) -> dict[str, dict[str, int]]:
     return out
 
 
+NO_DECISIONS = "no entry decisions today"
+
+
 def data_line(pb, counts: dict[str, int] | None) -> str:
     """The playbook's data label for the day: its frozen label when every decision was on
-    Yahoo's delayed feed (or there were none), otherwise how many were on which prices."""
+    Yahoo's delayed feed, otherwise how many were on which prices. With no decisions at all
+    it says so (26 Sep 2026, H5): until then a day without decisions printed the frozen
+    "delayed data - rehearsal until IBKR live prices", on days that ran on IBKR's prices."""
     from asxbot.arena.intraday import DELAYED_LABEL
 
     counts = counts or {}
-    if not counts or set(counts) == {DELAYED_LABEL}:
-        return pb.data_basis or ""
+    if not counts:
+        return NO_DECISIONS
+    if set(counts) == {DELAYED_LABEL}:
+        return pb.data_basis or DELAYED_LABEL
     return "prices per decision: " + ", ".join(f"{n} on {k}" for k, n in counts.items())
 
 
@@ -239,21 +260,52 @@ def playbook_facts(arena: Arena, day: date) -> list[dict]:
     ]  # fmt: skip
 
 
+UNAVAILABLE_OUTCOMES = ("decider_failed", "agent_unavailable")
+
+
+def unavailable_text(text) -> bool:
+    """A recorded answer that was really no answer: the agent could not be asked (a failed
+    call, "agent unavailable (<kind>)"), including the day trader's pre-26 Sep wording for it,
+    "no answer within 60s (...)", which every failed call got whatever the cause."""
+    t = str(text or "").strip().lower()
+    return t.startswith(("agent unavailable", "no answer within", "decider failed"))
+
+
+def _look_unavailable(v: dict) -> bool:
+    """A v2 reaction look whose decider call failed: recorded "looked", but nobody looked."""
+    out = v.get("outcome") or {}
+    if not isinstance(out, dict):
+        return False
+    return bool(out.get("unavailable")) or unavailable_text(out.get("error"))
+
+
 def v2_facts(cfg, day: date) -> dict:
-    """Announcements v2 today: the reaction looks and the rule bot, from their files."""
+    """Announcements v2 today: the reaction looks and the rule bot, from their files.
+
+    A look whose decider call failed is counted as `agent unavailable`, not as a look (26 Sep
+    2026, G1): its queue status says "looked", but the agent never saw it."""
     from asxbot.arena.reaction_v2 import load_bot_state, load_queue
 
     q = {k: v for k, v in load_queue(cfg.data_dir, day).items() if not k.startswith("_")}
     by: dict[str, int] = {}
     for v in q.values():
-        by[v.get("status", "?")] = by.get(v.get("status", "?"), 0) + 1
+        status = v.get("status", "?")
+        if status == "looked" and _look_unavailable(v):
+            status = "agent unavailable"
+        by[status] = by.get(status, 0) + 1
     bot = load_bot_state(cfg.data_dir, day)
+    pre_open_failed = [
+        r for r in read_day(cfg.data_dir, "arena_decisions", day)
+        if r.get("v2") == "pre_open" and r.get("outcome") in UNAVAILABLE_OUTCOMES
+    ]  # fmt: skip
     return {
         "stocks_with_news_queued": len(q),
         "reaction_looks_by_outcome": by,
+        "looks_agent_unavailable": by.get("agent unavailable", 0),
+        "pre_open_agent_unavailable": len(pre_open_failed),
         "looked": [
             {"ticker": k, "outcome": v.get("outcome"), "reaction": v.get("reaction")}
-            for k, v in q.items() if v.get("status") == "looked"
+            for k, v in q.items() if v.get("status") == "looked" and not _look_unavailable(v)
         ],
         "rule_bot": {
             "status": bot.get("status"), "why": bot.get("why"),
@@ -277,20 +329,66 @@ def daytrader_facts(cfg, day: date) -> dict:
         return any(str((x.get(k) or {}).get("skipped", "")).startswith("uneconomic")
                    for k in ("bot", "agent"))  # fmt: skip
 
+    def unavailable(a: dict) -> bool:
+        # The day trader's record of a failed call: {"unavailable": kind, ...} from 26 Sep
+        # 2026; before that a "rejection" reading "no answer within 60s (...)".
+        return bool(a.get("unavailable")) or unavailable_text(a.get("rejected"))
+
+    rejected = [a for a in agent if "rejected" in a and not unavailable(a)]
     return {
         "universe": len(st.get("universe", [])),
         "setups_found": len(sig),
         "by_setup": by,
         "bot_orders": sum(1 for x in sig if (x.get("bot") or {}).get("order_id")),
         "agent_took": sum(1 for a in agent if a.get("order_id")),
-        "agent_rejected": sum(1 for a in agent if "rejected" in a),
+        # The agent's own rejections only: a call that failed is not a rejection (G1).
+        "agent_rejected": len(rejected),
+        "agent_unavailable": sum(1 for a in agent if unavailable(a)),
         "agent_not_asked": sum(1 for a in agent if a.get("skipped")),
+        # Too old to be offered to anyone by the scan (26 Sep 2026, D11: 28 of 67 on 25 Sep,
+        # uncounted), and those that went stale while the agent was busy with earlier calls.
+        "stale": sum(1 for x in sig if str(x.get("skipped") or "").startswith("stale")),
+        "agent_stale_by_its_turn": sum(
+            1 for a in agent if str(a.get("skipped") or "").startswith("stale")),
+        "after_last_entry": sum(1 for x in sig if "last entry" in str(x.get("skipped") or "")),
         # Filtered by the scanner before anyone was asked: 1R at the largest size the rules
         # allow below 2x the round-trip cost (Rick's brief, 25 Sep; daytrader.economic).
         "uneconomic": sum(1 for x in sig if uneconomic(x)),
         "history": st.get("history"),
-        "rejections": [a.get("rejected") for a in agent if "rejected" in a][:8],
+        "rejections": [a.get("rejected") for a in rejected][:8],
     }
+
+
+def agent_unavailable_facts(cfg, day: date) -> dict:
+    """Every agent call that failed on `day` (arena_agent_calls records with ok False, written
+    for every call since 26 Sep 2026, G1): how many, from when, and why. The Trader chat's
+    calls are counted apart: they are not trading decisions."""
+    from asxbot.arena.agents import FAILURE_WORDS
+
+    fails = [r for r in read_day(cfg.data_dir, "arena_agent_calls", day) if r.get("ok") is False]
+    chat = [r for r in fails if str(r.get("purpose", "")).startswith("chat")]
+    trading = [r for r in fails if not str(r.get("purpose", "")).startswith("chat")]
+    kinds: dict[str, int] = {}
+    for r in trading:
+        k = str(r.get("kind") or "error")
+        kinds[k] = kinds.get(k, 0) + 1
+    out = {"calls_failed": len(trading), "by_kind": kinds, "chat_calls_failed": len(chat),
+           "first": None, "last": None, "line": ""}  # fmt: skip
+    if trading:
+        times = sorted(r["syd"] for r in trading)
+        out["first"], out["last"] = f"{times[0]:%H:%M}", f"{times[-1]:%H:%M}"
+        why = ", ".join(
+            f"{FAILURE_WORDS.get(k, k)}" + (f" {n}" if len(kinds) > 1 else "")
+            for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])
+        )
+        span = (f"from {out['first']}" if out["first"] == out["last"]
+                else f"from {out['first']} to {out['last']}")  # fmt: skip
+        out["line"] = (
+            f"the agent could not be asked {len(trading)} time"
+            f"{'s' if len(trading) != 1 else ''} {span}: {why}"
+        )
+        out["purposes"] = sorted({str(r.get("purpose", "")) for r in trading})[:10]
+    return out
 
 
 def gather(arena: Arena, day: date | None = None) -> dict:
@@ -298,10 +396,13 @@ def gather(arena: Arena, day: date | None = None) -> dict:
     cfg = arena.cfg
     day = day or datetime.now(SYD).date()
     iso = day.isoformat()
-    ev = EventLog(cfg.data_dir)
 
     def today_rows(kind: str) -> list[dict]:
-        return [r for r in ev.read(kind) if str(r.get("ts", ""))[:10] == iso]
+        # The Sydney day, not the UTC date string of the record (26 Sep 2026, D5): event
+        # times are UTC, so comparing their first ten characters dropped everything before
+        # 10:00 Sydney (11:00 from 5 Oct): 470 of 837 announcements on 25 Sep, and every
+        # pre-open order. Rehearsal records are left out, as in the day's other counts.
+        return read_day(cfg.data_dir, kind, day)
 
     scores: list[Score] = []
     positions: list[dict] = []
@@ -309,11 +410,12 @@ def gather(arena: Arena, day: date | None = None) -> dict:
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
             arena.broker.accrue_borrow(acct, day)
-            prices = arena.broker.prices(acct, day)
+            marks = arena.broker.price_marks(acct, day)
+            prices = {t: px for t, (px, _) in marks.items()}
             arena.broker.mark_to_market(acct, day)
             scores.append(score(arena.store, acct, prices))
             for t, p in acct.positions.items():
-                px = prices.get(t, p.avg_cost)
+                px, priced = marks.get(t, (p.avg_cost, "cost (no traded price known)"))
                 positions.append(
                     {
                         "account": acct.name,
@@ -321,6 +423,9 @@ def gather(arena: Arena, day: date | None = None) -> dict:
                         "qty": p.qty,
                         "avg_cost": round(p.avg_cost, 4),
                         "last": round(px, 4),
+                        # What `last` is (26 Sep 2026, D13): the day's last trade, the last
+                        # traded price before the day, or cost when no price is known.
+                        "priced": priced,
                         "open_pnl": round((px - p.avg_cost) * p.qty, 2),
                         "stop": p.stop,
                         "target": p.target,
@@ -366,8 +471,16 @@ def gather(arena: Arena, day: date | None = None) -> dict:
         changed = settings_changed(cfg, day)
     except Exception:  # noqa: BLE001 - a malformed history entry must never stop the report
         changed = [{"line": "(config.yaml arena.agents.history could not be read)"}]
+    try:
+        unavailable = agent_unavailable_facts(cfg, day)
+    except Exception:  # noqa: BLE001 - a count must never stop the report
+        unavailable = {"calls_failed": 0, "line": "(the failed agent calls could not be read)"}
     return {
         "day": iso,
+        # Agent calls that failed today (usage limit, timeout, error): said plainly, first,
+        # because every "rejected" or "looked" after the first one may be a call that never
+        # happened (26 Sep 2026, G1).
+        "agent_unavailable": unavailable,
         # Deliberate changes Rick made to the agents' model or effort (/model, /think in the
         # Trader chat) since the previous report. Every one must be mentioned.
         "settings_changed": changed,
@@ -445,6 +558,9 @@ def render_plain(facts: dict) -> str:
         lines.append(
             "Settings changed: " + "; ".join(escape(str(c.get("line", ""))) for c in changed)
         )
+    down = facts.get("agent_unavailable") or {}
+    if down.get("line"):
+        lines.append(f"<b>AGENT UNAVAILABLE</b>: {escape(down['line'])}")
     lines.append("")
     for p in facts.get("playbooks", []):
         lines.append(f"<b>{p['title']}</b>: {p['test']}" + (f" - {p['data']}" if p["data"] else ""))
@@ -453,8 +569,10 @@ def render_plain(facts: dict) -> str:
         lines.append(
             f"- day trader: {dt['setups_found']} setups found in {dt['universe']} stocks "
             f"({', '.join(f'{k} {v}' for k, v in dt['by_setup'].items()) or 'none'}); "
-            f"bot orders {dt['bot_orders']}; agent took {dt['agent_took']}, rejected "
-            f"{dt['agent_rejected']}"
+            f"{dt.get('stale', 0)} too stale to offer; bot orders {dt['bot_orders']}; agent "
+            f"took {dt['agent_took']}, rejected {dt['agent_rejected']}"
+            + (f", could not be asked {dt['agent_unavailable']}"
+               if dt.get("agent_unavailable") else "")  # fmt: skip
         )
     v2 = facts.get("announcements_v2_today")
     if v2:
@@ -463,6 +581,9 @@ def render_plain(facts: dict) -> str:
             f"looks {v2['reaction_looks_by_outcome'] or 'none'}; rule bot "
             f"{v2['rule_bot']['status'] or 'did not run'}, "
             f"{len(v2['rule_bot']['signals'])} signal(s)"
+            + (f"; pre-open looks the agent could not be asked: "
+               f"{v2['pre_open_agent_unavailable']}"
+               if v2.get("pre_open_agent_unavailable") else "")  # fmt: skip
         )
     lines += ["", "<b>Scorecard</b>", *scorecard_lines(facts)]
     lines += [
@@ -506,9 +627,11 @@ def render_plain(facts: dict) -> str:
     lines.append("<b>Open positions</b>")
     if facts["positions"]:
         for p in facts["positions"]:
+            priced = p.get("priced") or ""
             lines.append(
                 f"- {p['ticker']} {p['qty']:+d} @ {p['avg_cost']} now {p['last']} "
                 f"({p['open_pnl']:+,.2f}) stop {p['stop']} [{p['account']}]"
+                + (f" - {escape(priced)}" if priced and priced != "last trade that day" else "")
             )
     else:
         lines.append("- none")
@@ -538,6 +661,14 @@ def agent_brief(facts: dict) -> str:
         if changed
         else ""
     )
+    down = (facts.get("agent_unavailable") or {}).get("line") or ""
+    down_rule = (
+        "- The agents could not be asked at times today (FACTS agent_unavailable). Say so "
+        f"plainly near the top, in these words: '{down}'. Those setups and looks were never "
+        "decided: do not call them rejections or passes.\n"
+        if down
+        else ""
+    )
     return (
         "Write tonight's arena report for Rick, for Telegram.\n\n"
         "Rules:\n"
@@ -547,6 +678,7 @@ def agent_brief(facts: dict) -> str:
         "your yardstick bot, green days vs red days, and what you will watch next.\n"
         "- If you placed no trades, say why not - that is a real answer.\n"
         f"{settings_rule}"
+        f"{down_rule}"
         "- Index membership comes from FACTS asx200_list, which is authoritative and dated "
         f"(as of {(facts.get('asx200_list') or {}).get('as_of') or 'unknown'}). Never say "
         "from memory that a company is or is not an index member, or that a membership flag "
@@ -554,11 +686,14 @@ def agent_brief(facts: dict) -> str:
         "'Flag for Claude:', worded as a question to check - never as a fact in the report.\n"
         "- There are playbooks in FACTS playbooks. Report each separately, each against its "
         "own yardstick bot. Head each with its title and its `test` value word for word "
-        "(for example 'day 1 of 10 (v2)'), and its `data` label word for word - 'delayed data "
-        "- rehearsal until IBKR live prices' - so no one mistakes a rehearsal for a result.\n"
-        "- For the day trader say how many setups the scan found, how many you took and "
-        "rejected, and what the rule bot did (FACTS daytrader_today). For announcements v2 "
-        "say what the reaction looks and the rule bot did (FACTS announcements_v2_today).\n"
+        "(for example 'day 1 of 10 (v2)'), and its `data` value word for word, whatever it "
+        "says: it names the prices the day's decisions were made on.\n"
+        "- For the day trader say how many setups the scan found, how many were too stale to "
+        "offer, how many you took and rejected, how many you could not be asked about, and "
+        "what the rule bot did (FACTS daytrader_today). For announcements v2 say what the "
+        "reaction looks and the rule bot did (FACTS announcements_v2_today).\n"
+        "- Trades are round trips after every cost (FACTS scorecard: trades, wins_after_fees, "
+        "round_trips): never count a closing order as a trade.\n"
         "- Include the SCORECARD for each playbook, from FACTS scorecard, as its own short "
         "block: today's P&L after fees and the total for the agent and the bot, green/red "
         "days, the worst drop, how much of the profit is the best trade, and the prices per "

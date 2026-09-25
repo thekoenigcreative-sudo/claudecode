@@ -24,7 +24,10 @@ each resolves CURRENT at start, so the new release is used from each task's NEXT
 never starts, stops or restarts anything: scripts\\watcher.py does that, under the
 market-hours lock (asxbot.arena.lock), and this script refuses to change CURRENT inside that
 lock unless forced with a reason. Old releases are pruned, keeping the newest few plus
-CURRENT and PREVIOUS.
+CURRENT and PREVIOUS, every release deployed in the last 3 days, and every release a task
+last started from (logs\\releases.log): a task that runs for days - the chat - imports
+modules as it goes, from the release it started in (26 Sep 2026: six deploys between
+18:33 and 00:43 would have pruned the watcher's own release from under it).
 
 Settings and data are not in the release: ASXBOT_HOME (set by the shims) points every
 process at this checkout for config.yaml, .env, data/ and reports/.
@@ -36,10 +39,11 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -51,6 +55,8 @@ from asxbot import release as R  # noqa: E402
 
 SYD = ZoneInfo("Australia/Sydney")
 KEEP = 5
+KEEP_DAYS = 3  # never prune a release deployed more recently than this
+STARTED_FROM = re.compile(r"^\S+ \S+ (\S+): running from (\S+)\s*$")
 
 
 def git(*args: str) -> str:
@@ -130,25 +136,59 @@ def status(base: Path) -> int:
     return 0
 
 
-def prune(base: Path) -> None:
+def release_time(name: str) -> datetime | None:
+    """When a release was made, from its name (<yyyymmdd-hhmmss-sha10>), or None."""
+    try:
+        return datetime.strptime(name[:15], "%Y%m%d-%H%M%S").replace(tzinfo=SYD)
+    except ValueError:
+        return None
+
+
+def last_started(log: Path) -> dict[str, str]:
+    """task -> the release it last started from, per logs\\releases.log (the shims write a
+    "running from <release>" line at every task start)."""
+    out: dict[str, str] = {}
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        m = STARTED_FROM.match(line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+def prune(base: Path, now: datetime | None = None) -> list[str]:
+    """Delete old releases; returns the names deleted. Kept: CURRENT, PREVIOUS, the newest
+    KEEP, anything made in the last KEEP_DAYS days or whose age cannot be read, and the
+    release each task last started from (it may still be running from it)."""
+    now = now or datetime.now(SYD)
     keep = {R.pointer("CURRENT", base), R.pointer("PREVIOUS", base)}
+    keep |= set(last_started(base.parent / "logs" / "releases.log").values())
     dirs = sorted((d for d in base.iterdir() if d.is_dir() and not d.name.endswith(".partial")),
                   key=lambda d: d.name)  # fmt: skip
+    gone = []
     for d in dirs[:-KEEP]:
-        if d.name not in keep:
-            shutil.rmtree(d, ignore_errors=True)
+        made = release_time(d.name)
+        if d.name in keep or made is None or now - made < timedelta(days=KEEP_DAYS):
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        gone.append(d.name)
+    return gone
 
 
 def lock_or_exit(force: bool, reason: str, what: str) -> None:
     """The market-hours lock (asxbot.arena.lock): CURRENT is not changed in market hours
     without a forced, written reason. An open position does not block a deploy (nothing is
     restarted by it), but it is said."""
-    from asxbot.arena.lock import in_market_lock, open_exposure
+    from asxbot.arena.lock import LOCK_FROM, in_market_lock, lock_end, open_exposure
 
     now = datetime.now(SYD)
     if in_market_lock(now) and not (force and reason.strip()):
         sys.exit(
-            f"REFUSED: {now:%H:%M} Sydney is inside the market-hours lock (07:25-19:25 on a "
+            f"REFUSED: {now:%H:%M} Sydney is inside the market-hours lock "
+            f"({LOCK_FROM:%H:%M}-{lock_end(now.date()):%H:%M} on a "
             f"trading day); {what} would change what the next task start runs. "
             'Override with --force --reason "why" (recorded in RELEASE.json).'
         )

@@ -14,7 +14,7 @@ import pytest
 
 from asxbot.arena import selfcheck as S
 from asxbot.config import load_config
-from asxbot.log import EventLog
+from asxbot.log import WATCH_LOG, EventLog
 
 SYD = ZoneInfo("Australia/Sydney")
 NOW = datetime(2026, 9, 23, 11, 0, tzinfo=SYD)
@@ -273,7 +273,7 @@ def test_a_pre_open_order_is_timed_from_the_open_not_from_its_decision(cfg):
 
 # -- 6. an ERROR in the log ------------------------------------------------
 def _log_line(cfg, when: datetime, level: str, msg: str, logger: str = "asxbot.arena.watch"):
-    p = cfg.logs_dir / "asxbot.log"
+    p = cfg.logs_dir / WATCH_LOG
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(f"{when:%Y-%m-%d %H:%M:%S},123 {level} {logger}: {msg}\n")
@@ -465,7 +465,7 @@ def _stamped(path, when: datetime, msg: str = "asxbot.data.yf: yfinance batch 1-
 
 
 def test_the_08_14_failure_is_caught_once_the_log_is_5_minutes_behind(cfg, tmp_path):
-    log = cfg.logs_dir / "asxbot.log"
+    log = cfg.logs_dir / WATCH_LOG
     _stamped(log, T0814)
     with open(log, "a", encoding="utf-8") as fh:
         fh.write("Traceback (most recent call last):\n  a line with no stamp\n")
@@ -478,14 +478,14 @@ def test_the_08_14_failure_is_caught_once_the_log_is_5_minutes_behind(cfg, tmp_p
 
     c = S.check_log_growing(cfg, _beat(T0814 + timedelta(minutes=5)), str(out))
     assert not c.ok and c.count == 2
-    assert "asxbot.log (last line 08:14:12)" in c.detail
+    assert "arena_watch.log (last line 08:14:12)" in c.detail
     assert "arena_warmup.log (last line 08:14:12)" in c.detail
     assert "logged at 08:19:12" in c.detail
 
 
 def test_a_log_that_keeps_up_is_fine_and_either_file_alone_is_caught(cfg, tmp_path):
     later = T0814 + timedelta(minutes=9)
-    _stamped(cfg.logs_dir / "asxbot.log", later)
+    _stamped(cfg.logs_dir / WATCH_LOG, later)
     out = tmp_path / "arena_warmup.log"
     _stamped(out, later - timedelta(seconds=2))
     assert S.check_log_growing(cfg, _beat(later), str(out)).ok
@@ -514,10 +514,10 @@ def test_the_check_reads_the_heartbeat_file_and_the_launcher_log_it_is_told_of(
 
     beat = _beat(T0814 + timedelta(minutes=6))
     write_text_atomic(json.dumps(beat), H.heartbeat_path(cfg.data_dir))
-    _stamped(cfg.logs_dir / "asxbot.log", T0814 + timedelta(minutes=6))
+    _stamped(cfg.logs_dir / WATCH_LOG, T0814 + timedelta(minutes=6))
     out = tmp_path / "arena_warmup.log"
     _stamped(out, T0814)
-    assert S.check_log_growing(cfg).ok  # not told of the launcher's log: only asxbot.log
+    assert S.check_log_growing(cfg).ok  # not told of the launcher's log: only the watcher's
     monkeypatch.setenv("ASXBOT_STDOUT_LOG", str(out))
     c = S.check_log_growing(cfg)
     assert not c.ok and "arena_warmup.log" in c.detail
@@ -528,7 +528,7 @@ def test_the_check_reads_the_heartbeat_file_and_the_launcher_log_it_is_told_of(
 def test_a_silent_log_is_shouted_to_telegram_once(cfg, monkeypatch):
     from asxbot.alerts import Alerts
 
-    _stamped(cfg.logs_dir / "asxbot.log", T0814)
+    _stamped(cfg.logs_dir / WATCH_LOG, T0814)
     beat = {"at": T0814 + timedelta(minutes=6)}
     monkeypatch.setattr(
         S, "run_checks", lambda a, p, n: [S.check_log_growing(cfg, _beat(beat["at"]), "")]
@@ -541,7 +541,7 @@ def test_a_silent_log_is_shouted_to_telegram_once(cfg, monkeypatch):
     assert "SELF-CHECK: log_silent" in arena.sent[0] and "08:14:12" in arena.sent[0]
     assert Alerts(cfg.data_dir).is_active("log_silent")
 
-    _stamped(cfg.logs_dir / "asxbot.log", T0814 + timedelta(minutes=12))  # written again
+    _stamped(cfg.logs_dir / WATCH_LOG, T0814 + timedelta(minutes=12))  # written again
     beat["at"] = T0814 + timedelta(minutes=12)
     assert S.report(arena, None, beat["at"]) == []
     assert not Alerts(cfg.data_dir).is_active("log_silent") and len(arena.sent) == 1
