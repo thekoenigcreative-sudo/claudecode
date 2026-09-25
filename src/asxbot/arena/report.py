@@ -12,7 +12,7 @@ alerts acted on, trades placed, P&L against the matching bot, green days vs red 
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time
 from html import escape
 from zoneinfo import ZoneInfo
 
@@ -81,6 +81,66 @@ def test_day(pb, day: date) -> str:
     if k > n:
         return f"day {k} (v{pb.version}): past the {n}-day test, checkpoint due{tail}"
     return f"day {k} of {n} (v{pb.version}){tail}"
+
+
+COVERAGE_FROM = date(2026, 9, 28)  # the first day with a watcher day record (heartbeat.py)
+MARKET = (time(10, 0), time(16, 10))
+
+
+def watcher_coverage(data_dir, day: date) -> dict:
+    """How much of the session the watcher covered (26 Sep 2026, review D6), from its day
+    record (heartbeat.session_path): {"line", "candidate_partial", "gaps"}. A gap or a
+    stalled cycle inside 10:00-16:10 makes the day a CANDIDATE partial day - how such a
+    day counts in the 10 is Rick's call (TRACKER #57), so nothing is excluded here."""
+    from asxbot.announcements.live import is_trading_day
+    from asxbot.arena.heartbeat import read_session
+
+    if not is_trading_day(day):
+        return {"line": "", "candidate_partial": False, "gaps": []}
+    s = read_session(data_dir, day)
+    if s is None:
+        if day < COVERAGE_FROM:
+            return {"line": "", "candidate_partial": False, "gaps": []}
+        return {"line": "Watcher: NO RECORD of it running today - a candidate partial day",
+                "candidate_partial": True, "gaps": ["no record"]}  # fmt: skip
+
+    def t(x):
+        try:
+            v = datetime.fromisoformat(str(x))
+        except (TypeError, ValueError):
+            return None
+        return v if v.tzinfo else v.replace(tzinfo=SYD)
+
+    open_ = datetime.combine(day, MARKET[0], tzinfo=SYD)
+    close = datetime.combine(day, MARKET[1], tzinfo=SYD)
+    first, last = t(s.get("first_beat")), t(s.get("last_beat"))
+    bad = []
+    if first is None or first > open_:
+        bad.append(f"started {first:%H:%M}" if first else "no start")
+    if last is None or last < close:
+        bad.append(f"last seen {last:%H:%M}" if last else "no end")
+    for kind, spans in (("DOWN", s.get("gaps") or []), ("a cycle stalled", s.get("stalls") or [])):
+        for a, b in spans:
+            a, b = t(a), t(b)
+            if a is None or b is None or b <= open_ or a >= close:
+                continue
+            mins = (b - a).total_seconds() / 60
+            bad.append(f"{kind} {a:%H:%M}-{b:%H:%M} ({mins:.0f} min)")
+    span = f"{first:%H:%M}-{last:%H:%M}" if first and last else "?"
+    if not bad:
+        return {"line": f"Watcher: ran {span}, no gap in market hours",
+                "candidate_partial": False, "gaps": []}  # fmt: skip
+    return {"line": f"Watcher: ran {span}; in market hours {'; '.join(bad)} - a candidate "
+                    "partial day (how it counts is Rick's call)",
+            "candidate_partial": True, "gaps": bad}  # fmt: skip
+
+
+def _coverage(data_dir, day: date) -> dict:
+    try:
+        return watcher_coverage(data_dir, day)
+    except Exception as e:  # noqa: BLE001 - a coverage line must never stop the report
+        return {"line": f"Watcher coverage could not be read ({type(e).__name__})",
+                "candidate_partial": False, "gaps": []}  # fmt: skip
 
 
 def partial_day(pb, day: date) -> str:
@@ -495,6 +555,8 @@ def gather(arena: Arena, day: date | None = None) -> dict:
         # The daily scorecard (25 Sep): P&L after fees, green/red days, worst drop, the
         # best trade's share, prices per decision, and any partial day with its reason.
         "scorecard": scorecard_facts(arena, day, scores),
+        # How much of the session the watcher covered (26 Sep 2026, D6).
+        "watcher_coverage": _coverage(cfg.data_dir, day),
         "positions": positions,
         "alerts_seen": len(alerts_today),
         "alerts_acted_on": len({r.get("ticker") for r in orders_today if r.get("ticker")}),
@@ -585,7 +647,11 @@ def render_plain(facts: dict) -> str:
                f"{v2['pre_open_agent_unavailable']}"
                if v2.get("pre_open_agent_unavailable") else "")  # fmt: skip
         )
+    cov = facts.get("watcher_coverage") or {}
     lines += ["", "<b>Scorecard</b>", *scorecard_lines(facts)]
+    if cov.get("line"):
+        lines.append(("  NOT A FULL DAY - " if cov.get("candidate_partial") else "  ")
+                     + escape(cov["line"]))  # fmt: skip
     lines += [
         "",
         "<b>Scoreboard</b>",

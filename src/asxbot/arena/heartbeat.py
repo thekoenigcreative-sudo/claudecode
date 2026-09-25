@@ -23,6 +23,12 @@ every minute with:
     any announced wait;
   * state         - running | stopped (reached its stop time) | crashed.
 
+And a record of the DAY (26 Sep 2026, review D6): data/arena/sessions/<day>.json - when the
+watcher first and last beat, every gap between beats over 3 minutes (the process was not
+running, or the PC slept) and every stretch a cycle ran over 10 minutes outside an announced
+wait. A day the watcher was down was reported as an ordinary flat test day; now the evening
+report says how much of the session the watcher actually covered.
+
 The main loop never writes the file itself, so a slow write (Google Drive) can never
 stall trading, and a failed write is simply retried a minute later.
 """
@@ -43,12 +49,37 @@ from asxbot.io import write_text_atomic
 SYD = ZoneInfo("Australia/Sydney")
 FILE = "watcher_heartbeat.json"
 BEAT_S = 60
+BEAT_GAP_S = 180.0  # beats further apart than this: the watcher was not running
+STALL_S = 600.0  # a cycle running this long outside an announced wait: a stall
+SESSION_WRITE_S = 300.0  # the day record is written at least this often
 
 _current: Heartbeat | None = None
 
 
 def heartbeat_path(data_dir: Path) -> Path:
     return Path(data_dir) / "arena" / FILE
+
+
+def session_path(data_dir: Path, day) -> Path:
+    return Path(data_dir) / "arena" / "sessions" / f"{day.isoformat()}.json"
+
+
+def read_session(data_dir: Path, day) -> dict | None:
+    try:
+        body = json.loads(session_path(data_dir, day).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _t(s) -> datetime | None:
+    if not s:
+        return None
+    try:
+        t = datetime.fromisoformat(str(s))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=SYD)
 
 
 def read(data_dir: Path) -> dict | None:
@@ -75,6 +106,7 @@ class _Activity(logging.Handler):
 
 class Heartbeat:
     def __init__(self, data_dir: Path, stop_at: datetime | None = None, beat_s: float = BEAT_S):
+        self.data_dir = Path(data_dir)
         self.path = heartbeat_path(data_dir)
         self.pid = os.getpid()
         self.started = _now()
@@ -92,6 +124,8 @@ class Heartbeat:
         self._handler = _Activity(self)
         self._stopping = threading.Event()
         self._thread: threading.Thread | None = None
+        self._session: dict | None = None
+        self._session_written: datetime | None = None
 
     def payload(self, now: datetime | None = None) -> dict:
         def iso(t: datetime | None) -> str | None:
@@ -140,6 +174,53 @@ class Heartbeat:
     def _run(self) -> None:
         while not self._stopping.wait(self.beat_s):
             self.write()
+            self.session_beat()
+
+    def session_beat(self, now: datetime | None = None, final: bool = False) -> None:
+        """Update the day's record (data/arena/sessions/<day>.json). Never raises."""
+        try:
+            self._session_beat(now or _now(), final)
+        except Exception:  # noqa: BLE001 - the record must never stop the heartbeat
+            pass
+
+    def _session_beat(self, now: datetime, final: bool) -> None:
+        iso = lambda t: t.isoformat(timespec="seconds")  # noqa: E731
+        day = now.astimezone(SYD).date()
+        s = self._session
+        if s is None or s.get("day") != day.isoformat():
+            s = read_session(self.data_dir, day) or {
+                "day": day.isoformat(), "first_beat": iso(now), "last_beat": None,
+                "gaps": [], "stalls": [], "pids": [],
+            }  # fmt: skip
+            self._session = s
+        changed = False
+        last = _t(s.get("last_beat"))
+        if last is not None and (now - last).total_seconds() > BEAT_GAP_S:
+            s["gaps"].append([iso(last), iso(now)])
+            changed = True
+        if self.pid not in s["pids"]:
+            s["pids"].append(self.pid)
+            changed = True
+        started, finished = self.cycle_started, self.cycle_finished
+        quiet = self.quiet_until is not None and self.quiet_until > now
+        running = started is not None and (finished is None or finished < started)
+        if running and not quiet and (now - started).total_seconds() > STALL_S:
+            stalls = s["stalls"]
+            if stalls and stalls[-1][0] == iso(started):
+                stalls[-1][1] = iso(now)
+            else:
+                stalls.append([iso(started), iso(now)])
+            changed = True
+        s["last_beat"] = iso(now)
+        if final:
+            s["stopped"] = iso(now)
+        due = self._session_written is None or (
+            now - self._session_written).total_seconds() >= SESSION_WRITE_S  # fmt: skip
+        if changed or due or final:
+            p = session_path(self.data_dir, day)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            write_text_atomic(json.dumps(s, indent=1), p)
+            self._session_written = now
 
     def stop(self, state: str = "stopped") -> None:
         global _current
@@ -149,6 +230,7 @@ class Heartbeat:
         self.quiet_until = None
         self.quiet_why = ""
         self.write()
+        self.session_beat(final=True)
         if _current is self:
             _current = None
 
