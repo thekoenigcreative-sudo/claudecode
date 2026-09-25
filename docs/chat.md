@@ -23,6 +23,47 @@ messages. Sending is not affected, because only reading messages (getUpdates) is
 - A message sent while the chat was not running, and more than 30 minutes old when it
   starts, is not answered. The chat says so once.
 
+## Plain words (25 Sep 2026)
+
+Rick, 25 Sep: "i need to be able to just tell it things without commands". Every command
+below also works from an ordinary sentence, worked out in code (`src/asxbot/plain.py`, no
+model reads the words; `tests/test_plain.py` holds 70-odd phrasings to their meaning).
+Replies never tell Rick to type a command; the commands stay as shortcuts.
+
+| Rick says, for example | What happens |
+|---|---|
+| "how's it going today", "how did it go", "what happened yesterday", "give me an update" | The day from the records (`src/asxbot/arena/today.py`): the watcher, announcements v2's counts and reaction looks, the rule bot, the day trader's setups, orders, fills, both accounts, open positions. On a day with no records (a weekend) it answers for the last session on record and says so |
+| "what did it trade", "any trades today", "show me the fills" | Every fill (timed by its bar), the orders that did not fill, what the limits refused, with the recorded reasons |
+| "how much are we up", "what's the P&L" | Each playbook's agent and bot: equity, today's move, the total since the start |
+| "why did it pass on NWL", "what happened with hls", "tell me about REG" | That stock's day in time order from the records: news, screen, reader, decider (with its written reason), reaction look, 10:30 rule bot, day-trader setups (what the bot and the agent did), orders, fills, stop moves, the pre-close sweep. Nothing on record says so, and whether the day trader scanned it |
+| "show me the positions", "what are we holding" | `/positions` |
+| "is it running", "status", "are you there" | `/status` |
+| "stop", "cancel that", "stop it for today" | `/stop`. A "for today" adds that trading itself is not stopped from the chat: the watcher is never stopped in market hours or with a position open |
+| "use opus for the decider", "switch the reader to sonnet 5", "decider back to normal" | `/model`, the same strategy change. No agent named: "For the reader or the decider?", and the next message answers it |
+| "make the decider think harder", "reader effort low", "turn the reader's thinking down" | `/think`. "harder"/"less" step one level along minimal, low, medium, high, xhigh, max from the current level |
+| "what model is it on", "how hard is it thinking" | The models and levels, and how to switch them in words |
+| "start over", "new conversation", "reset the chat" | `/new`, `/reset` |
+| "can you make it ...", "from now on ..." | A change request, as before (read back, Build it button) |
+| "what changes have I asked for", "undo the last change" | `/changes`, `/undo` |
+| "answer them one at a time", "bundle my messages", "what happens if I message you while you're busy" | `/queue` |
+| "when does it start", "what are the trading hours" | Today's window from `arena/hours.py` |
+| "close the NWL position", "sell everything" | Refused in code: nothing in the chat can place, change or close an order |
+| "help", "what can you do" | `/help` |
+
+Order of precedence in `on_text`: slash commands; the answer to a change reader's open
+question; plain-word intents; the change-request check; the decider. A sentence that reads
+like a change request ("can you make it show positions first") stays a change request
+unless it is a setting done on the spot ("can you make the decider think harder"). A stock
+code is recognised from the ASX directory and ASX 200 list in `data/universe` (in capitals
+always; in lower case only when it is not an ordinary word, so "all" is a word and "ALL"
+is Aristocrat).
+
+Anything else still goes to the decider as a conversation. If it names a stock or talks
+about the day's trading, the message carries a FACTS ON RECORD block - the same summary
+and stock stories the chat would have sent - with the rule to answer from it and say "not
+on record" where it is silent, so the decider's account of the day rests on the records and
+not on its memory.
+
 ## Commands
 
 The Trader's own:
@@ -47,7 +88,8 @@ The shared ones (botctl, the same names and answers as in Jarvis's chat):
 | `/changes`, `/undo` | Lists recent change requests, or rolls back the last one |
 
 Jarvis's commands that don't fit a bot (`/restart`, `/config`, `/bash`, ...) answer with the
-reason. Any other `/command` gets "I don't know that command. /help lists them."
+reason. Any other `/command` gets "I don't know that one. Just say what you want in plain
+words ...".
 
 ## Change requests
 

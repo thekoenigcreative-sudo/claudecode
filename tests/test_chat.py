@@ -190,7 +190,8 @@ def test_commands_never_reach_the_decider(env):
     assert "no positions, no pending orders" in texts[3]
     assert "decider (decides the trades, and answers you here): Opus 5.5" in texts[4]
     assert "doesn't apply" in texts[7]
-    assert texts[8] == texts[9] == "I don't know that command. /help lists them."
+    assert texts[8] == texts[9] == chat.UNKNOWN_COMMAND
+    assert texts[8].startswith("I don't know that one. Just say what you want in plain words")
 
 
 def test_only_rick_is_answered(env):
@@ -283,7 +284,7 @@ def test_stop_drops_the_running_answer(env):
     env.decider.gate.set()  # the killed call returns late: its answer must be dropped
     chat.wait_idle(env.app, 10)
     assert "answer 1" not in env.tg.texts()
-    env.app.on_update(msg("still there?"))
+    env.app.on_update(msg("carry on with the story then"))
     chat.wait_idle(env.app, 10)
     assert env.tg.texts()[-1] == "answer 2"
 
@@ -577,12 +578,12 @@ def test_probe_runs_the_pipeline_and_prints_instead_of_sending(monkeypatch, quie
     oc = tmp_path / "openclaw.json"
     oc.write_text(json.dumps(OC))
     monkeypatch.setattr(botctl, "OPENCLAW_JSON", oc)
-    args = Namespace(probe="how was today?", button=None, no_agent=True)
+    args = Namespace(probe="what do you reckon?", button=None, no_agent=True)
     assert chat.main(args) == chat.EXIT_OK
     out = capsys.readouterr().out
     assert "--- to Rick (chat 8998104023) ---" in out
     assert "--no-agent: the decider was not called" in out
-    assert "Rick's message:\nhow was today?" in out
+    assert "Rick's message:\nwhat do you reckon?" in out
 
 
 def test_the_vendored_botctl_is_the_shared_module():

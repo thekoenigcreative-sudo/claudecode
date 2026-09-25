@@ -26,6 +26,7 @@ Rules for every session:
 - Commands are handled in code by src/asxbot/botctl.py, a VERBATIM copy of C:\Users\Richa\.cc-jobs\changes\botctl.py (shared by all Rick's bots). Never edit the copy; change the master and re-copy it (`python sync_botctl.py trader` there). Its process hook is pointed at asxbot.proc by chat.py.
 - `/model` and `/think` in the chat are STRATEGY CHANGES: they change the OpenClaw agent and write the new expectation into config.yaml (`arena.agents.models` / `arena.agents.effort`) with a dated entry in `arena.agents.history`, committed on its own (src/asxbot/arena/settings_history.py). The evening report lists them. What the agents are expected to run on lives in config.yaml; watch.py's READER_MODEL/DECIDER_MODEL are fallbacks only.
 - Nothing in the chat can place, change or approve an order.
+- **Plain words for everything (25 Sep, Rick: "i need to be able to just tell it things without commands").** Every command also works from an ordinary sentence, worked out in code in src/asxbot/plain.py (no model reads the words); a question about the day's trading is answered from the records by src/asxbot/arena/today.py, never guessed; a conversation turn that names a stock or the day's trading carries those records to the decider. Replies never tell Rick to type a command. A new command gets its plain phrasings and a line in tests/test_plain.py.
 
 ## Verification
 

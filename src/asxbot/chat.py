@@ -12,9 +12,18 @@ A message goes, in order, to:
      C:\\Users\\Richa\\.cc-jobs\\changes): OpenClaw's slash commands (/stop /queue /model
      /think /status /new /help ...) and change requests (/change /changes /undo);
   2. the Trader's own commands: /start (= /help) and /positions;
-  3. any other /command: "I don't know that command";
-  4. plain text: a change request if it reads like one ("can you make it..."), otherwise a
-     conversation turn with trader-decider in its own session, one at a time (/queue).
+  3. any other /command: "I don't know that one";
+  4. plain words (asxbot.plain, since 25 Sep: Rick, "i need to be able to just tell it
+     things without commands"): every command above from an ordinary sentence - "how's it
+     going today", "what did it trade", "stop it for today", "use opus for the decider",
+     "why did it pass on NWL", "show me the positions" - worked out in code, no model. A
+     question about the day's trading is answered from the arena's records
+     (asxbot.arena.today), never guessed. Replies never tell Rick to type a command;
+     the commands stay as shortcuts;
+  5. a change request if it reads like one ("can you make it..."), otherwise a
+     conversation turn with trader-decider in its own session, one at a time (/queue). A
+     question about the day's trading carries the day's records with it, so the decider
+     answers from them.
 
 Nothing here can place, change or approve an order: the decider is told so, and this code
 has no order path at all. /model and /think are strategy changes (arena/settings_history).
@@ -41,7 +50,8 @@ from zoneinfo import ZoneInfo
 import requests
 import yaml
 
-from asxbot import botctl, proc
+from asxbot import botctl, plain, proc
+from asxbot.arena import today as T
 from asxbot.arena.agents import (
     DECIDER,
     FALLBACK_EFFORT,
@@ -71,6 +81,7 @@ TYPING_EVERY_S = 4
 STALE_AFTER = timedelta(minutes=30)  # a message older than this at start-up is not answered
 LOCK_WAIT_S = 30  # a launcher restart can overlap the old instance's last seconds
 BACKOFF_START_S = 5.0  # Telegram unreachable: wait this, doubling to 5 minutes
+PENDING_FOR = timedelta(minutes=10)  # "For the reader or the decider?" waits this long
 
 PREFACE = """\
 This is Rick, writing to you directly in the Trader's own Telegram chat. It is a
@@ -82,20 +93,75 @@ conversation, not a watcher cycle: there is no announcement and no decision pack
   instead. Do not end with a DECISION block.
 - The arena is fake money. Never say an order was placed, approved or filled unless an
   arena record you have read shows the broker's order id.
-- If he asks you to change how the Trader works, tell him to send /change and what he wants.
+- If he asks you to change how the Trader works, tell him to say what he wants changed, in
+  his own words, in this chat (for example "can you make it ..."): it is read back to him
+  with a Build it button, and nothing changes until he taps it. You cannot change it.
+- Never tell him to type a command: everything here works from plain words.
+"""
 
-Rick's message:
+FACTS_RULE = """\
+The block below is what the arena's own records say about the day - accounts, orders,
+fills, decisions - gathered by code just now. It is the truth about what happened. Answer
+anything about the day's trading from it; where it is silent, say "not on record" rather
+than recall or guess, and never restate a number it does not contain.
+
+FACTS ON RECORD:
 """
 
 OWN_HELP = """\
-The Trader chat: talk to the decider, the agent that makes the arena's trades, about the \
-arena - what it traded and why, the playbooks, how the day went. It never places real \
-trades, and it can't place, change or approve any order from this chat. The arena is \
-fake money. The watcher runs by itself, 7:30am to 7:25pm on trading days.
+The Trader chat: talk to the decider, the agent that makes the arena's trades, in your own \
+words. It never places real trades, and it can't place, change or approve any order from \
+this chat. The arena is fake money. The watcher runs by itself, 7:30am to 7:25pm on \
+trading days.
 
-The Trader's own commands:
-/positions - open fake-money positions per arena account
-/start, /help - this list"""
+Things you can just say:
+- "how's it going today", "what did it trade", "how much are we up", "show me the positions"
+- "why did it pass on NWL", "what happened with HLS" - answered from the day's records
+- "is it running", "when does it start", "what's running"
+- "use opus for the decider", "make the reader think harder", "what model is it on" - a \
+model or thinking change is a strategy change, recorded in config.yaml and in the evening \
+report
+- "stop" drops the answer I'm working on; "start over" begins a fresh conversation
+- "can you make it ..." asks for a change to how I work: I read it back, and nothing is \
+built until you tap Build it. "what changes have I asked for", "undo the last change"
+Anything else is a conversation with the decider.
+
+The same things as shortcuts, if you prefer them: /positions, /status, /stop, /model, \
+/think, /new, /change, /changes, /undo, /help"""
+
+NO_ORDERS = (
+    "Nothing in this chat can place, change or close an order, and nothing I say here is "
+    "one. The arena's positions are opened by the agent and the rule bots during the day "
+    "and closed by their stops, targets and the pre-close sweep, all in code. If you want it "
+    "to trade differently, tell me what to change in your own words and I'll read it back "
+    "before anything is built."
+)
+TRADING_NOTE = (
+    "Trading itself isn't stopped from this chat: the watcher runs by itself until 7:25pm on "
+    "a trading day and is never stopped in market hours or with a position open. If you want "
+    "it to trade differently, tell me what to change in your own words and I'll read it back "
+    "before anything is built."
+)
+UNKNOWN_COMMAND = (
+    "I don't know that one. Just say what you want in plain words - \"how's it going "
+    "today\", \"show me the positions\", \"use opus for the decider\" - or \"help\" for the "
+    "list."
+)
+WHICH_AGENT = (
+    "For the reader or the decider? (The reader reads each announcement; the decider makes "
+    "the trades and answers you here. Say \"both\" for both.)"
+)
+QUEUE_WORDS = {
+    "steer": "waits for the current answer to finish and is answered next (an answer can't "
+             "be changed halfway here)",
+    "followup": "waits its turn and is answered next",
+    "collect": "is bundled with any others that arrive and answered as one",
+    "interrupt": "stops the current answer and is answered instead",
+}  # fmt: skip
+AGENT_IDS = {"reader": READER, "decider": DECIDER}
+# Intents that win even when the sentence also reads like a change request ("can you make
+# the decider think harder" is a setting, done on the spot, not a build).
+PLAIN_FIRST = {"model_set", "think_set", "stop", "order_request"}
 
 
 # --------------------------------------------------------------------------- hooks
@@ -443,8 +509,15 @@ def dig(raw: dict, path: tuple):
     return node
 
 
-def chat_message(text: str) -> str:
-    return PREFACE + text
+def chat_message(text: str, facts: str = "") -> str:
+    body = PREFACE
+    if facts:
+        body += "\n" + FACTS_RULE + facts + "\n"
+    return body + "\nRick's message:\n" + text
+
+
+def _ampm(t) -> str:
+    return f"{t.hour % 12 or 12}:{t.minute:02d}{'am' if t.hour < 12 else 'pm'}"
 
 
 class TraderChat:
@@ -466,6 +539,8 @@ class TraderChat:
         self._threads_lock = threading.Lock()
         self.cfg_loader = cfg_loader or self._load_cfg
         self.agent_runner = agent_runner or self._call_decider
+        self.clock = lambda: datetime.now(SYD)  # a test sets the day
+        self._pending: dict | None = None  # "For the reader or the decider?" awaiting Rick
         self.adapter = self._adapter()
         self.ctl = botctl.BotCtl(self.adapter)
         self.ctl.conveyor = botctl.Conveyor(self.ctl, self._start_turn)
@@ -676,7 +751,11 @@ class TraderChat:
             elif cmd == "positions":
                 self.cmd_positions()
             else:
-                self.send("I don't know that command. /help lists them.")
+                self.send(UNKNOWN_COMMAND)
+            return
+        if self.ctl.answer_pending(text):
+            return  # the answer to the change reader's one question
+        if self.plain_intent(text):
             return
         if self.ctl.maybe_change(text):
             return
@@ -686,6 +765,238 @@ class TraderChat:
         line = self.ctl.conveyor.submit(text)
         if line:
             self.send(line)
+
+    # ---------------------------------------------------------------- plain language
+    def known_codes(self) -> set[str]:
+        try:
+            return T.known_codes(self.cfg_loader().data_dir)
+        except Exception as e:  # noqa: BLE001 - a missing list only costs ticker recognition
+            log.warning("could not read the ASX code lists: %s", e)
+            return set()
+
+    def understand(self, text: str) -> plain.Intent | None:
+        """Rick's message as an intent - or, if the chat has just asked "for the reader or
+        the decider?", the answer to that."""
+        pending, self._pending = self._pending, None
+        if pending and self.clock() - pending["asked"] <= PENDING_FOR:
+            agent = plain.answer_agent(text)
+            if agent:
+                return plain.Intent(pending["name"], {**pending["args"], "agent": agent})
+        return plain.understand(text, self.known_codes())
+
+    def plain_intent(self, text: str) -> bool:
+        """A plain sentence that means one of the chat's own commands, done in code. True
+        if it was taken."""
+        intent = self.understand(text)
+        if intent is None:
+            return False
+        if intent.name not in PLAIN_FIRST and botctl.looks_like_change(text):
+            return False  # "can you make it show positions first" is a change request
+        log.info("plain: %s %s", intent.name, intent.args or "")
+        try:
+            getattr(self, "do_" + intent.name)(intent, text)
+        except Exception as e:  # noqa: BLE001 - one bad answer must never stop the chat
+            log.exception("plain-language %s failed", intent.name)
+            self.send(f"I couldn't do that ({type(e).__name__}: {e}). Nothing was changed.")
+        return True
+
+    def _day(self, text: str) -> tuple[date, str]:
+        """The day a question is about: one Rick named, else today, else the last session
+        on record (a Saturday's 'how did it go' is Friday's answer, and says so)."""
+        now = self.clock()
+        named = T.named_day(text, now.date())
+        if named:
+            return named, ""
+        return T.pick_day(self.cfg_loader().data_dir, now.date())
+
+    def _watcher(self) -> str:
+        try:
+            return watcher_line(self.cfg_loader(), self.clock())
+        except Exception as e:  # noqa: BLE001
+            return f"Watcher: couldn't tell ({type(e).__name__}: {e})"
+
+    def _ask_agent(self, name: str, args: dict) -> None:
+        self._pending = {"name": name, "args": dict(args), "asked": self.clock()}
+        self.send(WHICH_AGENT)
+
+    def do_order_request(self, intent, text: str) -> None:
+        self.send(NO_ORDERS)
+
+    def do_stop(self, intent, text: str) -> None:
+        out = self.ctl.stop_text()
+        if intent.trading:
+            out += "\n" + TRADING_NOTE
+        self.send(out)
+
+    def do_help(self, intent, text: str) -> None:
+        self.ctl.cmd_help("")
+
+    def do_new(self, intent, text: str) -> None:
+        if intent.reset:
+            self.ctl.cmd_reset("")
+        else:
+            self.ctl.cmd_new("")
+
+    def do_undo(self, intent, text: str) -> None:
+        self.ctl.cmd_undo("")
+
+    def do_changes(self, intent, text: str) -> None:
+        if not [r for r in botctl.list_reqs("trader") if r.get("status") != "new"]:
+            self.send("No change requests yet. Ask in your own words - \"can you make it "
+                      "...\" - and I'll read it back before anything is built.")  # fmt: skip
+            return
+        self.ctl.cmd_changes("")
+
+    def do_queue_show(self, intent, text: str) -> None:
+        q = self.ctl.queue()
+        what = QUEUE_WORDS.get(q["mode"], q["mode"])
+        self.send(f"While I'm busy with an answer, a new message {what}. That's queue mode "
+                  f"{q['mode']}{' (set here)' if q['override'] else ' (the default)'}, debounce "
+                  f"{q['debounce_ms']}ms, cap {q['cap']}, drop {q['drop']}. To change it, say "
+                  "\"answer them one at a time\", \"bundle my messages\", \"interrupt\" or "
+                  "\"queue back to normal\".")  # fmt: skip
+
+    def do_queue_set(self, intent, text: str) -> None:
+        self.ctl.cmd_queue(intent.mode)
+
+    def _openclaw(self) -> dict | None:
+        try:
+            return botctl.load_openclaw()
+        except (OSError, ValueError) as e:
+            log.warning("openclaw.json unreadable: %s", e)
+            self.send("I can't read the model settings right now; try again in a minute.")
+            return None
+
+    def do_model_show(self, intent, text: str) -> None:
+        cfg = self._openclaw()
+        if cfg is None:
+            return
+        lines = self.ctl.model_lines(cfg)
+        allowed = ", ".join(botctl.pretty_model(m) for m in botctl.allowed_models(cfg))
+        lines.append(f"Models allowed here: {allowed}.")
+        lines.append("To switch one, say for example \"use Sonnet 5 for the reader\" or \"put "
+                     "the decider back to normal\". A switch is a strategy change: it is "
+                     "recorded in config.yaml and listed in the evening report.")  # fmt: skip
+        self.send("\n".join(lines))
+
+    def do_think_show(self, intent, text: str) -> None:
+        cfg = self._openclaw()
+        if cfg is None:
+            return
+        lines = self.ctl.model_lines(cfg)
+        lines.append("Thinking levels, lowest to highest: " + ", ".join(plain.THINK_LADDER)
+                     + ". Say for example \"make the decider think harder\" or \"reader "
+                     "effort low\"; that is a strategy change, recorded and reported.")  # fmt: skip
+        self.send("\n".join(lines))
+
+    def do_model_set(self, intent, text: str) -> None:
+        if not intent.agent:
+            self._ask_agent("model_set", intent.args)
+            return
+        agents = ("reader", "decider") if intent.agent == "both" else (intent.agent,)
+        for agent in agents:
+            self.ctl.cmd_model(f"{agent} {intent.model}")
+
+    def do_think_set(self, intent, text: str) -> None:
+        if not intent.agent:
+            self._ask_agent("think_set", intent.args)
+            return
+        agents = ("reader", "decider") if intent.agent == "both" else (intent.agent,)
+        for agent in agents:
+            level = intent.level
+            if level in ("up", "down"):
+                cfg = self._openclaw()
+                if cfg is None:
+                    return
+                try:
+                    _, current = botctl.effective(cfg, AGENT_IDS[agent])
+                except KeyError:
+                    self.send(f"The {agent} isn't set up on this PC, so there's nothing to "
+                              "change.")  # fmt: skip
+                    return
+                new = plain.step_level(current, level)
+                if new is None:
+                    self.send(f"The {agent} is on \"{current}\" thinking, which isn't a step "
+                              "on the ladder. Say a level: " + ", ".join(plain.THINK_LADDER)
+                              + ".")  # fmt: skip
+                    return
+                if new == current:
+                    end = "top" if level == "up" else "bottom"
+                    self.send(f"The {agent} is already at {current}, the {end} of the ladder.")
+                    return
+                level = new
+            self.ctl.cmd_think(f"{agent} {level}")
+
+    def do_ticker(self, intent, text: str) -> None:
+        arena = self.light_arena()
+        day, label = self._day(text)
+        for code in intent.tickers[:3]:
+            self.send(T.ticker_text(arena, day, code, label))
+
+    def do_today(self, intent, text: str) -> None:
+        arena = self.light_arena()
+        day, label = self._day(text)
+        facts = T.gather(arena, day, label)
+        watcher = self._watcher() if label == "today" else None
+        self.send("\n".join(T.summary_lines(facts, arena, watcher)))
+
+    def do_trades(self, intent, text: str) -> None:
+        arena = self.light_arena()
+        day, label = self._day(text)
+        self.send("\n".join(T.trades_lines(T.gather(arena, day, label), arena)))
+
+    def do_pnl(self, intent, text: str) -> None:
+        arena = self.light_arena()
+        day, label = self._day(text)
+        self.send("\n".join(T.money_lines(T.gather(arena, day, label))))
+
+    def do_positions(self, intent, text: str) -> None:
+        self.cmd_positions()
+
+    def do_tasks(self, intent, text: str) -> None:
+        self.ctl.cmd_tasks("")
+
+    def do_status(self, intent, text: str) -> None:
+        self.ctl.cmd_status("")
+
+    def do_whoami(self, intent, text: str) -> None:
+        self.ctl.cmd_whoami("")
+
+    def do_hours(self, intent, text: str) -> None:
+        from asxbot.announcements.live import is_trading_day
+        from asxbot.arena import hours as H
+
+        cfg = self.cfg_loader()
+        day = self.clock().date()
+        trading = day.weekday() < 5 and is_trading_day(day)
+        a0, a1 = H.announcement_window(cfg, day)
+        o0, o1 = H.order_window(cfg, day)
+        lines = [
+            f"{day:%a %d %b}: " + ("an ASX trading day." if trading
+                                   else "not an ASX trading day, so the watcher does not run."),
+            f"On a trading day the watcher starts itself at 7:30am and stops at "
+            f"{_ampm(H.watcher_stop_time(cfg, day))}; it reads announcements {_ampm(a0)} to "
+            f"{_ampm(a1)} and the arena accepts orders {_ampm(o0)} to {_ampm(o1)}.",
+            f"The evening report goes out at {_ampm(H.evening_slot(cfg, day))}. Daylight "
+            f"saving is {'on' if H.is_dst(day) else 'off'}; the times move with it by "
+            "themselves.",
+        ]  # fmt: skip
+        self.send("\n".join(lines))
+
+    def facts_for(self, text: str) -> str:
+        """The day's records, for a conversation turn that asks about the day's trading
+        (or names a stock), so the decider answers from them and not from memory."""
+        try:
+            tickers = plain.tickers_in(text, self.known_codes())
+            if not tickers and not plain.about_trading(text):
+                return ""
+            arena = self.light_arena()
+            day, label = self._day(text)
+            watcher = self._watcher() if label == "today" else None
+            return T.facts_for_agent(arena, day, label, tickers, watcher)
+        except Exception as e:  # noqa: BLE001 - the turn still goes, without the block
+            log.warning("could not gather the day's records for the decider: %s", e)
+            return ""
 
     # ---------------------------------------------------------------- a conversation turn
     def _start_turn(self, text: str) -> None:
@@ -698,7 +1009,7 @@ class TraderChat:
         try:
             with botctl.TURNS.track(key, DECIDER, "the decider's answer to you") as turn:
                 try:
-                    reply = self.agent_runner(chat_message(text), key)
+                    reply = self.agent_runner(chat_message(text, self.facts_for(text)), key)
                 except AgentCallFailed as e:
                     reply = (f"The decider didn't answer ({e}). Nothing was placed or "
                              "changed; try again in a minute.")  # fmt: skip
@@ -790,7 +1101,8 @@ class TraderChat:
             arena = self.light_arena()
             n = sum(len(arena.account(pb, k).positions)
                     for pb in arena.playbooks() for k in ("agent", "bot"))  # fmt: skip
-            out.append(f"Open fake-money positions: {n} (/positions lists them)")
+            out.append(f"Open fake-money positions: {n}"
+                       + (" (say \"positions\" to see them)" if n else ""))  # fmt: skip
         except Exception as e:  # noqa: BLE001
             out.append(f"Positions: couldn't read ({type(e).__name__}: {e})")
         if cfg is not None:
@@ -798,7 +1110,8 @@ class TraderChat:
                 out.append(orders_today_line(cfg))
             except Exception as e:  # noqa: BLE001
                 out.append(f"Orders today: couldn't read ({type(e).__name__}: {e})")
-        out.append(f"Conversation: #{int(self.state().get('gen') or 1)} (/new starts afresh)")
+        out.append(f"Conversation: #{int(self.state().get('gen') or 1)} (say \"start over\" "
+                   "for a fresh one)")  # fmt: skip
         return out
 
 
