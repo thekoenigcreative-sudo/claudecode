@@ -84,7 +84,9 @@ TEXT_WAITING = (
 
 # -- where things live (all off Google Drive) ------------------------------------------
 def _local() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    from asxbot.localdir import real_local_appdata
+
+    return real_local_appdata()
 
 
 STATE_DIR = Path(os.environ.get("ASXBOT_IBGATEWAY_STATE") or _local() / "asx-bot" / "ibgateway")

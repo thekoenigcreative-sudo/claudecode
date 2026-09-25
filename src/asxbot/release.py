@@ -35,12 +35,14 @@ TASK_SCRIPTS = (
 
 
 def local_base() -> Path:
-    """%LOCALAPPDATA%\\asx-bot, or ASXBOT_LOCAL (the tests point it at a scratch folder)."""
+    """%LOCALAPPDATA%\\asx-bot as the scheduled tasks see it (asxbot.localdir: a Claude
+    Code shell sees a virtualised copy), or ASXBOT_LOCAL (the tests' scratch folder)."""
     override = os.environ.get("ASXBOT_LOCAL")
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "asx-bot"
+    from asxbot.localdir import asx_local
+
+    return asx_local()
 
 
 def releases_dir() -> Path:

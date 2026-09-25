@@ -34,8 +34,9 @@ def logs_dir() -> Path:
     override = os.environ.get("ASXBOT_LOG_DIR")
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "asx-bot" / "logs"
+    from asxbot.localdir import asx_local
+
+    return asx_local() / "logs"
 
 
 def setup_logging(

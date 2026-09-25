@@ -140,6 +140,8 @@ def _deploy_module():
 
 
 def test_export_is_the_commit_not_the_working_tree(tmp_path):
+    if not (REPO / ".git").exists():
+        pytest.skip("not a git checkout (the suite is running inside an export)")
     d = _deploy_module()
     dest = tmp_path / "export"
     d.export("HEAD", dest)
@@ -222,3 +224,25 @@ def test_the_rule_is_written_in_claude_md():
     text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
     assert "07:25" in text and "19:25" in text and "scripts/watcher.py" in text
     assert "releases" in text and "deploy.py" in text
+
+
+# -- the real %LOCALAPPDATA% (asxbot.localdir) ---------------------------------------------
+def test_the_share_path_maps_a_drive_letter_and_the_override_wins(tmp_path, monkeypatch):
+    from asxbot import localdir as LD
+
+    got = LD._share_path(Path(r"C:\Users\Richa\AppData\Local"))
+    assert got is not None and got.as_posix() == "//localhost/C$/Users/Richa/AppData/Local"
+    assert LD._share_path(Path("//server/share/x")) is None
+    monkeypatch.setenv(LD.ENV, str(tmp_path))
+    assert LD.real_local_appdata() == tmp_path and LD.asx_local() == tmp_path / "asx-bot"
+    monkeypatch.delenv(LD.ENV)
+    LD._cache.clear()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "plain"))
+    got = LD.real_local_appdata()
+    # Outside the Claude container the plain path stays; inside it (a Claude Code shell,
+    # where a Temp path is itself virtualised) the share's path is used. Either way the
+    # probe marker is cleaned up and the answer is cached.
+    assert got in (tmp_path / "plain", LD._share_path(tmp_path / "plain"))
+    assert not list((tmp_path / "plain" / "asx-bot").glob(".realpath-probe-*"))
+    assert LD.real_local_appdata() == got
+    LD._cache.clear()
