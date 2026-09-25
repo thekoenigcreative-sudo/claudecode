@@ -16,7 +16,7 @@ import pytest
 
 from asxbot import chat, plain
 from asxbot import foreman as F
-from test_chat import RICK, SYD, data_cfg, env, msg, repo  # noqa: F401 - the chat's fixtures
+from test_chat import RICK, SYD, data_cfg, env, msg, quiet_main, repo  # noqa: F401 - fixtures
 
 # Rick's messages in the Trader chat, 25 Sep 2026 23:20-23:46 (chat.log), word for word.
 NIGHT = [
@@ -332,7 +332,8 @@ def test_handover_is_only_the_first_or_last_line():
     assert F.read_reply(echo).handover is None
 
 
-def test_a_probe_prints_the_handover_and_never_writes_it(monkeypatch, capsys, tmp_path, caplog):
+def test_a_probe_prints_the_handover_and_never_writes_it(monkeypatch, quiet_main, capsys,  # noqa: F811
+                                                         tmp_path):  # fmt: skip
     from argparse import Namespace
 
     from asxbot import botctl
@@ -342,7 +343,6 @@ def test_a_probe_prints_the_handover_and_never_writes_it(monkeypatch, capsys, tm
     oc.write_text(json.dumps(OC))
     monkeypatch.setattr(botctl, "OPENCLAW_JSON", oc)
     monkeypatch.setattr(botctl, "CHANGES_DIR", tmp_path / "changes")
-    monkeypatch.setenv("ASXBOT_CHAT_HOME", str(tmp_path / "chat"))
     _beat()
     args = Namespace(probe="keep building", button=None, no_agent=True)
     assert chat.main(args) == chat.EXIT_OK
