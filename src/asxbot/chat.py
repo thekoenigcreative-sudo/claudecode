@@ -13,6 +13,11 @@ A message goes, in order, to:
      /think /status /new /help ...) and change requests (/change /changes /undo);
   2. the Trader's own commands: /start (= /help) and /positions;
   3. any other /command: "I don't know that one";
+  3b. the Foreman's topics (asxbot.foreman, since 26 Sep: Rick, "everytime i ask it
+     something it says it can't do shit"): builds and the build queue, what's being worked
+     on, Claude usage / limits / resets, priorities, the Foreman - and a short follow-up
+     within ten minutes of one. Handed to the Foreman's inbox in code; the Trader says
+     nothing, because the Foreman answers them in this chat itself ("Foreman: ...");
   4. plain words (asxbot.plain, since 25 Sep: Rick, "i need to be able to just tell it
      things without commands"): every command above from an ordinary sentence - "how's it
      going today", "what did it trade", "stop it for today", "use opus for the decider",
@@ -24,6 +29,10 @@ A message goes, in order, to:
      conversation turn with trader-decider in its own session, one at a time (/queue). A
      question about the day's trading carries the day's records with it, so the decider
      answers from them.
+
+The decider never says "I can't" for something the system could do: it hands the message
+over (a HANDOVER line in its reply) and Rick gets at most one short line saying the Foreman
+will answer; a reply that says "I can't ... from here" anyway is handed over the same way.
 
 Nothing here can place, change or approve an order: the decider is told so, and this code
 has no order path at all. /model and /think are strategy changes (arena/settings_history).
@@ -51,6 +60,7 @@ import requests
 import yaml
 
 from asxbot import botctl, plain, proc
+from asxbot import foreman as F
 from asxbot.arena import today as T
 from asxbot.arena.agents import (
     DECIDER,
@@ -88,15 +98,39 @@ This is Rick, writing to you directly in the Trader's own Telegram chat. It is a
 conversation, not a watcher cycle: there is no announcement and no decision packet.
 - Answer him plainly, in plain text for Telegram (no markdown tables or headings), and
   briefly unless he asks for detail.
-- You cannot place, change, close or approve any order from this chat, and nothing said
-  here is an order. If he asks for a trade, say so plainly and say what you would look at
-  instead. Do not end with a DECISION block.
+- This chat cannot place, change, close or approve any order, and nothing said here is an
+  order: that is a hard rule, not a gap. If he asks for a trade, say plainly that orders
+  aren't placed from this chat and say what you would look at instead. Do not end with a
+  DECISION block.
 - The arena is fake money. Never say an order was placed, approved or filled unless an
   arena record you have read shows the broker's order id.
-- If he asks you to change how the Trader works, tell him to say what he wants changed, in
-  his own words, in this chat (for example "can you make it ..."): it is read back to him
-  with a Build it button, and nothing changes until he taps it. You cannot change it.
+- If he wants to change how the Trader works, ask him to say what he wants changed in his
+  own words here (for example "can you make it ..."): it is read back to him with a Build
+  it button, and nothing changes until he taps it.
 - Never tell him to type a command: everything here works from plain words.
+
+Who does what. You answer about the arena: its trades, playbooks, results and the day's
+records. The Foreman is Rick's orchestrator: it runs the builds (the improvement work on
+all his bots, one at a time, in its queue), watches Claude usage, limits and resets, keeps
+his priorities, and answers in this chat itself as "Foreman: ...". His messages about those
+reach it by code, and you don't see them.
+
+Never tell Rick "I can't", "I cannot", "I'm unable", "I have no way to" or "not from here"
+about something the system could do. If he asks for something you and this chat don't do
+- a reminder or an alert, something scheduled or watched, anything about builds, usage,
+priorities or another of his bots, anything the system would first need to be built to do
+- hand it over: make the first line of your reply
+HANDOVER: <a few words on what he wants done>
+and add at most one short line for him, such as "The Foreman's on it - it'll answer here."
+Code passes his message to the Foreman, which answers here and acts, or queues the build
+that makes it possible. Never hand over a trade or an order, anything about real money or
+the live broker, or passwords: those are hard rules, so say so plainly.
+If his message only answers or thanks the Foreman and needs nothing from you, reply with
+exactly: SILENT
+"""
+FOREMAN_NOTE = """\
+Since your last answer Rick said these to the Foreman; code passed them on and the Foreman
+answers them in this chat itself (you did not see them):
 """
 
 FACTS_RULE = """\
@@ -124,6 +158,8 @@ report
 - "stop" drops the answer I'm working on; "start over" begins a fresh conversation
 - "can you make it ..." asks for a change to how I work: I read it back, and nothing is \
 built until you tap Build it. "what changes have I asked for", "undo the last change"
+- builds and their order, Claude usage and limits, priorities: the Foreman answers those \
+here itself ("Foreman: ..."), and anything else I don't do goes to it too
 Anything else is a conversation with the decider.
 
 The same things as shortcuts, if you prefer them: /positions, /status, /stop, /model, \
@@ -509,8 +545,10 @@ def dig(raw: dict, path: tuple):
     return node
 
 
-def chat_message(text: str, facts: str = "") -> str:
+def chat_message(text: str, facts: str = "", foreman: str = "") -> str:
     body = PREFACE
+    if foreman:
+        body += "\n" + FOREMAN_NOTE + foreman + "\n"
     if facts:
         body += "\n" + FACTS_RULE + facts + "\n"
     return body + "\nRick's message:\n" + text
@@ -526,8 +564,10 @@ class TraderChat:
     --no-agent replaces it)."""
 
     def __init__(self, tg, chat_id: str, repo: Path, home: Path, *, cfg_loader=None,
-                 agent_runner=None):  # fmt: skip
+                 agent_runner=None, handover=None):  # fmt: skip
         self.tg = tg
+        # (text, at, why) -> the file written: the Foreman's inbox, unless a probe prints it.
+        self.handover = handover or F.hand_over
         self.chat_id = str(chat_id)
         self.repo = Path(repo)
         self.config_path = self.repo / "config.yaml"
@@ -541,6 +581,9 @@ class TraderChat:
         self.agent_runner = agent_runner or self._call_decider
         self.clock = lambda: datetime.now(SYD)  # a test sets the day
         self._pending: dict | None = None  # "For the reader or the decider?" awaiting Rick
+        self._foreman_at: datetime | None = None  # the last Foreman topic Rick raised here
+        self._handed: list[tuple[datetime, str]] = []  # Foreman topics the decider hasn't seen
+        self._said_at: dict[str, datetime] = {}  # when each message for the decider was sent
         self.adapter = self._adapter()
         self.ctl = botctl.BotCtl(self.adapter)
         self.ctl.conveyor = botctl.Conveyor(self.ctl, self._start_turn)
@@ -713,7 +756,7 @@ class TraderChat:
             if text is None:
                 self.send("I can only read text messages here.")
                 return "not text"
-            self.on_text(text.strip())
+            self.on_text(text.strip(), sent)
             return "handled"
         except Exception as e:  # noqa: BLE001 - one bad message must never stop the chat
             log.exception("handling an update failed")
@@ -738,8 +781,11 @@ class TraderChat:
             return "unknown button"
         return "button"
 
-    def on_text(self, text: str) -> None:
-        log.info("from Rick: %s", text[:200].replace("\n", " "))
+    def on_text(self, text: str, at: datetime | None = None) -> None:
+        # The whole message on one line: the Foreman reads these lines, and matches a handover
+        # to the line it has already answered by the text.
+        log.info("from Rick: %s", " ".join(text.split()))
+        at = at or self.clock()
         self.refresh_pins()
         if self.ctl.handle(text, self.chat_id):
             return
@@ -755,16 +801,67 @@ class TraderChat:
             return
         if self.ctl.answer_pending(text):
             return  # the answer to the change reader's one question
+        if self.for_foreman(text, at):
+            return
         if self.plain_intent(text):
             return
         if self.ctl.maybe_change(text):
             return
+        self._said_at = {**dict(list(self._said_at.items())[-20:]), text: at}
         self.to_conveyor(text)
 
     def to_conveyor(self, text: str) -> None:
         line = self.ctl.conveyor.submit(text)
         if line:
             self.send(line)
+
+    # ---------------------------------------------------------------- the Foreman (one voice)
+    def for_foreman(self, text: str, at: datetime) -> bool:
+        """A Foreman topic - builds, usage and limits, priorities, the Foreman - or a short
+        follow-up to one within ten minutes: handed over, and the Trader says nothing. The
+        Foreman answers it in this chat itself. True if it was taken."""
+        why = F.topic(text)
+        if why is None and self._foreman_at is not None \
+                and timedelta(0) <= at - self._foreman_at <= F.FOLLOW_UP_FOR:  # fmt: skip
+            codes = self.known_codes()
+            intent = plain.understand(text, codes)
+            stop_answer = intent is not None and intent.name == "stop" and self.busy()
+            if not stop_answer and F.follow_up(text, codes):
+                why = "a follow-up"
+        if why is None:
+            return False
+        self._foreman_at = at
+        self._handed = [*self._handed[-4:], (at, text)]
+        log.info("for the Foreman (%s): handing it over, the Trader stays silent", why)
+        self.hand_over(text, at, "foreman topic", say=None)
+        return True
+
+    def hand_over(self, text: str, at: datetime, why: str, say: str | None) -> bool:
+        """Put Rick's message in the Foreman's inbox, then send `say` (None: nothing). If
+        the Foreman isn't running, Rick is told plainly instead. True if it was written."""
+        try:
+            path = Path(self.handover(text, at, why))
+        except OSError as e:
+            log.error("could not write the handover to the Foreman's inbox %s: %s", F.inbox(), e)
+            self.send("That one's for the Foreman, but passing it on failed just now "
+                      f"({type(e).__name__}); it also reads this chat, so it may still pick "
+                      "it up.")  # fmt: skip
+            return False
+        log.info("handed to the Foreman as %s (%s)", path.name, why)
+        alive, last = F.last_seen()
+        if not alive:
+            log.warning("the Foreman's heartbeat is stale (last %s)", last)
+            late = F.late_line(last)
+            say = say.replace(F.ON_IT, late) if say and F.ON_IT in say else late
+        if say:
+            self.send(say)
+        return True
+
+    def foreman_note(self) -> str:
+        """Rick's Foreman topics since the decider's last turn, so its conversation still
+        makes sense (it never saw them)."""
+        handed, self._handed = self._handed, []
+        return "".join(f"- {_ampm(t.astimezone(SYD))} \"{s}\"\n" for t, s in handed)
 
     # ---------------------------------------------------------------- plain language
     def known_codes(self) -> set[str]:
@@ -1009,14 +1106,15 @@ class TraderChat:
         try:
             with botctl.TURNS.track(key, DECIDER, "the decider's answer to you") as turn:
                 try:
-                    reply = self.agent_runner(chat_message(text, self.facts_for(text)), key)
+                    message = chat_message(text, self.facts_for(text), self.foreman_note())
+                    reply = self.agent_runner(message, key)
                 except AgentCallFailed as e:
                     reply = (f"The decider didn't answer ({e}). Nothing was placed or "
                              "changed; try again in a minute.")  # fmt: skip
             if turn.stopped:
                 log.info("the decider's answer was stopped by /stop; dropped")
                 return
-            self.send((reply or "").strip() or "The decider sent back an empty answer.")
+            self.deliver(text, reply)
         except Exception as e:  # noqa: BLE001
             log.exception("a conversation turn failed")
             self.send(f"Something went wrong getting the decider's answer "
@@ -1024,6 +1122,27 @@ class TraderChat:
         finally:
             typing_done.set()
             self.ctl.conveyor.finished()
+
+    def deliver(self, text: str, reply: str) -> None:
+        """The decider's answer to Rick - or, when it hands the message over (or says it
+        can't do something anyway), the handover and at most one short line."""
+        out = F.read_reply(reply)
+        at = self._said_at.pop(text, None) or self.clock()
+        if out.note:
+            log.info("%s", out.note)
+        if out.handover is None:
+            if out.text is not None:
+                self.send(out.text.strip() or "The decider sent back an empty answer.")
+            return
+        rule = F.off_limits(text)
+        intent = plain.understand(text, self.known_codes())
+        if rule or (intent is not None and intent.name == "order_request"):
+            log.info("not handed over: %s", rule or "an order request")
+            self.send(NO_ORDERS if not rule else
+                      f"That's one of your hard rules ({rule}), so nothing will be built for "
+                      "it.")  # fmt: skip
+            return
+        self.hand_over(text, at, out.handover, say=out.text)
 
     def _call_decider(self, message: str, session_key: str) -> str:
         cfg = self.cfg_loader()
@@ -1270,7 +1389,16 @@ def main(args) -> int:
             def runner(message: str, key: str) -> str:
                 return (f"(--no-agent: the decider was not called. On session {key} it "
                         f"would have been sent:)\n\n{message}")  # fmt: skip
-        app = TraderChat(PrintTelegram(), bot.chat_id, repo, home, agent_runner=runner)
+        def printed(text: str, at: datetime, why: str) -> str:
+            """A probe never writes to the Foreman's inbox (the Foreman would answer Rick)."""
+            body = {"bot": F.BOT, "from": "Rick", "text": text,
+                    "at": at.isoformat(timespec="seconds"), "why": why}  # fmt: skip
+            print(f"\n--- to the Foreman's inbox (probe: not written) ---\n"
+                  f"{json.dumps(body, ensure_ascii=False)}", flush=True)  # fmt: skip
+            return "probe-not-written.json"
+
+        app = TraderChat(PrintTelegram(), bot.chat_id, repo, home, agent_runner=runner,
+                         handover=printed)  # fmt: skip
         if args.button is not None:
             app.on_callback({"id": "probe", "from": {"id": bot.chat_id}, "data": args.button,
                              "message": {"chat": {"id": bot.chat_id}}})  # fmt: skip

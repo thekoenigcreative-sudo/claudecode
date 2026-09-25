@@ -51,7 +51,8 @@ Replies never tell Rick to type a command; the commands stay as shortcuts.
 | "help", "what can you do" | `/help` |
 
 Order of precedence in `on_text`: slash commands; the answer to a change reader's open
-question; plain-word intents; the change-request check; the decider. A sentence that reads
+question; the Foreman's topics (below); plain-word intents; the change-request check; the
+decider. A sentence that reads
 like a change request ("can you make it show positions first") stays a change request
 unless it is a setting done on the spot ("can you make the decider think harder"). A stock
 code is recognised from the ASX directory and ASX 200 list in `data/universe` (in capitals
@@ -63,6 +64,47 @@ about the day's trading, the message carries a FACTS ON RECORD block - the same 
 and stock stories the chat would have sent - with the rule to answer from it and say "not
 on record" where it is silent, so the decider's account of the day rests on the records and
 not on its memory.
+
+## One voice: the Foreman (26 Sep 2026)
+
+Rick, 25 Sep 23:50: "everytime i ask it something it says it can't do shit". That night he
+told this chat "No keep building I have a full reset", "Yes tell me at 99", "Prioritise the
+simulator ahead of fetch", and the decider answered "I can't set that up from here" while
+the Foreman read the same messages and acted on them.
+
+The Foreman (`G:\My Drive\foreman`, state in `%USERPROFILE%\.foreman`) is Rick's
+orchestrator: it runs the builds on all his bots, one at a time, watches Claude usage and
+limits, keeps his priorities, and answers in this chat itself as "Foreman: ...". It reads
+every "from Rick:" line of chat.log, so that line now carries the whole message on one line.
+Code: `src/asxbot/foreman.py`; tests: `tests/test_foreman_handover.py` (Rick's exact
+messages of that night, replayed).
+
+- **Foreman topics are handed over in code and the Trader says nothing.** Builds and the
+  build queue, what's being worked on, Claude usage / limits / resets, priorities of
+  improvement work, the Foreman - and, within ten minutes of one, a short follow-up that is
+  an instruction for it ("yes tell me at 99", "stop at 80%", "carry on", "status"). A
+  message that names a stock or is about trading, orders, the watcher, the decider or this
+  chat is never a follow-up: "stop trading for today", "sell BHP", "what's my risk per
+  trade" and "how did the day trader go" are answered as before.
+- **The decider hands over what it can't do.** Its prompt says who the Foreman is and never
+  to say "I can't" for something the system could do: it starts its reply with
+  `HANDOVER: <what he wants>` and adds at most one short line ("The Foreman's on it - it'll
+  answer here."). A reply that says "I can't ... from here" anyway is handed over the same
+  way, with those sentences taken out. "I can't tell from the records" (knowing, not doing)
+  and anything about orders, real money, the broker or passwords (hard rules) are left
+  alone, and a hard rule is never handed over. `SILENT` from the decider sends nothing (a
+  message that only answers or thanks the Foreman).
+- **Handing over** is one UTF-8 JSON file in `%USERPROFILE%\.foreman\inbox`
+  (`FOREMAN_HOME` overrides it; every test uses a temporary one), written as
+  `<yyyymmdd-hhmmss>-trader-<4 hex>.tmp` and renamed to `.json`:
+  `{"bot": "trader", "from": "Rick", "text", "at", "why": "foreman topic" | "can't do: ..."}`.
+  The Foreman answers in this chat within a minute and acts; it skips a handover it has
+  already answered from the chat log. chat.log shows `for the Foreman (...)` and `handed to
+  the Foreman as <file>`.
+- **If the Foreman isn't running** (its `heartbeat.json` more than 5 minutes old), Rick is
+  told so in one line, and that his message is waiting in its inbox.
+- The decider's next turn is told which messages went to the Foreman since its last answer,
+  so its conversation still makes sense.
 
 ## Commands
 
@@ -168,8 +210,8 @@ A good start looks like this in chat.log:
     ... INFO asxbot.chat: Running. Polling @rick_asx_trader_bot (token ...abcd) for Rick's chat 8998104023; state in ...
 
 To try a message without Telegram, run `asxbot chat --probe "how was today?" --no-agent`.
-Replies are printed, not sent, and Telegram is never polled. Leave out `--no-agent` to call
-the real decider. `--button "chg:b:<id>"` simulates a button tap. A probe of `/model` really
+Replies are printed, not sent, and Telegram is never polled. A handover to the Foreman is
+printed too, never written to its inbox. Leave out `--no-agent` to call the real decider. `--button "chg:b:<id>"` simulates a button tap. A probe of `/model` really
 changes the setting.
 
 ## Going live

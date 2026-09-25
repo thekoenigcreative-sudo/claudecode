@@ -43,3 +43,12 @@ def local_logs(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("ASXBOT_LOG_DIR", str(d))
     monkeypatch.delenv("ASXBOT_STDOUT_LOG", raising=False)
     return d
+
+
+@pytest.fixture(autouse=True)
+def foreman_home(tmp_path, monkeypatch) -> Path:
+    """Every test hands over to its own Foreman inbox, never the real one in
+    %USERPROFILE%\\.foreman: the real Foreman would answer Rick and act on it."""
+    d = tmp_path / "foreman"
+    monkeypatch.setenv("FOREMAN_HOME", str(d))
+    return d
