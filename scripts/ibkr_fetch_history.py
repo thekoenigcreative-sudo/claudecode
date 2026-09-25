@@ -8,6 +8,11 @@ is skipped, and a chunk already on disk is not asked for again.
     C:\\venvs\\asx-bot\\Scripts\\python.exe scripts\\ibkr_fetch_history.py --months 6
     C:\\venvs\\asx-bot\\Scripts\\python.exe scripts\\ibkr_fetch_history.py --months 6 --status
 
+Runs on its own as the scheduled task "ASXBot IBKR History Fetch" (daily 17:30 Sydney,
+through scripts/ibkr_fetch_history.pyw and its release shim): never starts 07:00-17:00 on a
+trading day, stops itself at 07:00 on one, runs the weekend through; once the window is on
+disk a run tops up the newest sessions and ends in minutes.
+
 Pacing: IBKR's 1-minute bars have no hard limit, only a soft one ("too much too quickly can
 lead to throttling"), so this keeps the gateway's own rules anyway: at most 600 requests in
 any ten minutes, at least 0.25 s apart, a pacing message pauses everything for 30 s, and
@@ -129,10 +134,17 @@ def main() -> int:
     queue = list(jobs)
     started = time.monotonic()
 
+    def stop_now() -> bool:
+        """07:00 on a trading day: the watcher's feed has IBKR to itself. A run that
+        began the evening before (or on the weekend) stops taking jobs here; the next
+        run carries on from what is on disk."""
+        t = datetime.now(SYD)
+        return is_trading_day(t.date()) and NO_FETCH_HOURS[0] <= t.hour < NO_FETCH_HOURS[1]
+
     def worker() -> None:
         while True:
             with lock:
-                if not queue:
+                if not queue or stop_now():
                     return
                 start, end, code = queue.pop(0)
             wanted = [d for d in sessions if start <= d <= end]
@@ -172,6 +184,10 @@ def main() -> int:
         t.start()
     for t in threads:
         t.join()
+    if queue and stop_now():
+        print(f"stopped at {datetime.now(SYD):%H:%M} on a trading day with {len(queue)} "
+              "requests still to do; the next run (17:30) carries on", flush=True)
+        stats["stopped_for_market_hours"] = len(queue)
     gw.stop(10)
     stats["minutes"] = round((time.monotonic() - started) / 60, 1)
     stats["window"] = [first.isoformat(), last.isoformat()]

@@ -71,6 +71,20 @@ stocks still without history are named in the log, told to Rick in one line, wri
 `data/arena/daytrader/<day>.json` and `events/ibkr_history.jsonl`, and **left out of the
 day's scan** rather than stalling it.
 
+## The history cache, filled for the replay
+
+The same cache is filled months back by `scripts/ibkr_fetch_history.py` for the replay
+(`asxbot arena replay-ibkr`): one two-week request per stock, newest first across the whole
+ASX 300 and the index, so at any moment the cache holds a complete recent window for every
+stock. IBKR answers a two-week 1-minute request in about 12 s (evening of 25 Sep 2026; three
+in flight are no faster than one), so six months is about 3,000 requests and ten hours. It
+runs as the scheduled task **"ASXBot IBKR History Fetch"** (daily 17:30, hidden launcher
+`scripts/ibkr_fetch_history.pyw` through its release shim, log `ibkr_history_fetch.log` in
+the local logs folder): it never starts between 07:00 and 17:00 on a trading day, stops
+itself at 07:00 on one, and once the window is on disk a run only tops up the newest
+sessions. A side effect worth having: each morning's prior sessions are already on disk,
+so the pre-open queue above has little to ask for.
+
 ## Never trade on stale data
 
 `FailoverFeed.entries_allowed(now, codes)` answers "no", and why, when:

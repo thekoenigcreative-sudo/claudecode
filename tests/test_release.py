@@ -119,7 +119,8 @@ def test_describe_says_checkout_or_release(tmp_path, monkeypatch):
 
 # -- the launchers pass the release to their children ---------------------------------------
 def test_the_launchers_pass_home_and_the_release_src_to_their_children():
-    for name in ("arena_warmup", "arena_evening", "chat", "arena_filter_cost"):
+    for name in ("arena_warmup", "arena_evening", "chat", "arena_filter_cost",
+                 "ibkr_fetch_history"):  # fmt: skip
         src = (REPO / "scripts" / f"{name}.pyw").read_text(encoding="utf-8")
         assert 'os.environ.get("ASXBOT_HOME")' in src, name
         assert '"PYTHONPATH": str(RELEASE / "src")' in src, name

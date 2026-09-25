@@ -12,7 +12,7 @@ build restarted the watcher at 10:52, mid-session. Now:
 | `ASXBOT_HOME` | this checkout, `G:\My Drive\asx-bot` | Settings and data never move: `config.yaml` (a `/model` change from the Trader chat edits and commits it here), `.env`, `data\` (books, events, minute cache), `reports\`. `asxbot.config.repo_root` reads the variable |
 
 The tasks: `ASXBot Arena Warmup`, `Arena Watchdog`, `Arena Evening`, `Chat`, `IB Gateway`,
-`IB Gateway Supervisor`, `IBKR Preflight`, `Filter Cost`. `scripts\register_release_tasks.ps1`
+`IB Gateway Supervisor`, `IBKR Preflight`, `Filter Cost`, `IBKR History Fetch` (added 25 Sep evening). `scripts\register_release_tasks.ps1`
 points each at its shim (backing up the definition to `data\task_backups\`); only the action
 changes.
 

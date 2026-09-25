@@ -29,6 +29,7 @@ $tasks = @{
     "ASXBot IB Gateway Supervisor" = "ibgateway_supervisor"
     "ASXBot IBKR Preflight"        = "ibkr_preflight"
     "ASXBot Filter Cost"           = "arena_filter_cost"
+    "ASXBot IBKR History Fetch"    = "ibkr_fetch_history"
 }
 
 if (-not (Test-Path $pythonw)) { throw "not found: $pythonw - nothing was changed" }

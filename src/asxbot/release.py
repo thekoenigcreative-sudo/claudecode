@@ -30,7 +30,7 @@ HOME_ENV = "ASXBOT_HOME"
 RELEASE_ENV = "ASXBOT_RELEASE"
 TASK_SCRIPTS = (
     "arena_warmup", "arena_watchdog", "arena_evening", "chat", "ibgateway",
-    "ibgateway_supervisor", "ibkr_preflight", "arena_filter_cost",
+    "ibgateway_supervisor", "ibkr_preflight", "arena_filter_cost", "ibkr_fetch_history",
 )  # fmt: skip
 
 
