@@ -34,6 +34,14 @@ Run every 2 minutes (and at logon) by the scheduled task "ASXBot IB Gateway Supe
 A file named PAUSE in %LOCALAPPDATA%\\asx-bot\\ibgateway stops it doing anything (for a
 deliberate stop of Gateway); delete the file to resume.
 
+With the connection doctor (ibkr/doctor.py, 26 Sep 2026): when Gateway is not healthy the
+check also probes the network (the internet, IBKR's servers), and never restarts Gateway
+while the PC is offline (a restart cannot log in, and costs a phone approval when it can);
+it honours the doctor's restart request (RESTART_REQUEST.json: the watcher's streams stopped
+and re-requesting and reconnecting did not bring them back) under the same login-window and
+backoff rules; it saves its observation for the doctor to read; and when an outage it told
+Rick about is over, it tells him so (the watcher is not running on weekends and evenings).
+
 Plain code. It starts Gateway only through its scheduled task, stops only IB Gateway
 processes (ibgateway.exe / ibgateway1.exe, or the launcher and the Java it started), and
 never reads, writes or logs Rick's login: it asks Credential Manager only whether one is
@@ -65,6 +73,7 @@ DOWN_CHECKS = 2  # a Gateway that no longer answers: restart on the 2nd check in
 LINK_DOWN_CHECKS = 5  # answers, but cut off from IBKR: 5 checks (10 min) before a restart
 REMIND_AFTER = timedelta(minutes=10)
 STUCK_AFTER = timedelta(minutes=20)  # an automatic login still not done: start it again
+REQUEST_FRESH = timedelta(minutes=15)  # a doctor's restart request older than this is dropped
 BACKOFF_AFTER_2FA = timedelta(minutes=30)
 LOGIN_HOURS = (dtime(6, 45), dtime(21, 0))
 NOTICE_WAIT_S = 75  # after a launch, how long to wait to see whether it needs the phone
@@ -75,6 +84,7 @@ TEXT_MANUAL = (
     "approve the login on your phone. To skip the typing next time, double-click "
     "ibkr_login_setup.cmd in the asx-bot folder once."
 )
+TEXT_BACK = "IB Gateway is back and connected to IBKR (down since {since})."
 TEXT_WAITING = (
     "IB Gateway is waiting for your login on the PC (IBKR username and password), then the "
     "approval on your phone. To make it automatic, double-click ibkr_login_setup.cmd in the "
@@ -93,6 +103,7 @@ STATE_DIR = Path(os.environ.get("ASXBOT_IBGATEWAY_STATE") or _local() / "asx-bot
 LAUNCHER_STATE = STATE_DIR / "launcher.json"
 SUPERVISOR_STATE = STATE_DIR / "supervisor.json"
 PAUSE_FILE = STATE_DIR / "PAUSE"
+RESTART_REQUEST = STATE_DIR / "RESTART_REQUEST.json"  # written by the connection doctor
 
 
 def read_json(path: Path) -> dict:
@@ -181,10 +192,28 @@ class Observation:
     foreign_pids: list[int] = field(default_factory=list)  # hand-started ibgateway.exe
     login_stored: bool = False
     paused: bool = False
+    internet_ok: bool | None = None  # probed only when Gateway is not healthy
+    ibkr_ok: bool | None = None
+    restart_request: dict = field(default_factory=dict)  # the doctor's, if fresh
 
     @property
     def healthy(self) -> bool:
         return self.port_open and self.api_ok and self.link_ok
+
+    @property
+    def offline(self) -> bool:
+        """The PC reaches neither the internet nor IBKR's servers."""
+        return self.internet_ok is False and self.ibkr_ok is False
+
+    def as_dict(self) -> dict:
+        """What the connection doctor reads (supervisor.json `observation`)."""
+        return {
+            "port_open": self.port_open, "api_ok": self.api_ok, "link_ok": self.link_ok,
+            "launcher_alive": self.launcher_alive, "phase": self.phase, "mode": self.mode,
+            "logging_in": self.launcher_alive and self.phase not in ("logged_in", "exited"),
+            "foreign_gateway": bool(self.foreign_pids), "login_stored": self.login_stored,
+            "internet_ok": self.internet_ok, "ibkr_ok": self.ibkr_ok,
+        }  # fmt: skip
 
     def summary(self) -> str:
         bits = [f"port {'open' if self.port_open else 'closed'}"]
@@ -197,6 +226,11 @@ class Observation:
         if self.foreign_pids:
             bits.append(f"hand-started gateway pid {','.join(map(str, self.foreign_pids))}")
         bits.append("login stored" if self.login_stored else "no login stored")
+        if self.internet_ok is not None:
+            bits.append(f"internet {'ok' if self.internet_ok else 'DOWN'}, IBKR servers "
+                        f"{'ok' if self.ibkr_ok else 'UNREACHABLE'}")  # fmt: skip
+        if self.restart_request:
+            bits.append(f"doctor asks for a restart: {self.restart_request.get('why', '?')}")
         return "; ".join(bits)
 
 
@@ -266,7 +300,21 @@ def observe(now: datetime) -> Observation:
     o.port_open = port_open()
     if o.port_open:
         o.api_ok, o.link_ok, o.api_note = api_probe()
+    o.restart_request = restart_request(now)
+    if not o.healthy:
+        from asxbot.ibkr.doctor import net_probe
+
+        o.internet_ok, o.ibkr_ok = net_probe()
     return o
+
+
+def restart_request(now: datetime, path: Path | None = None) -> dict:
+    """The connection doctor's request to restart Gateway, if it is fresh."""
+    body = read_json(path or RESTART_REQUEST)
+    at = _t(body.get("at"))
+    if not body or at is None or now - at > REQUEST_FRESH or at > now + timedelta(minutes=1):
+        return {}
+    return body
 
 
 # -- deciding ------------------------------------------------------------------------
@@ -278,6 +326,8 @@ class Plan:
     notice: str = ""  # phone | manual | waiting: what Rick is to be told, if anything
     reminder: bool = False
     close_outage: bool = False
+    back_since: str = ""  # an outage Rick was told about is over: tell him (since when)
+    consume_request: bool = False  # the doctor's restart request is answered: delete it
 
 
 def trading_day(d: date) -> bool:
@@ -308,18 +358,42 @@ def decide(o: Observation, st: dict, is_trading_day=trading_day) -> tuple[Plan, 
     if o.paused:
         return finish(Plan(why="paused (PAUSE file present)"))
 
+    if o.restart_request:
+        # The watcher's streams stopped although Gateway answers, and re-requesting and
+        # reconnecting did not bring them back (ibkr/doctor.py). Only a restart is left.
+        why = f"the connection doctor asked for a restart ({o.restart_request.get('why', '?')})"
+        if not o.login_stored:
+            return finish(Plan(why=f"{why}; not restarting: no stored login, so Gateway would "
+                                   "sit at its login window (the doctor tells Rick)",
+                               consume_request=True))  # fmt: skip
+        if not outage:
+            outage = {"since": now.isoformat(timespec="seconds"), "notice": None,
+                      "notified_at": None, "reminded_at": None}  # fmt: skip
+        plan = _restart(o, st, window, now, why)
+        plan.consume_request = plan.action != "none"
+        return finish(plan)
+
     if o.healthy:
         st["bad"] = st["link_bad"] = 0
         st.pop("backoff_until", None)
         plan = Plan(why="healthy")
         if outage:
             plan.close_outage = True
+            if outage.get("notified_at"):
+                plan.back_since = str(outage.get("since") or "")
             outage = {}
         return finish(plan)
 
     if not outage:
         outage = {"since": now.isoformat(timespec="seconds"), "notice": None,
                   "notified_at": None, "reminded_at": None}  # fmt: skip
+
+    if o.offline:
+        # No internet and no IBKR: a restart could not log in, and when the network comes
+        # back Gateway reconnects by itself. Wait; the counters start again after it.
+        st["bad"] = st["link_bad"] = 0
+        return finish(Plan(why="the PC is offline (no internet, IBKR unreachable): not "
+                               "restarting Gateway, waiting for the network"))  # fmt: skip
 
     ours_logging_in = o.launcher_alive and o.phase not in ("logged_in", "exited")
 
@@ -454,6 +528,7 @@ class Deps:
     sleep: object = time.sleep
     is_trading_day: object = trading_day
     state_path: Path = SUPERVISOR_STATE
+    request_path: Path = RESTART_REQUEST
 
 
 def run_once(now: datetime, deps: Deps) -> Plan:
@@ -496,9 +571,21 @@ def run_once(now: datetime, deps: Deps) -> Plan:
                 f"{'sent' if sent else 'NOT sent, will retry'}"  # fmt: skip
     if plan.close_outage:
         line += " | outage over"
+    if plan.back_since:
+        since = _t(plan.back_since)
+        text = TEXT_BACK.format(since=f"{since:%a %H:%M}" if since else "earlier")
+        sent = bool(deps.send and deps.send(escape(text)))
+        line += f" | told Rick it is back: {'sent' if sent else 'NOT sent'}"
+    if plan.consume_request:
+        try:
+            deps.request_path.unlink()
+            line += " | doctor's restart request answered"
+        except OSError:
+            pass
 
     st["last_check"] = now.isoformat(timespec="seconds")
     st["last_result"] = line
+    st["observation"] = o.as_dict()
     write_json(deps.state_path, st)
     deps.log(line)
     return plan

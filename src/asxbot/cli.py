@@ -168,6 +168,17 @@ def cmd_ibkr_check(args: argparse.Namespace) -> int:
     return run_check(cfg)
 
 
+def cmd_ibkr_doctor(args: argparse.Namespace) -> int:
+    """The connection doctor's view (docs/ibkr_doctor.md): its last diagnosis, the open
+    episode and what it tried, earlier episodes, the supervisor's last check, and a probe of
+    the port, the internet and IBKR's servers now. Reads files and opens TCP sockets only."""
+    from asxbot.ibkr.doctor import status_lines
+
+    for line in status_lines():
+        print(line)
+    return 0
+
+
 def cmd_alerts_clear(args: argparse.Namespace) -> int:
     from asxbot.alerts import Alerts
 
@@ -620,6 +631,9 @@ def build_parser() -> argparse.ArgumentParser:
     ibk.add_parser(
         "check", help="connect to IB Gateway and check live quotes and bars (BHP, XJO)"
     ).set_defaults(fn=cmd_ibkr_check)
+    ibk.add_parser(
+        "doctor", help="the connection doctor: its diagnosis, what it tried, the supervisor"
+    ).set_defaults(fn=cmd_ibkr_doctor)
     ch = sub.add_parser(
         "chat", help="the Trader's own Telegram chat with Rick (long-polls the trader bot)"
     )

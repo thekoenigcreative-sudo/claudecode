@@ -209,6 +209,7 @@ class Health:
     pacing_hits: int = 0
     farms_broken: set = field(default_factory=set)
     timeouts_in_row: int = 0  # bars batches in a row that ran out of time with nothing back
+    competing_at: str = ""  # 10197: a competing session holds the market data (live.py)
 
     def to_dict(self) -> dict:
         return {
@@ -226,6 +227,7 @@ class Health:
             "pacing_hits": self.pacing_hits,
             "farms_broken": sorted(self.farms_broken),
             "timeouts_in_row": self.timeouts_in_row,
+            "competing_at": self.competing_at,
         }
 
 

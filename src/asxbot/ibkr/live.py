@@ -82,11 +82,25 @@ SYD = ZoneInfo("Australia/Sydney")
 
 MAX_TICKERS = {101}  # "Max number of tickers has been reached"
 COMPETING = {10197}  # no market data during a competing live session
+CLIENT_ID_IN_USE = {326}  # "Unable to connect as the client id is already in use"
 SESSION_START = time_cls(9, 55)  # today's bars are fetched from here (the auction is 09:59)
 CLOSE = time_cls(16, 12)
 GRACE_S = 12.0  # a minute is closed this long after it ends if no later bar has arrived
 RT_BAR_S = 5
 STARTUP_S = 10  # a stock just subscribed is not called stale until this long has passed
+# IBKR's rule for real-time bars (reviewed 26 Sep 2026): a subscription counts against the
+# market data lines AND the pacing for small bars - no more than 60 new real-time bar
+# requests in any ten minutes. The first version asked for ~94 at once, every reconnect
+# asked for all of them again and the rotation churned more; nothing counted them. Now at
+# most RT_BUDGET in any RT_WINDOW_S, the index and the pinned stocks first; the rest are
+# polled with small history requests until there is room.
+RT_BUDGET = 50
+RT_WINDOW_S = 600.0
+RT_REFUSED_S = 600.0  # a stream IBKR refused (or that never delivered) is polled this long
+DEAD_STREAM_S = 60.0  # subscribed this long in the session with no bar while the index has
+STREAM_HOURS = (time_cls(10, 0), time_cls(16, 0))  # continuous trading: bars expected
+DEAD_FROM = time_cls(10, 15)  # dead streams are judged from here (after the staggered open)
+RT_REFUSALS = {162, 321, 322, 354, 366, 420, 10089, 10090, 10167, 10168, 10186, 10187, 200}
 
 
 @dataclass
@@ -138,9 +152,20 @@ class MinuteAggregator:
         self.complete: list[Bar] = []
         self.dropped = 0
         self.closed_through: datetime | None = None
+        # Minutes the stream saw only part of: the first after a (re)subscription that did
+        # not start on the minute. History wins for these (live.py `_today_frame`).
+        self.partial: set[datetime] = set()
+        self.fresh = True
+
+    def restart(self) -> None:
+        """The stream stopped (a cancel, a lost connection): the minute being built is
+        incomplete and is dropped; the next bar starts a fresh stretch."""
+        self.bucket = None
+        self.fresh = True
 
     def add(self, ts: datetime, o: float, h: float, lo: float, c: float, v: float) -> Bar | None:
-        b = ts.astimezone(SYD).replace(second=0, microsecond=0)
+        ts = ts.astimezone(SYD)
+        b = ts.replace(second=0, microsecond=0)
         done = None
         if self.closed_through is not None and b <= self.closed_through:
             self.dropped += 1
@@ -148,6 +173,9 @@ class MinuteAggregator:
         if self.bucket is not None and b > self.bucket:
             done = self._close()
         if self.bucket is None or b > self.bucket:
+            if self.fresh and ts.second >= RT_BAR_S:
+                self.partial.add(b)
+            self.fresh = False
             self.bucket, self.o, self.h, self.l, self.c = b, o, h, lo, c
             self.v, self.count = max(0.0, v) * self.scale, 1
         elif b == self.bucket:
@@ -243,6 +271,26 @@ class LiveGateway:
         self._dead_reqs: set[int] = set()  # requests IBKR refused for want of a line (101)
         self._last_hist_at = 0.0
         self._started = threading.Event()
+        # What the connection doctor (ibkr/doctor.py) reads and the hooks it pulls
+        # (26 Sep 2026): when the socket went, a client-id clash (326), a competing session
+        # (10197) with no data since, recent pacing violations, and a slowed history queue.
+        self.disconnected_since: float | None = self.clock()
+        self.clash_at: float | None = None
+        self.competing_since: float | None = None
+        self.pacing_times: deque = deque(maxlen=50)
+        self.history_slow_until = 0.0
+        self.history_slow_factor = 1.0
+        self._kick = threading.Event()
+        # the real-time bar budget and the streams IBKR refused (26 Sep 2026, RT_BUDGET)
+        self.rt_stamps: deque = deque()
+        self.rt_refused: dict[str, float] = {}
+        self._rt_budget_noted = 0.0
+        # what the feed actually watched, for MarketView.covered: per code, [start, end]
+        # wall-clock spans of an unbroken stream (end None while it runs) and of today's
+        # history answers (IBKR's history holds every traded minute of the span it answers)
+        self.stream_spans: dict[str, list[list]] = {}
+        self.hist_spans: dict[str, list[tuple]] = {}
+        self.given_up_at: dict[tuple[str, date], float] = {}
 
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> LiveGateway:
@@ -319,6 +367,9 @@ class LiveGateway:
     async def _sleep_or_stop(self, seconds: float) -> None:
         end = self.clock() + seconds
         while not self._stop.is_set() and self.clock() < end:
+            if self._kick.is_set():  # a reconnect was asked for: try now, not after backoff
+                self._kick.clear()
+                return
             await asyncio.sleep(min(0.2, max(0.0, end - self.clock())))
 
     async def _connect_once(self) -> bool:
@@ -359,6 +410,10 @@ class LiveGateway:
             return False
         self.ib = ib
         self.last_connect_error = ""
+        self.disconnected_since = None
+        self.clash_at = None
+        self.competing_since = None  # a new session: the competing one is not assumed
+        self.health.competing_at = ""
         self.health.connected = True
         self.health.refused = False
         if not self.health.last_error.startswith("lost"):
@@ -428,6 +483,8 @@ class LiveGateway:
         ib, self.ib = self.ib, None
         self.health.connected = False
         self.heartbeat_at = None
+        if self.disconnected_since is None:
+            self.disconnected_since = self.clock()
         if ib is None:
             return
         self._closing = True
@@ -438,6 +495,10 @@ class LiveGateway:
         self._closing = False
         for sub in [*self.subs.values(), *self.quotes.values()]:
             sub.handle = None  # re-requested on the next connection
+        with self.lock:
+            for code, agg in self.aggs.items():
+                agg.restart()
+                self._end_span(code)
 
     # -- callbacks (loop thread) ------------------------------------------------
     def _on_disconnect(self) -> None:
@@ -477,10 +538,15 @@ class LiveGateway:
             self.health.farms_broken.discard(text.split(":")[-1])
             self.health.server_ok = True
         elif code in NOT_CONNECTED:
+            # 502/504: Gateway says we are not connected. Until 26 Sep this only marked the
+            # feed not ready while heartbeats went on, so nothing reconnected: reconnect.
             self.health.connected = False
             self.health.last_error = f"{code}: {text}"
+            if self._lost is not None:
+                self._lost.set()
         elif code in PACING or (code == 162 and "pacing" in text.lower()):
             self.health.pacing_hits += 1
+            self.pacing_times.append(self.clock())
             self.pacing_until = self.clock() + 30.0
             log.error("IBKR pacing violation (%s: %s); history paused for 30 s", code, text)
             self._note("pacing violation")
@@ -500,9 +566,16 @@ class LiveGateway:
             self._note(f"line limit {self.line_limit}")
         elif code in COMPETING:
             self.health.last_error = f"{code}: {text}"
+            if self.competing_since is None:
+                self.competing_since = self.clock()
+                self.health.competing_at = self.wall().isoformat(timespec="seconds")
             log.error("IBKR: no market data during a competing session (%s); data is paused "
                       "until it flows again", text)  # fmt: skip
             self._note("competing session")
+        if code in CLIENT_ID_IN_USE or (int(req_id) < 0 and "already in use" in text.lower()):
+            self.clash_at = self.clock()
+            log.error("IBKR: client id %s is already in use (%s)", self.s.client_id, text)
+            self._note(f"client id {self.s.client_id} in use")
         if code in NO_PERMISSION:
             self.health.permission_denied = True
         if code in NO_SECURITY:
@@ -510,8 +583,32 @@ class LiveGateway:
             if bad:
                 self.unknown_codes.add(bad)
                 self._unqualified[bad] = self.clock()
+        streamed = self._req_codes.get(int(req_id)) if int(req_id) > 0 else None
+        if streamed and code in RT_REFUSALS and code not in MAX_TICKERS:
+            # A real-time bar request IBKR refused (pacing, no permission, no security...):
+            # until 26 Sep its handle stayed set, so the stock counted as streaming and was
+            # never polled. Drop it to polling for a while.
+            self._drop_stream(streamed, f"{code}: {text[:80]}")
         if int(req_id) > 0:
             self.health.last_request_error = f"{code}: {text}"
+
+    def _drop_stream(self, code: str, why: str) -> None:
+        """Loop thread: stop treating `code` as streaming; it is polled instead."""
+        sub = self.subs.pop(code, None)
+        self.rt_refused[code] = self.clock()
+        if sub is not None and sub.handle is not None and self.ib is not None:
+            try:
+                self.ib.cancelRealTimeBars(sub.handle)
+            except Exception:  # noqa: BLE001
+                pass
+        with self.lock:
+            agg = self.aggs.get(code)
+            if agg is not None:
+                agg.restart()
+            self._end_span(code)
+        log.warning("IBKR: %s is polled instead of streamed for %d min (%s)", code,
+                    int(RT_REFUSED_S // 60), why)  # fmt: skip
+        self._note(f"stream dropped {code}")
 
     # -- contracts --------------------------------------------------------------
     async def _qualify(self, code: str):
@@ -537,6 +634,13 @@ class LiveGateway:
         q = got[0] if got else None
         why = Gateway._accept(code, q)
         if why:
+            if self.health.farms_broken or not self.health.server_ok:
+                # A sec-def farm hiccup is not an answer (26 Sep 2026): asked again in a
+                # minute, and the stock is not called unknown for the day.
+                self._unqualified[code] = self.clock() - QUALIFY_RETRY_S + 60.0
+                log.warning("IBKR could not qualify %s while a farm is broken (%s); asking "
+                            "again in a minute", code, why)  # fmt: skip
+                return None
             self._unqualified[code] = self.clock()
             self.unknown_codes.add(code)
             log.warning("IBKR contract for %s refused (%s); not asked again for an hour", code, why)
@@ -547,14 +651,23 @@ class LiveGateway:
         return q
 
     # -- subscriptions -------------------------------------------------------
-    async def _resubscribe_all(self, why: str) -> None:
+    async def _resubscribe_all(self, why: str, codes=None) -> None:
+        """Every stream again (after a reconnect or 1101), inside the real-time bar budget
+        and in the order they were subscribed (the index and the pinned first); a stream
+        that does not fit is dropped to polling and the rotation brings it back. `codes`:
+        only these (the connection doctor re-requesting the index)."""
         if self.ib is None:
             return
         n = 0
+        wanted = None if codes is None else {c.upper() for c in codes}
         for code, sub in list(self.subs.items()):
+            if wanted is not None and code not in wanted:
+                continue
             if await self._subscribe_bars(sub):
                 n += 1
                 self._queue_catchup(code)
+            else:
+                self.subs.pop(code, None)
         for sub in list(self.quotes.values()):
             if await self._subscribe_quote(sub):
                 n += 1
@@ -572,14 +685,26 @@ class LiveGateway:
             except Exception:  # noqa: BLE001
                 pass
             sub.handle = None
+        with self.lock:
+            agg = self.aggs.get(sub.code)
+            if agg is not None:
+                agg.restart()
+            self._end_span(sub.code)
         c = await self._qualify(sub.code)
         if c is None:
+            return False
+        if self._rt_room() <= 0:
+            if self.clock() - self._rt_budget_noted > 60:
+                self._rt_budget_noted = self.clock()
+                log.info("IBKR: the real-time bar budget (%d in 10 min) is spent; %s and any "
+                         "others are polled until there is room", RT_BUDGET, sub.code)  # fmt: skip
             return False
         try:
             handle = ib.reqRealTimeBars(c, RT_BAR_S, "TRADES", False)
         except Exception as e:  # noqa: BLE001
             log.warning("IBKR real-time bars for %s could not be requested: %r", sub.code, e)
             return False
+        self.rt_stamps.append(self.clock())
         code = sub.code
 
         def on_update(bars, has_new, _code=code):
@@ -594,10 +719,22 @@ class LiveGateway:
         sub.handle = handle
         sub.contract = c
         sub.requested = self.clock()
+        sub.last_at = None
         return True
+
+    def _rt_room(self) -> int:
+        now = self.clock()
+        while self.rt_stamps and now - self.rt_stamps[0] >= RT_WINDOW_S:
+            self.rt_stamps.popleft()
+        return RT_BUDGET - len(self.rt_stamps)
 
     async def _unsubscribe_bars(self, code: str) -> None:
         sub = self.subs.pop(code, None)
+        with self.lock:
+            agg = self.aggs.get(code)
+            if agg is not None:
+                agg.restart()
+            self._end_span(code)
         if sub is None or sub.handle is None or self.ib is None:
             return
         try:
@@ -609,6 +746,12 @@ class LiveGateway:
         ib = self.ib
         if ib is None:
             return False
+        if sub.handle is not None and sub.contract is not None:
+            try:  # re-requested on a live connection (the doctor): cancel the old one first
+                ib.cancelMktData(sub.contract)
+            except Exception:  # noqa: BLE001
+                pass
+            sub.handle = None
         c = await self._qualify(sub.code)
         if c is None:
             return False
@@ -621,10 +764,12 @@ class LiveGateway:
         return True
 
     async def _set_streaming(self, wanted: list[str]) -> None:
-        wanted = list(dict.fromkeys(c.upper() for c in wanted))
+        now = self.clock()
+        self._drop_dead_streams(wanted[:1])
+        refused = {c for c, t in self.rt_refused.items() if now - t < RT_REFUSED_S}
+        wanted = [c for c in dict.fromkeys(c.upper() for c in wanted) if c not in refused]
         room = max(0, self.line_limit - int(self.s.stream_reserve_lines) - len(self.quotes))
         keep = wanted[:room]
-        now = self.clock()
         for code in list(self.subs):
             if code not in keep:
                 sub = self.subs[code]
@@ -632,8 +777,19 @@ class LiveGateway:
                     continue  # not churned: it stays until it has had its dwell
                 await self._unsubscribe_bars(code)
         for code in keep:
-            if code in self.subs:
+            sub = self.subs.get(code)
+            if sub is not None and sub.handle is not None:
                 continue
+            if sub is not None:  # its request failed earlier (the budget): try again
+                if not await self._subscribe_bars(sub):
+                    if self._rt_room() <= 0:
+                        break
+                    self.subs.pop(code, None)
+                else:
+                    self._queue_catchup(code)
+                continue
+            if self._rt_room() <= 0:
+                break
             room = max(0, self.line_limit - int(self.s.stream_reserve_lines) - len(self.quotes))
             if len(self.subs) >= room:
                 break
@@ -643,6 +799,58 @@ class LiveGateway:
                 self._queue_catchup(code)
             else:
                 self.subs.pop(code, None)
+
+    def _drop_dead_streams(self, index_first) -> None:
+        """In the continuous session, a stream subscribed for DEAD_STREAM_S with not one bar
+        while the index's stream delivers is dead (a refusal that came back unmapped, a
+        contract with no real-time bars): it is dropped to polling (26 Sep 2026)."""
+        now_wall = self.wall()
+        # Not before 10:15: the ASX opens in five groups from 10:00 to ~10:09 (S-Z last), and a
+        # stock that has not traded yet is not a dead stream.
+        if not (market_hours(now_wall) and DEAD_FROM <= now_wall.time() < STREAM_HOURS[1]):
+            return
+        index = index_first[0].upper() if index_first else None
+        isub = self.subs.get(index) if index else None
+        if isub is None or isub.last_at is None or self.clock() - isub.last_at > 30:
+            return  # without a live index there is no telling a dead stream from a quiet one
+        now = self.clock()
+        for code, sub in list(self.subs.items()):
+            if code == index or sub.handle is None or sub.last_at is not None:
+                continue
+            if now - sub.requested >= DEAD_STREAM_S:
+                self._drop_stream(code, f"no bar in {int(now - sub.requested)}s of streaming")
+
+    def _begin_span(self, code: str, at: datetime) -> None:
+        spans = self.stream_spans.setdefault(code, [])
+        if not spans or spans[-1][1] is not None:
+            spans.append([at, None])
+
+    def _end_span(self, code: str) -> None:
+        spans = self.stream_spans.get(code)
+        if spans and spans[-1][1] is None:
+            spans[-1][1] = self.wall()
+
+    def covered(self, code: str, start: datetime, end: datetime) -> bool:
+        """Did this connection watch `code` over [start, end]: inside one unbroken stream,
+        or one of today's history answers (which hold every traded minute of their span)?
+        A gap in the bars there is then real - the stock did not trade."""
+        code = code.upper()
+        start, end = start.astimezone(SYD), end.astimezone(SYD)
+        now = self.wall()
+        with self.lock:
+            spans = [(a, b or now) for a, b in self.stream_spans.get(code, [])]
+            spans += list(self.hist_spans.get(code, []))
+        if not spans:
+            return False
+        spans.sort()
+        slack = timedelta(minutes=1)
+        merged = [list(spans[0])]
+        for a, b in spans[1:]:
+            if a <= merged[-1][1] + slack:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        return any(a <= start + slack and end <= b + slack for a, b in merged)
 
     def _queue_catchup(self, code: str) -> None:
         """Today's bars up to now, so the stream's minutes join the ones before them."""
@@ -665,12 +873,20 @@ class LiveGateway:
         if agg is None:
             agg = self.aggs[code] = MinuteAggregator(code, self.volume_scale)
         with self.lock:
+            if agg.fresh:
+                # the stream's watch starts with its first complete minute
+                first = ts.astimezone(SYD).replace(second=0, microsecond=0)
+                self._begin_span(code, first if ts.astimezone(SYD).second < RT_BAR_S
+                                 else first + timedelta(minutes=1))  # fmt: skip
             agg.add(ts, float(b.open_), float(b.high), float(b.low), float(b.close),
                     float(getattr(b, "volume", 0.0) or 0.0))  # fmt: skip
             sub = self.subs.get(code)
             if sub is not None:
                 sub.last_at = self.clock()
             self.last_data_at = self.clock()
+            if self.competing_since is not None:  # data flows again: the session is ours
+                self.competing_since = None
+                self.health.competing_at = ""
             self.health.last_ok_at = self.wall().isoformat(timespec="seconds")
         if len(bars) > 4:
             del bars[:-2]  # ib_async keeps every bar; two are enough
@@ -697,11 +913,10 @@ class LiveGateway:
         if loop is None or self._hist_q is None:
             return False
         if kind == "today":
-            have = self._today_frame(code.upper(), day)
-            since = (have.index.max().to_pydatetime() if have is not None and len(have)
-                     else datetime.combine(day, SESSION_START, tzinfo=SYD))  # fmt: skip
-            secs = int((self.wall() - since).total_seconds()) + 180
-            job = HistJob(code.upper(), f"{max(300, min(secs, 86_400))} S", None, "today", day)
+            # The window is worked out when the request is SENT (`_today_duration`), not
+            # when it is queued: a job that waited behind pacing asked for too short a
+            # window and left a hole in the morning (26 Sep 2026).
+            job = HistJob(code.upper(), "", None, "today", day)
         else:
             job = HistJob(code.upper(), f"{int(sessions) + 1} D", end_of(day), "prior", day)
         self.hist_pending.add(key)
@@ -725,7 +940,8 @@ class LiveGateway:
     async def _wait_pacing(self) -> None:
         while True:
             now = self.clock()
-            gap = self._last_hist_at + float(self.s.history_min_interval_s) - now
+            slow = self.history_slow_factor if now < self.history_slow_until else 1.0
+            gap = self._last_hist_at + float(self.s.history_min_interval_s) * slow - now
             wait = max(self.pacing_until - now, gap)
             if self.pacer.room(now) <= 0:
                 wait = max(wait, 5.0)
@@ -743,6 +959,9 @@ class LiveGateway:
                 return
             await asyncio.sleep(1.0)
         await self._wait_pacing()
+        since = None
+        if job.kind == "today":
+            since, job.duration = self._today_duration(job.code, job.day)
         got, err = await self._history(job.code, job.duration, job.end)
         if got is None and err is not None:
             job.tries += 1
@@ -755,26 +974,42 @@ class LiveGateway:
                 n = self._failed(job.code, job.day)
                 if n >= 3:
                     self.hist_given_up.add((job.code, job.day))
+                    self.given_up_at[(job.code, job.day)] = self.clock()
                     log.warning("IBKR history for %s: given up after %d failed attempts (%s)",
                                 job.code, n, err)  # fmt: skip
             return
         self.hist_pending.discard(key)
         self.history_answered += 1
         df = bars_frame(got) if got else None
+        if df is not None and len(df) and self.competing_since is not None:
+            self.competing_since = None  # data answered: the session is ours again
+            self.health.competing_at = ""
         if job.kind == "today":
+            fetched = self.wall()
             if df is not None and len(df):
                 part = df[[d == job.day for d in df.index.date]]
                 with self.lock:
                     old = self.today_hist.get((job.code, job.day))
                     if old is not None and len(old[0]):
-                        part = pd.concat([old[0][old[0].index < part.index.min()], part])
-                    self.today_hist[(job.code, job.day)] = (part, self.wall())
+                        # merged, the new answer winning where both hold a minute: an old
+                        # minute the new window did not reach is kept (26 Sep 2026)
+                        part = pd.concat([old[0], part])
+                        part = part[~part.index.duplicated(keep="last")].sort_index()
+                    self.today_hist[(job.code, job.day)] = (part, fetched)
+            if since is not None and got is not None:
+                # an answered span (bars or none): every traded minute in it is held. The
+                # minute forming at the answer is not final, so the span ends before it.
+                end = fetched.replace(second=0, microsecond=0) - timedelta(minutes=1)
+                if end > since:
+                    with self.lock:
+                        self.hist_spans.setdefault(job.code, []).append((since, end))
             return
         # prior sessions: split by day, keep in memory, write to the local cache
         if df is None or not len(df):
             n = self._failed(job.code, job.day)
             if n >= 3:
                 self.hist_given_up.add((job.code, job.day))
+                self.given_up_at[(job.code, job.day)] = self.clock()
             return
         with self.lock:
             for d in sorted({x for x in df.index.date if x < job.day}):
@@ -785,6 +1020,25 @@ class LiveGateway:
             self.hist_failed.pop((job.code, job.day), None)
             self.hist[(job.code, job.day)] = self.hist.get((job.code, job.day), pd.DataFrame())
             self.hist_done_marker(job.code, job.day)
+
+    def _today_duration(self, code: str, day: date) -> tuple[datetime, str]:
+        """(since, IBKR duration) for today's bars of `code`, from the last minute held."""
+        have = self._today_frame(code, day)
+        since = (have.index.max().to_pydatetime() if have is not None and len(have)
+                 else datetime.combine(day, SESSION_START, tzinfo=SYD))  # fmt: skip
+        secs = int((self.wall() - since).total_seconds()) + 180
+        return since.astimezone(SYD), f"{max(300, min(secs, 86_400))} S"
+
+    def retry_given_up(self, after_s: float = 900.0) -> int:
+        """Prior sessions given up on are asked for again after `after_s`: an empty answer
+        is often a timeout (ib_async returns [] on one), not "no history" (26 Sep 2026)."""
+        now = self.clock()
+        back = [k for k, t in self.given_up_at.items() if now - t >= after_s]
+        for k in back:
+            self.given_up_at.pop(k, None)
+            self.hist_given_up.discard(k)
+            self.hist_failed.pop(k, None)
+        return len(back)
 
     def _failed(self, code: str, day: date) -> int:
         n = self.hist_failed[(code, day)] = self.hist_failed.get((code, day), 0) + 1
@@ -877,31 +1131,49 @@ class LiveGateway:
 
     # -- what the feed reads ------------------------------------------------------
     def _today_frame(self, code: str, day: date) -> pd.DataFrame | None:
-        """History fetched today (its newest, possibly forming, minute dropped) joined by
-        the minutes the stream has completed since."""
+        """Today's minutes: history (its newest, possibly forming, minute dropped) as the
+        base, the stream's completed minutes over it, minute by minute. A minute the stream
+        saw only part of (the first after a (re)subscription) gives way to history's.
+
+        Until 26 Sep 2026 history was kept only BEFORE the first streamed minute, so every
+        answer after it - the catch-up after a reconnect, the polls of a stock rotated out
+        of streaming - was thrown away and a hole stayed in the bars for the day: stops
+        inside it were never seen, and the scanner read the hole as a halt."""
         with self.lock:
             hist = self.today_hist.get((code, day))
             agg = self.aggs.get(code)
             live = agg.frame(day) if agg is not None else None
-        parts = []
+            partial = set(agg.partial) if agg is not None else set()
+        base = None
         if hist is not None:
             df, fetched = hist
             if len(df):
                 if fetched.time() < CLOSE and fetched.date() == day:
                     forming = fetched.replace(second=0, microsecond=0) - timedelta(minutes=1)
                     df = df[df.index < forming]
-                parts.append(df)
+                base = df
         if live is not None and len(live):
-            if parts:
-                parts[0] = parts[0][parts[0].index < live.index.min()]
-            parts.append(live)
-        if not parts:
+            if base is not None and len(base):
+                held = set(base.index)
+                live = live[[not (ts in partial and ts in held) for ts in live.index]]
+                out = pd.concat([base, live])
+            else:
+                out = live
+        else:
+            out = base
+        if out is None or not len(out):
             return None
-        out = pd.concat(parts).sort_index()
+        out = out.sort_index()
         return out[~out.index.duplicated(keep="last")]
 
     def bars_today(self, code: str, day: date) -> pd.DataFrame | None:
         return self._today_frame(code.upper(), day)
+
+    def today_fetched_at(self, code: str, day: date) -> datetime | None:
+        """When today's bars of a stock without a line were last answered by IBKR."""
+        with self.lock:
+            hist = self.today_hist.get((code.upper(), day))
+        return None if hist is None else hist[1]
 
     def streaming(self, code: str) -> bool:
         sub = self.subs.get(code.upper())
@@ -952,8 +1224,13 @@ class LiveGateway:
         named stocks' streamed data is older than `max_data_age_s`."""
         if not self.ready:
             return False, f"live feed down: {self.health.last_error or 'IB Gateway not ready'}"
+        if self.competing:
+            return False, ("live feed down: IBKR sends no market data while another session "
+                           "(the phone app or the website) holds it (10197)")  # fmt: skip
         max_age = float(self.s.max_data_age_s)
-        if market_hours(now):
+        # Judged 10:00-16:00: in the closing auction (16:00-16:10) nothing trades, so every
+        # stream falls silent and "stale" would be a false alarm (26 Sep 2026).
+        if market_hours(now) and now.astimezone(SYD).time() < STREAM_HOURS[1]:
             for code in (index, *codes):
                 if not self.streaming(code):
                     continue
@@ -975,6 +1252,10 @@ class LiveGateway:
         tk = streamed.handle if streamed is not None and streamed.handle is not None else None
         own = tk is None
         if own:
+            # ib_async keeps one Ticker per contract and hands the SAME object back on the
+            # next reqMktData, old values and all, so a second quote of a stock returned the
+            # first one's bid/ask/last/type at once (26 Sep 2026). Forget it first.
+            self._forget_ticker(ib, c)
             try:
                 tk = ib.reqMktData(c, "" if code.startswith("^") else self.s.generic_ticks)
             except Exception as e:  # noqa: BLE001
@@ -995,6 +1276,8 @@ class LiveGateway:
                 except Exception:  # noqa: BLE001
                     pass
         mdt = getattr(tk, "marketDataType", None)
+        if own:
+            self._forget_ticker(ib, c)
         q = {
             "code": code,
             "bid": _num(tk.bid), "bid_size": _num(tk.bidSize),
@@ -1012,9 +1295,21 @@ class LiveGateway:
         self.health.market_data_type = q["market_data_type"]
         if q["market_data_type"] in REAL_TIME_TYPES:
             self.health.permission_denied = False
+            if self.competing_since is not None:  # a real-time answer: the data is ours
+                self.competing_since = None
+                self.health.competing_at = ""
         self.last_data_at = self.clock()
         self.health.last_ok_at = self.wall().isoformat(timespec="seconds")
         return q
+
+    @staticmethod
+    def _forget_ticker(ib, contract) -> None:
+        tickers = getattr(getattr(ib, "wrapper", None), "tickers", None)
+        if isinstance(tickers, dict):
+            try:
+                tickers.pop(hash(contract), None)
+            except TypeError:
+                pass
 
     def quote(self, code: str, wait_s: float | None = None) -> dict | None:
         """One quote (bid/ask/last/sizes, open, previous close, halt flag, the auction's
@@ -1032,7 +1327,19 @@ class LiveGateway:
 
     # -- status ---------------------------------------------------------------
     def status(self) -> dict:
-        subs = [c for c, s in self.subs.items() if s.handle is not None]
+        """Never raises: the loop thread changes these dicts while this reads them."""
+        for _ in range(3):
+            try:
+                return self._status()
+            except RuntimeError:  # "changed size during iteration"
+                time.sleep(0.01)
+        return {**self.health.to_dict(), "ready": self.ready, "status": "unreadable"}
+
+    def _status(self) -> dict:
+        subs = [c for c, s in list(self.subs.items()) if s.handle is not None]
+        now = self.clock()
+        with_bar = sum(1 for s in list(self.subs.values())
+                       if s.last_at is not None and now - s.last_at <= 60)  # fmt: skip
         hb = self.heartbeat_age_s()
         data = self.data_age_s()
         return {
@@ -1045,6 +1352,10 @@ class LiveGateway:
             "reconnects": self.reconnects,
             "connect_failures": self.connect_failures,
             "streaming": len(subs),
+            "streams_with_a_bar_in_60s": with_bar,
+            "rt_requests_10min": RT_BUDGET - self._rt_room(),
+            "polled_not_streamed": sorted(c for c, t in list(self.rt_refused.items())
+                                          if now - t < RT_REFUSED_S)[:50],  # fmt: skip
             "streaming_codes": sorted(subs)[:400],
             "quote_streams": len(self.quotes),
             "line_limit": self.line_limit,
@@ -1055,8 +1366,86 @@ class LiveGateway:
             "given_up": sorted(f"{c} {d}" for c, d in self.hist_given_up)[:50],
             "unknown_codes": sorted(self.unknown_codes)[:50],
             "volume_scale": self.volume_scale,
+            "client_id": self.s.client_id,
+            "competing": self.competing,
+            "client_id_clash": self.clash_recent(),
+            "pacing_recent": self.pacing_recent(),
+            "disconnected_for_s": round(self.disconnected_for_s(), 1),
             "recent": list(self.events)[-12:],
         }
+
+    # -- recovery hooks (the connection doctor, ibkr/doctor.py) --------------------
+    @property
+    def competing(self) -> bool:
+        """IBKR said 10197 (a competing session holds the market data) and no bar has
+        arrived since."""
+        return self.competing_since is not None
+
+    def disconnected_for_s(self) -> float:
+        return 0.0 if self.disconnected_since is None else self.clock() - self.disconnected_since
+
+    def clash_recent(self, within_s: float = 300.0) -> bool:
+        return self.clash_at is not None and self.clock() - self.clash_at <= within_s
+
+    def pacing_recent(self, within_s: float = 600.0) -> int:
+        now = self.clock()
+        return sum(1 for t in self.pacing_times if now - t <= within_s)
+
+    def request_reconnect(self, why: str) -> bool:
+        """Drop the socket and connect again (backoff 1 s): every subscription is
+        re-requested and the missed minutes fetched (the same path as a lost connection)."""
+        loop = self._loop
+        if loop is None:
+            return False
+
+        def go():
+            log.warning("IBKR: reconnecting on request (%s)", why)
+            self._note(f"reconnect asked ({why})")
+            if self._lost is not None:
+                self._lost.set()
+
+        self._kick.set()  # if it is between tries, the next try starts now
+        loop.call_soon_threadsafe(go)
+        return True
+
+    def request_resubscribe(self, why: str, codes=None) -> bool:
+        """Cancel and re-request streams on the live connection (all, or `codes`), inside
+        the real-time bar budget. Does not wait: the watcher's thread is not held up."""
+        loop = self._loop
+        if loop is None or self.ib is None:
+            return False
+        fut = asyncio.run_coroutine_threadsafe(self._resubscribe_all(why, codes), loop)
+        fut.add_done_callback(lambda f: f.exception() and log.warning(
+            "IBKR: re-requesting the streams failed: %r", f.exception()))  # fmt: skip
+        return True
+
+    def ensure_alive(self) -> bool:
+        """Restart the connection's thread if it died (an exception out of its loop)."""
+        if self._stop.is_set():
+            return False
+        if self._thread is None or not self._thread.is_alive():
+            log.error("IBKR: the live connection's thread was not running; starting it again")
+            self._note("thread restarted")
+            self._thread = None
+            self.start()
+            return True
+        return False
+
+    def use_client_id(self, client_id: int, why: str) -> bool:
+        """Connect again under another client id (a stale connection holds ours)."""
+        import dataclasses
+
+        old = self.s.client_id
+        self.s = dataclasses.replace(self.s, client_id=int(client_id))
+        log.warning("IBKR: client id %s -> %s (%s)", old, client_id, why)
+        self._note(f"client id {old} -> {client_id}")
+        return self.request_reconnect(f"client id {client_id}: {why}")
+
+    def slow_history(self, factor: float, seconds: float) -> None:
+        """Space history requests `factor` times further apart for `seconds` (pacing)."""
+        self.history_slow_factor = max(1.0, float(factor))
+        self.history_slow_until = self.clock() + float(seconds)
+        self._note(f"history slowed x{factor:g} for {seconds:.0f}s")
 
     # -- test and chaos hooks -----------------------------------------------------
     def simulate_socket_drop(self) -> bool:

@@ -254,10 +254,13 @@ def test_gateway_gone_is_restarted_through_its_task_and_rick_told_once(tmp_path)
     # ten minutes on: one reminder
     S.run_once(MORNING + timedelta(minutes=10), f.deps)
     assert len(f.sent) == 2 and f.sent[1].startswith("Still waiting")
-    # logged in: the outage closes, nothing more is sent
+    # logged in: the outage closes, and Rick, who was told, is told it is back (26 Sep)
     f.observations = [obs(**HEALTHY, launcher_alive=True, phase="logged_in")]
     S.run_once(MORNING + timedelta(minutes=12), f.deps)
-    assert len(f.sent) == 2 and "outage over" in f.lines[-1]
+    assert len(f.sent) == 3 and "outage over" in f.lines[-1]
+    assert f.sent[2].startswith("IB Gateway is back") and "told Rick it is back" in f.lines[-1]
+    S.run_once(MORNING + timedelta(minutes=14), f.deps)
+    assert len(f.sent) == 3  # once
     assert json.loads((tmp_path / "supervisor.json").read_text())["outage"] is None
 
 

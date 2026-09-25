@@ -56,6 +56,8 @@ MINUTE_HISTORY_DAYS = 7
 # recorded before this minute starts joins the auction.
 AUCTION_MINUTE = time(9, 59)
 SESSION_OPEN = time(10, 0)
+STREAM_END = time(16, 0)  # continuous trading ends; the closing auction follows
+STALE_LIVE_S = 300.0  # a held stock's newest live minute older than this: Yahoo fills in
 
 
 class NoTradeYet(RuntimeError):
@@ -129,6 +131,7 @@ class MinuteBars:
         # (`live.live_ok()` False), so exits keep working from the best bars available.
         self.live = None
         self._live_days: set = set()  # (code, day) whose bars came from the live overlay
+        self._yahoo_behind: dict = {}  # code -> when Yahoo was last asked to fill in behind
 
     def set_live(self, source) -> None:
         self.live = source
@@ -143,9 +146,17 @@ class MinuteBars:
         parts = [cached[cached.index < live.index.min()], live] if (
             cached is not None and len(cached)) else [live]  # fmt: skip
         df = pd.concat(parts).sort_index()
-        if not self.live.live_ok():
-            # The stream has stopped: Yahoo's delayed bars behind the last live minute are
-            # the best available for stops and marks.
+        now = datetime.now(SYD)
+        behind = (now - live.index.max().to_pydatetime()).total_seconds() > STALE_LIVE_S
+        in_session = day == now.date() and SESSION_OPEN <= now.time() < STREAM_END
+        last_ask = self._yahoo_behind.get(code)
+        if not self.live.live_ok() or (
+            behind and in_session and (last_ask is None or (now - last_ask).total_seconds() >= 120)
+        ):
+            # The stream has stopped - for everything, or (26 Sep 2026) for this stock while
+            # the rest flows: Yahoo's delayed bars behind the last live minute are the best
+            # available for stops and marks.
+            self._yahoo_behind[code] = now
             yahoo = self._yahoo_fetch(code, day)
             if yahoo is not None and len(yahoo):
                 later = yahoo[yahoo.index > live.index.max()]
@@ -323,6 +334,15 @@ class MinuteBars:
         daily_volume = float(row.get("volume") or 0.0)
         minute_volume = float(minutes["volume"].sum())
         est = daily_volume - minute_volume
+        ibkr_auction = self._ibkr_auction_volume(code, day, minutes)
+        if ibkr_auction is not None:
+            # On an IBKR day the minutes are IBKR's and include its 09:59 bar - the opening
+            # auction's own volume - while Yahoo's daily volume lags ~20 minutes, so "daily
+            # less the minutes" came out at or below zero and the auction was refused on
+            # nearly every stock-day (review, 26 Sep 2026: 289 of 322 on 23-24 Sep bars).
+            # The volume is taken from IBKR's auction bar; the PRICE stays Yahoo's daily
+            # open, as Rick approved on 23 Sep (TRACKER #28, #34).
+            est = ibkr_auction
         base = dict(
             day=day.isoformat(), price=price, daily_volume=daily_volume,
             minute_volume=minute_volume, first_minute_open=first_open, read_at=read_at,
@@ -346,6 +366,18 @@ class MinuteBars:
         # On the grid (checked above) but carried as a float32 by the feed (0.800000011920929).
         base["price"] = _snap_to_tick(price)
         return done(OpeningAuction(available=True, reason="", volume=est, **base))
+
+    def _ibkr_auction_volume(self, code: str, day: date, minutes: pd.DataFrame) -> float | None:
+        """IBKR's opening-auction volume: its 09:59 bar, when today's minutes came from the
+        live overlay (IBKR). None otherwise (Yahoo's minutes leave the auction out)."""
+        if (code, day) not in self._live_days or not len(minutes):
+            return None
+        stamp = datetime.combine(day, AUCTION_MINUTE, tzinfo=SYD)
+        rows = minutes[[ts.to_pydatetime().astimezone(SYD) == stamp for ts in minutes.index]]
+        if not len(rows):
+            return None
+        vol = float(rows["volume"].sum())
+        return vol if vol > 0 else None
 
     # -- the fill rule ------------------------------------------------------
     def fill_at(self, code: str, decided_at: datetime, max_wait_minutes: int = 390) -> MinuteFill:

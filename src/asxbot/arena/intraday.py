@@ -308,14 +308,16 @@ class YahooDelayedFeed(IntradayFeed):
 
 class ReplayFeed(IntradayFeed):
     """Bars on disk, shown as a feed `delay_minutes` behind would have shown them at `now`.
-    For the plumbing replay only; never fetches."""
+    `delay_minutes=None`: as the live IBKR feed shows them - every minute that has ended
+    (the IBKR replay steps its clock to 20 s past each minute, when the live feed has closed
+    the minute before: 12 s after it ends). Never fetches."""
 
     name = "replay"
 
-    def __init__(self, minutes: MinuteBars, delay_minutes: int = 20):
+    def __init__(self, minutes: MinuteBars, delay_minutes: int | None = 20):
         super().__init__(minutes)
-        self.delay = int(delay_minutes)
-        self.delayed = self.delay > 0
+        self.delay = None if delay_minutes is None else int(delay_minutes)
+        self.delayed = bool(self.delay)
         self._cache: dict[tuple[str, date], pd.DataFrame | None] = {}
 
     def refresh(self, codes: list[str], now: datetime) -> list[str]:
@@ -328,6 +330,9 @@ class ReplayFeed(IntradayFeed):
         return self._cache[key]
 
     def bars(self, code: str, day: date, now: datetime) -> pd.DataFrame:
+        if self.delay is None:
+            return visible(self.full(code, day), now, None, day_complete=True,
+                           index=code.startswith("^"))  # fmt: skip
         return visible(self.full(code, day), now, self.delay, index=code.startswith("^"))
 
 
@@ -361,7 +366,16 @@ def make_feed(cfg, minutes: MinuteBars, events=None) -> IntradayFeed:
 def entries_allowed(view, now: datetime, codes=()) -> tuple[bool, str]:
     """May a playbook make a NEW entry on this view's feed now? A feed with no opinion
     (Yahoo only, the replay) says yes; the IBKR feed says no, and why, while it is down,
-    sending delayed data, or its bars are stale (ibkr/feed.py). Exits are never asked."""
+    sending delayed data, or its bars are stale (ibkr/feed.py). Rick's "no new entries
+    today" switch (arena/pause.py) says no for every playbook and both books. Exits are never
+    asked."""
+    pause_dir = getattr(view, "pause_dir", None)
+    if pause_dir is not None:
+        from asxbot.arena.pause import paused
+
+        stop, why = paused(pause_dir, now)
+        if stop:
+            return False, why
     fn = getattr(getattr(view, "feed", None), "entries_allowed", None)
     if fn is None:
         return True, ""
@@ -404,6 +418,9 @@ class MarketView:
         self._usual: dict[str, pd.Series | None] = {}
         self._history_tried: set[str] = set()
         self._generation = getattr(feed, "generation", 0)
+        # data/ of the live arena, for Rick's "no new entries today" switch (arena/pause.py);
+        # None in the replay and the tests (watch.day_view sets it).
+        self.pause_dir = None
 
     def _sync(self) -> None:
         """When the feed has switched source (IBKR <-> Yahoo), forget what came from the old
@@ -439,6 +456,14 @@ class MarketView:
                 self.feed.refresh([code], now)
             self._fetched[code] = now
         return self.feed.bars(code, self.day, now)
+
+    def covered(self, code: str, start: datetime, end: datetime) -> bool:
+        """Did the feed actually watch `code` over [start, end] - so a gap in its bars there
+        means the stock did not trade, not that nobody looked? The IBKR feed knows (streamed
+        spans and history fetches, ibkr/live.py); a feed that returns whole days (Yahoo, the
+        replay) always did."""
+        fn = getattr(self.feed, "covered", None)
+        return True if fn is None else bool(fn(code, start, end))
 
     def mark_fetched(self, codes: list[str], now: datetime) -> None:
         for c in codes:

@@ -1,0 +1,32 @@
+{
+  "at": "2026-09-26T02:57:24+10:00",
+  "steps": [
+    {
+      "step": "network probe",
+      "ok": true,
+      "detail": "internet answers, IBKR servers [('ndc1.ibllc.com', 4000), ('sdc1.ibllc.com', 4000), ('sdc1.ibllc.com', 4001)] answer"
+    },
+    {
+      "step": "connect and hold (client 47)",
+      "ok": true,
+      "detail": "ready True; doctor: healthy"
+    },
+    {
+      "step": "socket dropped -> back by itself, doctor verifies",
+      "ok": true,
+      "detail": "while down the doctor said watcher_disconnected; reconnects 0->1; now healthy; episodes closed 1"
+    },
+    {
+      "step": "reconnect on request",
+      "ok": true,
+      "detail": "reconnects 1->2; doctor healthy"
+    },
+    {
+      "step": "client-id clash -> spare id, verified",
+      "ok": true,
+      "detail": "326 seen False; connect failures 1; doctor said client_id_in_use; now client 44, ready True, doctor healthy; episode closed: {'since': '2026-09-26T02:57:27+10:00', 'until': '2026-09-26T02:57:36+10:00', 'causes': ['client_id_in_use'], 'fixed_by': 'reconnected under a spare client id', 'told': False}"
+    }
+  ],
+  "recorded_actions": [],
+  "passed": true
+}

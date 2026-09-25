@@ -52,3 +52,23 @@ def foreman_home(tmp_path, monkeypatch) -> Path:
     d = tmp_path / "foreman"
     monkeypatch.setenv("FOREMAN_HOME", str(d))
     return d
+
+
+@pytest.fixture(autouse=True)
+def ibkr_state_isolated(tmp_path, monkeypatch):
+    """No test reads or writes the real IB Gateway state (%LOCALAPPDATA%\asx-bot\ibgateway:
+    the supervisor's and the connection doctor's files), runs the supervisor's task, probes
+    the network or looks at the real Gateway (26 Sep 2026: a test that built the real feed
+    wrote the live doctor.json). Tests that need these pass their own fakes."""
+    from asxbot.ibkr import doctor, supervisor
+
+    d = tmp_path / "ibgateway"
+    monkeypatch.setattr(supervisor, "STATE_DIR", d)
+    monkeypatch.setattr(supervisor, "LAUNCHER_STATE", d / "launcher.json")
+    monkeypatch.setattr(supervisor, "SUPERVISOR_STATE", d / "supervisor.json")
+    monkeypatch.setattr(supervisor, "PAUSE_FILE", d / "PAUSE")
+    monkeypatch.setattr(supervisor, "RESTART_REQUEST", d / "RESTART_REQUEST.json")
+    monkeypatch.setattr(doctor, "run_supervisor_task", lambda: (False, "tests: not run"))
+    monkeypatch.setattr(doctor, "net_probe", lambda: (True, True))
+    monkeypatch.setattr(doctor, "_observe_gateway", lambda now: {})
+    return d

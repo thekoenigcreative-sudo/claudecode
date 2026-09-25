@@ -30,6 +30,10 @@ feed and never touches IB Gateway). With ibkr:
   * "Usual volume" and the previous close come from IBKR's own prior sessions, fetched
     before the open through the paced queue and cached on local disk, never from another
     vendor's volume.
+  * The connection doctor (ibkr/doctor.py, 26 Sep 2026) ticks inside `check`, every cycle:
+    it names the cause of any trouble, takes the recovery that cause needs (re-request the
+    streams, reconnect, a spare client id, the supervisor), verifies it, escalates, and tells
+    Rick in plain words; while its episode is open new entries stay paused.
 """
 
 from __future__ import annotations
@@ -68,6 +72,9 @@ PROBE_EVERY = timedelta(minutes=10)
 STATUS_EVERY = timedelta(minutes=5)
 HISTORY_TRIES = 3  # asks for a stock's prior sessions before giving up (live.py)
 POLL_MIN_GAP_S = 120.0  # a stock without a line is polled at most this often
+INDEX_POLL_GAP_S = 60.0  # ...the index, and a held stock, when their stream is quiet
+POLLED_FRESH_S = 180.0  # a polled stock's bars older than this: no new entry on it
+PIN_SHARE = 0.6  # tier 1 (pinned) takes at most this share of the streaming lines
 
 
 def status_path(data_dir: Path) -> Path:
@@ -109,6 +116,7 @@ class IBKRLiveFeed(IntradayFeed):
         self.events = events
         self.index = index
         self.pinned: set[str] = set()
+        self.pinned_order: list[str] = []
         self.interest: dict[str, float] = {}
         self.last_refresh: dict[str, datetime] = {}
         self.polled_at: dict[str, datetime] = {}
@@ -127,24 +135,34 @@ class IBKRLiveFeed(IntradayFeed):
 
     # -- what the watcher tells the feed -------------------------------------------
     def pin(self, codes) -> None:
-        """Tier 1: always streaming while pinned (positions, working orders, news)."""
-        self.pinned = {c.upper() for c in codes}
+        """Tier 1: always streaming while pinned. `codes` in priority order - positions and
+        working orders, then undecided reaction looks, then news (watch.pinned_codes); a set
+        is taken as it comes. Until 26 Sep 2026 tier 1 was sorted by name and unbounded: 120
+        news codes left a held ZIP unstreamed and the day trader's universe with no line."""
+        self.pinned_order = list(dict.fromkeys(c.upper() for c in codes))
+        self.pinned = set(self.pinned_order)
 
     def note_interest(self, scores: dict[str, float]) -> None:
         """Tier 2 ranking from the day trader's scan: higher streams first."""
         self.interest = {k.upper(): float(v) for k, v in scores.items()}
 
     def rotation_order(self, codes: list[str], now: datetime) -> list[str]:
-        """The index, then the pinned stocks, then the rest by interest and staleness."""
+        """The index, then the pinned stocks in their priority order (at most PIN_SHARE of
+        the lines; the pinned beyond that join the rest, first), then the rest by interest
+        and staleness."""
         epoch = datetime(2000, 1, 1, tzinfo=SYD)
 
         def stale(c: str) -> float:
             return (now - self.last_refresh.get(c, epoch)).total_seconds()
 
+        order = self.pinned_order or sorted(self.pinned)
+        cap = max(10, int(PIN_SHARE * max(0, self.gw.line_limit - self.gw.s.stream_reserve_lines)))
+        pinned = [c for c in order if c != self.index]
+        tier1, spill = pinned[:cap], pinned[cap:]
         rest = [c for c in dict.fromkeys(c.upper() for c in codes) if c not in self.pinned
                 and c != self.index]  # fmt: skip
         rest.sort(key=lambda c: (-self.interest.get(c, 0.0), -stale(c), c))
-        return [self.index, *sorted(self.pinned - {self.index}), *rest]
+        return [self.index, *tier1, *spill, *rest]
 
     # -- today ---------------------------------------------------------------
     def refresh(self, codes: list[str], now: datetime) -> list[str]:
@@ -159,13 +177,20 @@ class IBKRLiveFeed(IntradayFeed):
             self.last_refresh[c] = now
         cold = [c for c in order if not self.gw.streaming(c)]
         epoch = datetime(2000, 1, 1, tzinfo=SYD)
-        cold.sort(key=lambda c: self.polled_at.get(c, epoch))
+        cold.sort(key=lambda c: (c != self.index, c not in self.pinned,
+                                 self.polled_at.get(c, epoch)))  # fmt: skip
+        # The index and the pinned stocks are polled every minute when they have no line or
+        # their stream has gone quiet (26 Sep 2026: an index stream that never delivered
+        # paused every entry all day, and nothing asked for its bars another way).
+        quiet = [c for c in (self.index, *self.pinned_order) if self.gw.streaming(c)
+                 and (self.gw.data_age_s(c) or 0.0) > 90.0 and market_hours(now)]  # fmt: skip
         polled = []
-        for c in cold:
+        for c in [*quiet, *cold]:
             if len(polled) >= int(self.gw.s.poll_per_cycle):
                 break
             last = self.polled_at.get(c)
-            if last is not None and (now - last).total_seconds() < POLL_MIN_GAP_S:
+            gap = INDEX_POLL_GAP_S if (c == self.index or c in self.pinned) else POLL_MIN_GAP_S
+            if last is not None and (now - last).total_seconds() < gap:
                 continue
             if self.gw.queue_history(c, "today", day):
                 self.polled_at[c] = now
@@ -258,7 +283,35 @@ class IBKRLiveFeed(IntradayFeed):
         return True
 
     def entries_allowed(self, now: datetime, codes=()) -> tuple[bool, str]:
-        return self.gw.entries_allowed(now, list(codes), self.index)
+        ok, why = self.gw.entries_allowed(now, list(codes), self.index)
+        if not ok or not market_hours(now):
+            return ok, why
+        # A stock without a line is only as fresh as its last poll (26 Sep 2026: the per-stock
+        # check skipped every stock that was not streaming, so a setup on a stock polled 6
+        # minutes ago counted as fresh). Too old: no entry now, and it is polled at once.
+        day = now.astimezone(SYD).date()
+        for code in (c.upper() for c in codes):
+            if self.gw.streaming(code):
+                continue
+            at = self.gw.today_fetched_at(code, day)
+            age = None if at is None else (now.astimezone(SYD) - at).total_seconds()
+            if age is None or age > POLLED_FRESH_S:
+                self.gw.queue_history(code, "today", day)
+                self.polled_at[code] = now.astimezone(SYD)
+                return False, (f"stale: {code} is not streamed and its bars are "
+                               + ("not fetched yet" if age is None else f"{age:.0f}s old")
+                               + "; asked again")  # fmt: skip
+        return True, ""
+
+    def covered(self, code: str, start: datetime, end: datetime) -> bool:
+        return self.gw.covered(code, start, end)
+
+    def rotate(self, codes: list[str], now: datetime) -> None:
+        """The rotation and the polls, from the watcher every cycle 09:50-16:12, whatever
+        the day trader is doing (it used to run only inside the day trader's scan, so a
+        v2 position opened before 10:00 or after 15:45 was never streamed or polled)."""
+        if self.gw.ready:
+            self.refresh(codes, now)
 
 
 class FailoverFeed(IntradayFeed):
@@ -274,9 +327,11 @@ class FailoverFeed(IntradayFeed):
         data_dir: Path,
         events=None,
         now=None,
+        doctor=None,
     ):
         super().__init__(minutes)
         self.primary, self.backup = primary, backup
+        self.doctor = doctor
         self.data_dir = Path(data_dir)
         self.events = events
         self.generation = 0
@@ -343,6 +398,7 @@ class FailoverFeed(IntradayFeed):
             self.paused, self.pause_why, self.paused_since = True, why, now
             log.error("%s (%s): no new entries until IBKR data is fresh again", PAUSED_LABEL, why)
             self._event("paused", now)
+            self.write_status(now, force=True)  # a pause is news: not 5 minutes later
         elif not paused and self.paused:
             since = self.paused_since
             self.paused, self.pause_why, self.paused_since = False, "", None
@@ -350,6 +406,7 @@ class FailoverFeed(IntradayFeed):
             log.warning("resumed: live feed back after %s (was: %s); entries allowed again",
                         gone, why)  # fmt: skip
             self._event("resumed", now)
+            self.write_status(now, force=True)
         elif paused:
             self.pause_why = why
 
@@ -381,14 +438,36 @@ class FailoverFeed(IntradayFeed):
                 )
             else:
                 self.delayed_why = ""
+        try:
+            gw.ensure_alive()
+            gw.retry_given_up()
+        except Exception as e:  # noqa: BLE001
+            log.warning("the live connection could not be looked after: %s", e)
+        blocked, block_why = self._doctor_tick(now)
         if not self.using_primary:
             self._set_paused(True, self.why or "IB Gateway not ready", now)
         elif self.delayed_why:
             self._set_paused(True, self.delayed_why, now)
+        elif blocked:
+            self._set_paused(True, block_why, now)
         else:
             ok, why = self.primary.entries_allowed(now)
             self._set_paused(not ok, why, now)
         self.write_status(now)
+
+    def _doctor_tick(self, now: datetime) -> tuple[bool, str]:
+        """One tick of the connection doctor; (entries blocked, why). Never raises."""
+        if self.doctor is None:
+            return False, ""
+        try:
+            from asxbot.ibkr.doctor import gather
+
+            self.doctor.tick(gather(self.primary.gw, now, self.primary.index,
+                                    delayed=bool(self.delayed_why)))  # fmt: skip
+            return self.doctor.block()
+        except Exception as e:  # noqa: BLE001 - the doctor must never stop the watcher
+            log.exception("the connection doctor's tick failed: %s", e)
+            return False, ""
 
     def entries_allowed(self, now: datetime, codes=()) -> tuple[bool, str]:
         """May a playbook make a NEW entry now, on these stocks' prices?"""
@@ -413,6 +492,19 @@ class FailoverFeed(IntradayFeed):
     def fetch_one(self, code: str, now: datetime) -> None:
         if self.using_primary:
             self.primary.fetch_one(code, now)
+
+    def covered(self, code: str, start: datetime, end: datetime) -> bool:
+        """Watched over [start, end]? Only IBKR's own record says so: on the Yahoo fallback
+        (20 minutes late) a gap is never evidence that a stock did not trade."""
+        return self.using_primary and self.primary.covered(code, start, end)
+
+    def rotate(self, codes: list[str], now: datetime) -> None:
+        if not self.using_primary:
+            return
+        try:
+            self.primary.rotate(codes, now)
+        except FeedNotConnected as e:
+            log.warning("the streaming rotation could not run: %s", e)
 
     def bars(self, code: str, day: date, now: datetime) -> pd.DataFrame:
         """IBKR's bars when it holds any for the day; Yahoo's otherwise (gap-fill for marks,
@@ -471,19 +563,31 @@ class FailoverFeed(IntradayFeed):
             "gateway": gw.status(),
             "rotation": self.primary.rotation,
             "port": gw.s.port,
+            "doctor": (None if self.doctor is None else
+                       {"cause": self.doctor.last.cause, "evidence": self.doctor.last.evidence,
+                        "episode": self.doctor.episode}),  # fmt: skip
         }
         try:
             write_text_atomic(json.dumps(body, indent=2, default=str), status_path(self.data_dir))
-        except OSError as e:
+        except Exception as e:  # noqa: BLE001 - a status must never stop a scan
             log.warning("could not write the live-data status: %s", e)
 
 
 def build_failover(cfg, minutes, yahoo: YahooDelayedFeed, events=None) -> FailoverFeed:
+    from asxbot.arena.notify import build_notifier
+    from asxbot.ibkr.doctor import Doctor, gateway_actions
+
     gw = shared_live(cfg)
     gw.wait_ready(3.0)
     index = str(cfg.get("backtest.index_ticker", "^AXJO"))
+    try:
+        send = build_notifier(cfg).send
+    except Exception as e:  # noqa: BLE001 - the doctor still recovers, it just cannot tell
+        log.warning("the connection doctor has no Telegram: %s", e)
+        send = None
+    doctor = Doctor(gateway_actions(gw, send, index), events)
     return FailoverFeed(minutes, IBKRLiveFeed(minutes, gw, events, index), yahoo, cfg.data_dir,
-                        events)  # fmt: skip
+                        events, doctor=doctor)  # fmt: skip
 
 
 # --------------------------------------------------------------------------
