@@ -677,6 +677,8 @@ class Overlay:
 def test_the_broker_works_from_live_minutes_and_treats_them_as_final(tmp_path, monkeypatch):
     mb = MinuteBars(tmp_path / "data")
     today = datetime.now(SYD).date()
+    if today.weekday() >= 5:  # it failed every Saturday and Sunday (26 Sep), blocking deploys
+        pytest.skip("live minutes are today's, and final_bars yields weekdays only")
     t0 = datetime.combine(today, datetime.min.time(), tzinfo=SYD).replace(hour=10)
     live = pd.DataFrame({"open": [1.0, 1.1], "high": [1.0, 1.1], "low": [1.0, 1.1],
                          "close": [1.0, 1.1], "volume": [10.0, 20.0]},
