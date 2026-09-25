@@ -212,3 +212,11 @@ def test_an_outage_does_not_burn_the_queue_it_stops_and_leaves_it(tmp_path):
                 progress=lambda s: None)  # fmt: skip
     cov = M.coverage(root, ["AAA", "PRN", "BBB"], SESSIONS)
     assert cov["stock_days_missing"] == 0
+
+
+def test_oldest_first_works_the_window_from_the_other_end(tmp_path):
+    root = tmp_path / "hist"
+    gw = FakeGateway()
+    M.fetch_all(gw, root, SESSIONS, ["AAA"], chunk=30, workers=1, progress=lambda s: None,
+                oldest_first=True)  # fmt: skip
+    assert [c[1] for c in gw.calls] == ["5 D", "30 D"]  # the old chunk first

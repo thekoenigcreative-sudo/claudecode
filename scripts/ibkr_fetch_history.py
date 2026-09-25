@@ -197,7 +197,7 @@ def news_codes(
 def fetch_all(
     gw, root: Path, sessions: list[date], codes: list[str], chunk: int = CHUNK_SESSIONS,
     workers: int = WORKERS, stop_now=lambda: False, progress=print, log_every: int = 50,
-    ready_wait_s: float = READY_WAIT_S, sleep=time.sleep,
+    ready_wait_s: float = READY_WAIT_S, sleep=time.sleep, oldest_first: bool = False,
 ) -> dict:  # fmt: skip
     """Every span still missing, newest chunk first across every code, through `workers`
     threads. Returns the run's counts. `gw.history_sync(code, duration, end)` is the only
@@ -209,6 +209,10 @@ def fetch_all(
     rest to the next run (26 Sep 2026: an empty answer from a dead connection used to count
     as a try, so an outage burned the whole queue in minutes)."""
     groups = chunks_by_sessions(sessions, chunk)
+    if oldest_first:
+        # A second run beside the scheduled one works the window from the other end, so the
+        # two meet in the middle instead of asking for the same spans (26 Sep 2026).
+        groups = groups[::-1]
     queue: deque = deque((gi, code, 0) for gi in range(len(groups)) for code in codes)
     total = len(queue)
     stats = {"codes": len(codes), "jobs": total, "requests": 0, "bars": 0, "days_written": 0,
@@ -341,6 +345,8 @@ def main() -> int:
     ap.add_argument("--client-id", type=int, default=46)
     ap.add_argument("--chunk", type=int, default=CHUNK_SESSIONS, help="sessions a request")
     ap.add_argument("--workers", type=int, default=WORKERS, help="requests in flight")
+    ap.add_argument("--oldest-first", action="store_true",
+                    help="work the oldest chunk first (a second run beside the scheduled one)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -399,7 +405,8 @@ def main() -> int:
         return is_trading_day(t.date()) and NO_FETCH_HOURS[0] <= t.hour < NO_FETCH_HOURS[1]
 
     stats = fetch_all(gw, root, sessions, codes, chunk=args.chunk, workers=args.workers,
-                      stop_now=stop_now, progress=lambda s: print(s, flush=True))  # fmt: skip
+                      stop_now=stop_now, progress=lambda s: print(s, flush=True),
+                      oldest_first=args.oldest_first)  # fmt: skip
     if extra and not stop_now():
         print(f"news stocks outside the list: {len(extra)} codes over {len(extra_sessions)} "
               f"sessions ({extra_sessions[0]}..{extra_sessions[-1]})", flush=True)  # fmt: skip
