@@ -45,6 +45,7 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 - Real costs in the simulator: exchange fees (Binance spot 0.10%; futures fees per venue), ASX brokerage both ways, spread, slippage, funding payments on futures, and liquidation at the maintenance margin.
 - Shorts: crypto only on coins with a futures market; ASX only on ASX 200 stocks (the realistic borrowable set).
 - Data: free public exchange data via `ccxt` (no accounts or keys) and the ASX collector.
+- Replay (25 Sep 2026): `asxbot arena replay-ibkr` runs the frozen v2 and day-trader RULE BOTS day by day over IBKR's 1-minute history (the same scanner, limits, costs, slippage and volume-capped fills, on a simulated clock) and writes a scorecard per playbook. It is labelled REPLAY and is not a verdict on the agent: the agent's judgment is not in it, and today's index lists are applied to every past day. It earns a hypothesis, never a promotion.
 
 ## The agent's full job
 ### Before the event: prepare, so decisions are fast and informed

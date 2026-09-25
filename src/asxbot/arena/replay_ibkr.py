@@ -45,7 +45,7 @@ from asxbot.arena.reaction_v2 import load_bot_state
 from asxbot.arena.runtime import Arena
 from asxbot.backtest.costs import CostModel
 from asxbot.config import Config
-from asxbot.io import write_parquet_atomic, write_text_atomic
+from asxbot.io import safe_stem, write_parquet_atomic, write_text_atomic
 from asxbot.log import get_logger
 
 log = get_logger("asxbot.arena.replay_ibkr")
@@ -78,7 +78,8 @@ class HistoryBars(MinuteBars):
         self._memo: dict = {}
 
     def _path(self, code: str, day: date) -> Path:
-        return self.root / code.upper() / f"{day.isoformat()}.parquet"
+        # PRN (a Windows device name) is cached as PRN_, as every cache here names it.
+        return self.root / safe_stem(code.upper()) / f"{day.isoformat()}.parquet"
 
     def cached(self, code: str, day: date) -> pd.DataFrame | None:
         key = (code.upper(), day)

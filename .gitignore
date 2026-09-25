@@ -17,3 +17,6 @@ build/
 
 # logs
 *.log
+
+# replay workers' intermediate slices; the report and its JSON are what is kept
+reports/replay_ibkr_*_parts/

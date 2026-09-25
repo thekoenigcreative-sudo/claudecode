@@ -835,9 +835,14 @@ class LiveGateway:
             return None
 
     def _cache_path(self, code: str, day: date) -> Path | None:
+        """<history_dir>/<code>/<day>.parquet; a code that is a Windows device name (PRN)
+        gets the suffix every cache here uses (asxbot.io.safe_stem) - the plain name cannot
+        be a folder, and on the night of 25 Sep it killed a fetch worker."""
         if self.history_dir is None:
             return None
-        return self.history_dir / code.upper() / f"{day.isoformat()}.parquet"
+        from asxbot.io import safe_stem
+
+        return self.history_dir / safe_stem(code.upper()) / f"{day.isoformat()}.parquet"
 
     def _write_cache(self, code: str, day: date, df: pd.DataFrame) -> None:
         p = self._cache_path(code, day)
