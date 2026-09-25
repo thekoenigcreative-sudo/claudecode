@@ -331,15 +331,24 @@ def test_gap_and_go_fires_on_the_first_close_above_the_15_minute_high(cfg, mb):
     assert found[0].stop == pytest.approx(1.04) and "T10:15" in found[0].trigger_bar
 
 
-def test_opening_range_breakout_needs_rising_volume(cfg, mb):
+def test_opening_range_breakout_needs_rising_volume_on_the_first_close_beyond_the_range(cfg, mb):
+    """The FIRST bar to close beyond the range is the only candidate (corrected 2026-09-25,
+    tests/test_day1_fixes.py): a quiet first break means no breakout that day, however
+    heavy a later bar; a first break with the volume fires there."""
     rows = {(10, m): (1.0, 1.01, 0.99, 1.0, 2000) for m in range(0, 40)}
-    rows[(10, 35)] = (1.0, 1.03, 1.0, 1.02, 3000)  # breaks out on too little volume
-    rows[(10, 38)] = (1.0, 1.03, 1.0, 1.02, 9000)  # breaks out on 4.5x
+    rows[(10, 35)] = (1.0, 1.03, 1.0, 1.02, 3000)  # the first close above, on too little volume
+    rows[(10, 38)] = (1.0, 1.03, 1.0, 1.02, 9000)  # heavier, but not the first: not a breakout
     c = _ctx(mb, frame(DAY, rows), _conf(cfg))
     found = [s for s in DT.detect(c, None, set(), DT._t("15:45"))
              if s.setup == "opening_range_breakout"]  # fmt: skip
-    assert len(found) == 1 and "T10:38" in found[0].trigger_bar
+    assert found == []
+    rows[(10, 35)] = (1.0, 1.03, 1.0, 1.02, 9000)  # the first close above, on 4.5x
+    c = _ctx(mb, frame(DAY, rows), _conf(cfg))
+    found = [s for s in DT.detect(c, None, set(), DT._t("15:45"))
+             if s.setup == "opening_range_breakout"]  # fmt: skip
+    assert len(found) == 1 and "T10:35" in found[0].trigger_bar
     assert found[0].stop == pytest.approx(1.0)  # the midpoint of 0.99-1.01
+    assert found[0].context["first_break"] == "10:35"
 
 
 def test_each_setup_fires_once_a_day_and_bars_after_the_scan_end_do_not_trigger(cfg, mb):

@@ -199,6 +199,11 @@ def daytrader_facts(cfg, day: date) -> dict:
     for x in sig:
         by[x["setup"]] = by.get(x["setup"], 0) + 1
     agent = [x.get("agent") or {} for x in sig]
+
+    def uneconomic(x: dict) -> bool:
+        return any(str((x.get(k) or {}).get("skipped", "")).startswith("uneconomic")
+                   for k in ("bot", "agent"))  # fmt: skip
+
     return {
         "universe": len(st.get("universe", [])),
         "setups_found": len(sig),
@@ -207,6 +212,10 @@ def daytrader_facts(cfg, day: date) -> dict:
         "agent_took": sum(1 for a in agent if a.get("order_id")),
         "agent_rejected": sum(1 for a in agent if "rejected" in a),
         "agent_not_asked": sum(1 for a in agent if a.get("skipped")),
+        # Filtered by the scanner before anyone was asked: 1R at the largest size the rules
+        # allow below 2x the round-trip cost (Rick's brief, 25 Sep; daytrader.economic).
+        "uneconomic": sum(1 for x in sig if uneconomic(x)),
+        "history": st.get("history"),
         "rejections": [a.get("rejected") for a in agent if "rejected" in a][:8],
     }
 

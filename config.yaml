@@ -770,6 +770,15 @@ arena:
         # the tick; it stops filling 10 minutes after it is recorded (a stale setup).
         limit_slack_pct: 1.0
         good_for_minutes: 10
+        # Added 2026-09-25 (Rick's brief, the day-1 fixes), a DELIBERATE FILTER, not a tuned
+        # number: a setup whose 1R at the largest size the rules allow (the risk budget, the
+        # $5,000 cap, 5% of turnover) is below this multiple of the round-trip cost
+        # (brokerage both ways, slippage both ways, the arena's own cost model) is filtered
+        # by the scanner and logged with the arithmetic, never sent to the bot or the agent.
+        # About 15 of day 1's 36 agent rejections were exactly this ("1R $6-$24 against
+        # roughly $23 of costs"); the rules rejected them anyway. The sizing rule itself is
+        # unchanged. daytrader.economic.
+        min_r_over_costs: 2.0
         # Size: shares = min(risk budget / |entry - stop|, max_position_aud / entry,
         # max_order_share_of_turnover x median turnover / entry), whole shares.
       manage:

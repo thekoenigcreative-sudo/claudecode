@@ -136,11 +136,17 @@ def gap_and_go(c: Ctx, i: int) -> Setup | None:
     need = float(p["gap_pct_vs_index"])
     bar = c.bars.iloc[i]
     so_far = c.bars.iloc[: i + 1]
-    rv = c.rvol(ts)
-    if rv is None or rv < float(p["min_rvol"]):
-        return None
     hi, lo = float(opening["high"].max()), float(opening["low"].min())
-    if gap >= need and bar["close"] > hi and float(so_far["low"].min()) >= c.prev_close:
+    # The rule names THE FIRST bar in the window that closes beyond the range. Only that
+    # bar can be the trigger; its RVOL is then tested. Until 2026-09-25 any later bar that
+    # happened to have the volume fired, hours after the range had gone (see
+    # opening_range_breakout, the same fault, found in the agent's day-1 rejections).
+    first_up, first_down = _first_breaks(c.bars, p["window"], hi, lo)
+    rv = c.rvol(ts)
+    ctx = {"range_high": hi, "range_low": lo, "range_minutes": int(p["range_minutes"])}
+    if gap >= need and first_up == ts and float(so_far["low"].min()) >= c.prev_close:
+        if rv is None or rv < float(p["min_rvol"]):
+            return None  # the first close above the range had no volume: no setup today
         return Setup(
             c.ticker,
             "gap_and_go",
@@ -149,15 +155,18 @@ def gap_and_go(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             lo,
             rv,
-            f"gap {gap:+.1f}% vs index, closed {bar['close']:.4g} above the "
+            f"gap {gap:+.1f}% vs index, first close ({bar['close']:.4g}) above the "
             f"{p['range_minutes']}-min high {hi:.4g}, gap unfilled, RVOL {rv:.1f}",
+            {**ctx, "first_break": ts.strftime("%H:%M")},
         )
     if (
         gap <= -need
         and c.shortable
-        and bar["close"] < lo
+        and first_down == ts
         and float(so_far["high"].max()) <= c.prev_close
     ):
+        if rv is None or rv < float(p["min_rvol"]):
+            return None
         return Setup(
             c.ticker,
             "gap_and_go",
@@ -166,10 +175,22 @@ def gap_and_go(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             hi,
             rv,
-            f"gap {gap:+.1f}% vs index, closed {bar['close']:.4g} below the "
+            f"gap {gap:+.1f}% vs index, first close ({bar['close']:.4g}) below the "
             f"{p['range_minutes']}-min low {lo:.4g}, gap unfilled, RVOL {rv:.1f}",
+            {**ctx, "first_break": ts.strftime("%H:%M")},
         )
     return None
+
+
+def _first_breaks(bars: pd.DataFrame, window, hi: float, lo: float):
+    """The first bar in the window that closed above `hi`, and the first that closed below
+    `lo` (each None if none has). Stable: earlier bars never change."""
+    t = bars.index.time
+    lo_t, hi_t = _t(window[0]), _t(window[1])
+    inside = bars[(t >= lo_t) & (t <= hi_t)]
+    up = inside[inside["close"] > hi]
+    down = inside[inside["close"] < lo]
+    return (up.index[0] if len(up) else None), (down.index[0] if len(down) else None)
 
 
 def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
@@ -184,21 +205,36 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
     ]
     if not len(rng):
         return None
+    hi, lo = float(rng["high"].max()), float(rng["low"].min())
+    # THE FIRST bar in the window that closes beyond the range is the only bar that can be
+    # the breakout; the volume test is applied to it. Until 2026-09-25 the code fired on
+    # the first bar that closed beyond the range AND had the volume, which let a range
+    # broken quietly at 10:31 produce a "breakout" on a heavy bar hours later, with the
+    # stop (the range's midpoint) a long way off: CWY, HDN, AUB, ORI, CHC and DRR on 25 Sep,
+    # each rejected by the agent as "the scanner's 30-min low doesn't match the bars". The
+    # range was right; the bar was not the break. A first break without the volume means
+    # no opening-range setup on that side today (tests/test_day1_fixes.py).
+    first_up, first_down = _first_breaks(c.bars, p["window"], hi, lo)
+    bar = c.bars.iloc[i]
+    up = first_up == ts and bar["close"] > hi
+    down = first_down == ts and bar["close"] < lo and c.shortable
+    if not (up or down):
+        return None
     look = int(p["bar_volume_lookback"])
     before = c.bars.iloc[max(0, i - look) : i]
     if len(before) < max(3, look // 2):
         return None
-    bar = c.bars.iloc[i]
     avg = float(before["volume"].mean())
     if avg <= 0 or float(bar["volume"]) < float(p["bar_volume_multiple"]) * avg:
-        return None
+        return None  # the break came without the volume: no setup on this side today
     rv = c.rvol(ts)
     if rv is None or rv < float(p["min_rvol"]):
         return None
-    hi, lo = float(rng["high"].max()), float(rng["low"].min())
     mid = (hi + lo) / 2
     vol_x = float(bar["volume"]) / avg
-    if bar["close"] > hi and mid < bar["close"]:
+    ctx = {"range_high": hi, "range_low": lo, "range_minutes": int(p["range_minutes"]),
+           "first_break": ts.strftime("%H:%M")}  # fmt: skip
+    if up and mid < bar["close"]:
         return Setup(
             c.ticker,
             "opening_range_breakout",
@@ -207,10 +243,11 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             mid,
             rv,
-            f"closed {bar['close']:.4g} above the 30-min high {hi:.4g} on {vol_x:.1f}x "
+            f"first close ({bar['close']:.4g}) above the 30-min high {hi:.4g} on {vol_x:.1f}x "
             f"the prior {look} bars' volume, RVOL {rv:.1f}",
+            ctx,
         )
-    if bar["close"] < lo and c.shortable and mid > bar["close"]:
+    if down and mid > bar["close"]:
         return Setup(
             c.ticker,
             "opening_range_breakout",
@@ -219,8 +256,9 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             mid,
             rv,
-            f"closed {bar['close']:.4g} below the 30-min low {lo:.4g} on {vol_x:.1f}x "
+            f"first close ({bar['close']:.4g}) below the 30-min low {lo:.4g} on {vol_x:.1f}x "
             f"the prior {look} bars' volume, RVOL {rv:.1f}",
+            ctx,
         )
     return None
 
@@ -504,7 +542,7 @@ def scan(
         for s in new:
             pos = bars.index.get_loc(pd.Timestamp(s.trigger_bar))
             age = len(bars) - 1 - int(pos)
-            s.context = {"age_bars": age}
+            s.context = {**s.context, "age_bars": age}
             if age > max_age:
                 s.context["stale"] = True
             found.append(s)
@@ -652,6 +690,39 @@ def terms(arena, pb: Playbook, acct, s: Setup, stop: float | None = None) -> dic
     }
 
 
+def round_trip_cost(arena, value: float, ticker: str) -> float:
+    """Brokerage both ways plus slippage both ways for a position of this value, in dollars
+    (the arena's own cost model, so the filter and the fills agree)."""
+    costs = arena.broker.costs
+    adv = arena.broker.adv_lookup(ticker) if getattr(arena.broker, "adv_lookup", None) else None
+    slip = costs.slippage_pct(value, adv)
+    return 2 * costs.brokerage(value) + 2 * slip * value
+
+
+def economic(arena, pb: Playbook, t: dict, s: Setup) -> tuple[bool, str]:
+    """Rick's brief (25 Sep 2026, day-1 fixes): the scanner must not send a setup whose 1R at
+    the largest size the rules allow cannot exceed `entry.min_r_over_costs` (2) times the
+    round-trip cost - about 15 of day 1's 36 agent rejections said exactly that ("1R $6-$24
+    against roughly $23 of costs"). Sizing is the written rule (risk budget, the $5,000
+    cap, 5% of turnover); this only filters, and says why, before anyone is asked."""
+    entry = pb.raw.get("entry") or {}
+    mult = float(entry.get("min_r_over_costs", 0) or 0)
+    if mult <= 0:
+        return True, ""
+    cost = round_trip_cost(arena, float(t["value"]), s.ticker)
+    # 1R as the trade will actually carry it: the fill is at the next bar, near the last
+    # price, so R is |last - stop| a share (the limit's 1% slack is a cap on the fill, and
+    # `t["risk"]` is the conservative figure the risk cap is checked against).
+    r = abs(float(s.last) - float(t["stop"])) * int(t["qty"])
+    if r < mult * cost:
+        return False, (
+            f"uneconomic: 1R ${r:,.0f} at the largest size the rules allow "
+            f"(${t['value']:,.0f}, stop {abs(s.last - t['stop']) / s.last * 100:.2f}% "
+            f"from the last price) is below {mult:g}x the round-trip cost ${cost:,.2f}"
+        )
+    return True, ""
+
+
 def place(
     arena, pb: Playbook, acct, s: Setup, t: dict, kind: str, model: str, why: str, seen_at: datetime
 ) -> dict:
@@ -707,7 +778,7 @@ YOU ARE DECIDING AT: {now:%Y-%m-%d %H:%M} Sydney
 
 THE SETUP ({s.setup}, {s.side.upper()}) - {s.ticker}
   trigger bar {s.trigger_bar[11:16]}: {s.why}
-  the setup's stop (its invalidation): {t["stop"]}   entry limit: {t["limit"]}
+{_range_line(s)}  the setup's stop (its invalidation): {t["stop"]}   entry limit: {t["limit"]}
   code's size: {t["qty"]:,} shares (${t["value"]:,.0f}), risk ${t["risk"]:,.0f}
   (risk per trade is capped at {pb.risk_per_trade_pct}% of the account)
   code manages the trade: stop to breakeven at +1R, half off at +2R, then a 1R trail;
@@ -726,6 +797,19 @@ End with one JSON block and nothing after it:
 {{"action": "take" | "reject", "stop": <optional tighter stop, or null>,
   "why": "<one or two sentences>"}}
 """
+
+
+def _range_line(s: Setup) -> str:
+    """The opening range the setup broke, and that this bar is the FIRST close beyond it,
+    so the agent can see what the scanner saw (day 1's "doesn't match the bars")."""
+    c = s.context or {}
+    if c.get("range_high") is None:
+        return ""
+    return (
+        f"  the {c.get('range_minutes')}-min opening range: low {c.get('range_low'):.4g}, high "
+        f"{c.get('range_high'):.4g}; this bar ({c.get('first_break')}) is the FIRST close "
+        "beyond it today\n"
+    )
 
 
 def setup_context(
@@ -1034,6 +1118,10 @@ def _bot_take(arena, pb, s: Setup, now: datetime, day: date) -> dict:
     t = terms(arena, pb, acct, s)
     if t is None:
         return {"skipped": "cannot be sized (stop on the wrong side, or below the minimum order)"}
+    ok, why = economic(arena, pb, t, s)
+    if not ok:
+        log.info("day trader: %s %s not sent to the bot - %s", s.ticker, s.setup, why)
+        return {"skipped": why, **t}
     return place(arena, pb, acct, s, t, "bot", "none (rule-based bot)", f"rule: {s.why}", now)
 
 
@@ -1045,6 +1133,10 @@ def _agent_take(arena, pb, view, s: Setup, now: datetime, day: date, rows: dict)
     t = terms(arena, pb, acct, s)
     if t is None:
         return {"skipped": "cannot be sized"}
+    ok, why = economic(arena, pb, t, s)
+    if not ok:
+        log.info("day trader: %s %s not sent to the agent - %s", s.ticker, s.setup, why)
+        return {"skipped": why, **t}
     if "industry" not in _DAY:
         _DAY["industry"] = _industries(arena)
     ctx = setup_context(view, s, now, _DAY["industry"], rows, _news_rows(arena, day))
