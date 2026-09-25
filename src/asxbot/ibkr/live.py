@@ -100,6 +100,14 @@ RT_REFUSED_S = 600.0  # a stream IBKR refused (or that never delivered) is polle
 DEAD_STREAM_S = 60.0  # subscribed this long in the session with no bar while the index has
 STREAM_HOURS = (time_cls(10, 0), time_cls(16, 0))  # continuous trading: bars expected
 DEAD_FROM = time_cls(10, 15)  # dead streams are judged from here (after the staggered open)
+# The streamed bars' volume units, checked against IBKR's own history on Monday 28 Sep, the
+# first day the stream runs in market hours (26 Sep 2026, review D14): history is in shares
+# (0.97 of Yahoo's on 24 Sep); the 5-second bars have never been seen. RVOL, the volume tests
+# of every setup and the 20%-of-a-bar fill cap all read streamed volume, so a stream in lots
+# of 100 would pass every volume test by a factor of 100. The same complete minute from both
+# sources is compared; the median settles it.
+VOLUME_SAMPLES = 20  # overlapping minutes before a verdict
+VOLUME_OK = (0.8, 1.25)  # history / stream within this: the same units
 RT_REFUSALS = {162, 321, 322, 354, 366, 420, 10089, 10090, 10167, 10168, 10186, 10187, 200}
 
 
@@ -241,6 +249,8 @@ class LiveGateway:
         self.quotes: dict[str, Sub] = {}
         self.aggs: dict[str, MinuteAggregator] = {}
         self.volume_scale = 1.0
+        self.volume_ratios: deque = deque(maxlen=400)  # history / stream, same minute
+        self.volume_check = "not yet: no minute seen by both the stream and history"
         self.today_hist: dict[tuple[str, date], tuple[pd.DataFrame, datetime]] = {}
         self.hist: dict[tuple[str, date], pd.DataFrame] = {}
         self.hist_failed: dict[tuple[str, date], int] = {}
@@ -996,6 +1006,7 @@ class LiveGateway:
                         part = pd.concat([old[0], part])
                         part = part[~part.index.duplicated(keep="last")].sort_index()
                     self.today_hist[(job.code, job.day)] = (part, fetched)
+                self._compare_volume(job.code, job.day, part)
             if since is not None and got is not None:
                 # an answered span (bars or none): every traded minute in it is held. The
                 # minute forming at the answer is not final, so the span ends before it.
@@ -1020,6 +1031,54 @@ class LiveGateway:
             self.hist_failed.pop((job.code, job.day), None)
             self.hist[(job.code, job.day)] = self.hist.get((job.code, job.day), pd.DataFrame())
             self.hist_done_marker(job.code, job.day)
+
+    def _compare_volume(self, code: str, day: date, hist: pd.DataFrame) -> None:
+        """Loop thread: the same complete minutes (10:01-16:00; the 10:00 minute may hold the
+        auction in one source and not the other) from history and from the stream."""
+        with self.lock:
+            agg = self.aggs.get(code)
+            live = agg.frame(day) if agg is not None else None
+            partial = set(agg.partial) if agg is not None else set()
+        if live is None or not len(live) or hist is None or not len(hist):
+            return
+        both = hist.index.intersection(live.index)
+        for ts in both:
+            t = ts.time()
+            if ts in partial or not (time_cls(10, 1) <= t < STREAM_HOURS[1]):
+                continue
+            h, v = float(hist.loc[ts, "volume"]), float(live.loc[ts, "volume"])
+            if h > 0 and v > 0:
+                self.volume_ratios.append(h / v)
+        self._judge_volume()
+
+    def _judge_volume(self) -> None:
+        n = len(self.volume_ratios)
+        if n < VOLUME_SAMPLES or self.volume_check.startswith(("same", "corrected")):
+            return
+        r = sorted(self.volume_ratios)[n // 2]
+        if VOLUME_OK[0] <= r <= VOLUME_OK[1]:
+            self.volume_check = f"same units: history/stream median {r:.2f} over {n} minutes"
+            log.info("IBKR streamed volume checked against history: %s", self.volume_check)
+            return
+        for factor in (100.0, 0.01, 10.0, 0.1):
+            if VOLUME_OK[0] <= r / factor <= VOLUME_OK[1]:
+                self.volume_scale = factor
+                with self.lock:
+                    for agg in self.aggs.values():
+                        agg.scale = factor
+                        for b in agg.complete:
+                            b.volume *= factor
+                        agg.v *= factor
+                self.volume_check = (f"corrected: the stream's volume was x{1 / factor:g} of "
+                                     f"history's (median {r:.2f} over {n} minutes); scaled by "
+                                     f"{factor:g}")  # fmt: skip
+                log.error("IBKR STREAMED VOLUME UNITS DIFFER from history: %s",
+                          self.volume_check)  # fmt: skip
+                self._note("stream volume rescaled")
+                return
+        self.volume_check = (f"MISMATCH: history/stream median {r:.2f} over {n} minutes - "
+                             "volume tests on streamed bars are not to be trusted")  # fmt: skip
+        log.error("IBKR streamed volume does not match history: %s", self.volume_check)
 
     def _today_duration(self, code: str, day: date) -> tuple[datetime, str]:
         """(since, IBKR duration) for today's bars of `code`, from the last minute held."""
@@ -1366,6 +1425,7 @@ class LiveGateway:
             "given_up": sorted(f"{c} {d}" for c, d in self.hist_given_up)[:50],
             "unknown_codes": sorted(self.unknown_codes)[:50],
             "volume_scale": self.volume_scale,
+            "volume_check": self.volume_check,
             "client_id": self.s.client_id,
             "competing": self.competing,
             "client_id_clash": self.clash_recent(),

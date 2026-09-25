@@ -334,3 +334,64 @@ def test_on_an_ibkr_day_the_auction_volume_is_ibkr_s_0959_bar(tmp_path):
     mb2._live_days.add(("AAA", today))
     a2 = mb2.opening_auction("AAA", today, bars, now, wait_minutes=30)
     assert a2.available and a2.volume == 5000.0 and a2.price == 10.0
+
+
+# --------------------------------------------------------------------------
+# D14: the streamed bars' volume units, checked against history
+# --------------------------------------------------------------------------
+def _both(gw, stream_vol: float, hist_vol: float, n: int = 25):
+    stream(gw, "AAA", at(10, 1), n)  # 12 five-second bars of 10 a minute = 120
+    agg = gw.aggs["AAA"]
+    for b in agg.complete:
+        b.volume = stream_vol
+    hist = minutes(at(10, 1), n, vol=hist_vol)
+    gw._compare_volume("AAA", DAY, hist)
+
+
+def test_the_same_units_are_confirmed_and_nothing_changes():
+    gw = bare_gateway(at(11, 0))
+    _both(gw, 100.0, 97.0)
+    assert gw.volume_check.startswith("same units") and gw.volume_scale == 1.0
+
+
+def test_a_stream_in_lots_of_100_is_rescaled_and_said_loudly():
+    gw = bare_gateway(at(11, 0))
+    _both(gw, 5.0, 500.0)
+    assert gw.volume_check.startswith("corrected") and gw.volume_scale == 100.0
+    assert all(b.volume == 500.0 for b in gw.aggs["AAA"].complete)
+    assert gw.aggs["AAA"].scale == 100.0  # new bars too
+
+
+def test_an_unexplained_ratio_is_a_mismatch_not_a_guess():
+    gw = bare_gateway(at(11, 0))
+    _both(gw, 100.0, 330.0)
+    assert gw.volume_check.startswith("MISMATCH") and gw.volume_scale == 1.0
+
+
+def test_too_few_minutes_decide_nothing():
+    gw = bare_gateway(at(11, 0))
+    _both(gw, 5.0, 500.0, n=5)
+    assert gw.volume_check.startswith("not yet")
+
+
+def test_a_volume_units_problem_is_a_self_check_failure(tmp_path, config_file):
+    import json
+
+    from asxbot.arena import selfcheck as S
+    from asxbot.config import load_config
+
+    cfg = load_config(config_file(data={"provider": "yfinance", "dir": str(tmp_path / "data"),
+                                        "live_provider": "ibkr"}),
+                      env_file=tmp_path / "none.env")  # fmt: skip
+    p = cfg.data_dir / "arena" / "live_data.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    now = at(11, 0)
+    body = {"at": now.isoformat(), "provider_in_use": "ibkr", "entries": "allowed",
+            "gateway": {"connected": True, "server_ok": True, "refused": False,
+                        "volume_check": "corrected: the stream's volume was x0.01 of history's"}}
+    p.write_text(json.dumps(body), encoding="utf-8")
+    c = S.check_live_data(cfg, now)
+    assert not c.ok and "streamed volume" in c.detail
+    body["gateway"]["volume_check"] = "same units: history/stream median 0.98 over 40 minutes"
+    p.write_text(json.dumps(body), encoding="utf-8")
+    assert S.check_live_data(cfg, now).ok

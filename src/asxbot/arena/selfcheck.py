@@ -484,6 +484,12 @@ def check_live_data(cfg, now: datetime) -> Check:
             f"entries paused on the live feed ({why}); exits keep working",
             facts=facts, items=[why],
         )  # fmt: skip
+    units = str(gwh.get("volume_check") or "")
+    if fresh and units.startswith(("MISMATCH", "corrected")):
+        # 26 Sep 2026 (review D14): the streamed bars' volume against IBKR's own history
+        # (ibkr/live.py). Every volume test and the fill cap read streamed volume.
+        return Check("live_data", False, f"IBKR streamed volume: {units}", facts=facts,
+                     items=[units.split(":")[0]])  # fmt: skip
     kind = gwh.get("market_data") or "unknown"
     extra = ""
     if gwh.get("streaming") is not None:
