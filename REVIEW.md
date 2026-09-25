@@ -116,7 +116,7 @@ I runtime.
 | G6 | Both trader agents are full Claude Code sessions with a shell and no permission prompts, reading third-party PDFs (prompt injection could run `asxbot arena place-order`) | **Needs Rick's OK** - an OpenClaw config change; nothing was changed there (openclaw.json is shared with Jarvis) |
 | G9, I10 | Day 1 is not like for like: v2's bot result is entirely the 10:53 re-run on delayed bars; the agent's NWL/HLS looks were lost to the data failure | **Needs Rick's OK**: show totals with and without partial days; decide whether partial days extend the test |
 | G10 | Decisions did not record the code that made them | Fixed (every order records its release) |
-| D6 | A day the watcher was down is counted as a flat test day | Open: a design is in the notes below; **needs Rick's OK** on how such days count |
+| D6 | A day the watcher was down is counted as a flat test day | Recorded (7908470): the heartbeat keeps a day record and the evening report names gaps and stalled cycles in market hours as a CANDIDATE partial day; nothing is excluded - **how such days count is Rick's call** |
 | B11 | The replay differs from live in small ways (bars one minute later; the flat sweep's price) | Fixed 5a21ce3: the clock steps to 20 s past each minute as live sees bars |
 | H1, H2, H3 | `arena preclose` could run v1's hold-or-close on the live v2 book; `fake-announcement` wrote into the live test; `arena reset` could delete the test books; `place-order --by bot` | Fixed ac28761 (refused during the test; logged) |
 | #49 | The 25 Sep "uneconomic" filter also changes the rule bot's record from day 2 | Still **needs Rick's OK** (TRACKER #49) |
@@ -180,18 +180,25 @@ it mid-test is a bigger risk than leaving it.
 ## Also open (not fixed, low)
 
 C14 (the index base for news during the session), B10 (whether IBKR's live stream puts the
-auction in the 10:00 bar - check on Monday), D14 (the streamed bars' volume units - check on
-Monday against the evening's history), D16 (small wording in the 16:10 summary), G12 (the
+auction in the 10:00 bar - check on Monday; the day trader's volume tests start at 10:01, so
+it cannot reach them), D16 (small wording in the 16:10 summary), G12 (the
 model-mismatch self-check's blind spots), A17 (tidy-ups in live.py), H10 (the v1 flow in
 watch.py, after the test), the Foreman's parser (F3) and go-live note (F14).
+
+D14 (the streamed bars' volume units, never seen live) is now CHECKED automatically from
+Monday (aa6bfd0): the same complete minutes from the stream and from IBKR's history are
+compared; the same units are recorded, a factor of 100 or 10 is corrected, anything else is a
+MISMATCH - both said loudly by the live_data self-check.
 
 ## Commits
 
 8628940 (the connection doctor and the live feed), 9fc46ec (day trader and v2), ac28761
 (watcher, books, reports, agents), 185f176 (the chat), 67a4a64 (docs, dead code, the agents'
-facts), 5a21ce3 (the replay). Deployed as release 20260926-034550-5a21ce3789: 1056 tests
-pass inside the export. The chat was restarted onto it (Saturday 03:49); every other task
-picks it up at its next start - the watcher at 07:30 Monday.
+facts), 5a21ce3 (the replay), aa6bfd0 (streamed volume units), 7908470 (the watcher's day
+record), 410741a (a second history fetch from the oldest end). Deployed as release
+20260926-042321-7908470a1a: 1068 tests pass inside the export. The chat was restarted at
+03:49 on Saturday onto the 5a21ce3 release (the chat's code has not changed since); every
+other task picks up the newest release at its next start - the watcher at 07:30 Monday.
 
 ## Monday 07:30
 
