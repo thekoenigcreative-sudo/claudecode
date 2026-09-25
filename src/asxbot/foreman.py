@@ -26,7 +26,10 @@ Handing over = one UTF-8 JSON file in %USERPROFILE%\\.foreman\\inbox (FOREMAN_HO
 the folder; the tests always set it), written as <name>.tmp and renamed to <name>.json so
 the Foreman never reads half a file:
     {"bot": "trader", "from": "Rick", "text": <his exact message>,
-     "at": <when he sent it, ISO with offset>, "why": "foreman topic" | "can't do: ..."}
+     "at": <when he sent it, ISO with offset>, "why": "foreman topic" | "can't do: ..." |
+     "reply to a Foreman message", "reply_to": <the message he replied to, when he did>}
+(26 Sep 2026: Rick's reply to a Foreman or change-job message - "yes", "ok do it" - is handed
+over with the text it answers as "reply_to", instead of reaching the decider bare.)
 The Foreman answers in this chat and acts: a command is applied, anything else becomes a
 queued build that makes the system able to do it. It ignores a handover it has already
 answered from the chat log, so handing over a Foreman topic is always safe.
@@ -128,7 +131,8 @@ _TRADERS_OWN = re.compile(
     r"\$|\b(?:order|orders|trade|trades|trading|traded|position|positions|buy|sell|sold|"
     r"bought|short|cover|stock|stocks|shares?|price|stop[- ]loss|watcher|arena|decider|"
     r"reader|announcements?|answer|answers|reply|chat|conversation|report|day ?trader|"
-    r"playbook|p ?& ?l|pnl|profit|loss|model|opus|sonnet|think|thinking)\b"
+    r"playbook|p ?& ?l|pnl|profit|loss|model|opus|sonnet|think|thinking|entries|entry|buying|"
+    r"kill switch|gateway|ibkr|feed|prices)\b"
 )  # fmt: skip
 
 
@@ -155,6 +159,12 @@ def follow_up(text: str, known_codes: Collection[str] = ()) -> bool:
     return bool(_FOLLOW_UP.search(t))
 
 
+def traders_own(text: str) -> bool:
+    """A message about the Trader's own business - trading, the arena, the chat, the models,
+    the feed - which is never the Foreman's, even as a reply to one of its messages."""
+    return bool(_TRADERS_OWN.search(plain.normalise(text)))
+
+
 def off_limits(text: str) -> str | None:
     """A hard rule the message is about (real money, IBKR orders, credentials, Jarvis): never
     handed over - nothing will be built for it."""
@@ -167,8 +177,11 @@ def off_limits(text: str) -> str | None:
 # --------------------------------------------------------------------------- handing over
 
 
-def hand_over(text: str, at: datetime, why: str, *, now: datetime | None = None) -> Path:
-    """Write one handover into the Foreman's inbox. Returns the .json path; raises OSError."""
+def hand_over(text: str, at: datetime, why: str, *, now: datetime | None = None,
+              reply_to: str | None = None) -> Path:  # fmt: skip
+    """Write one handover into the Foreman's inbox. Returns the .json path; raises OSError.
+    `reply_to` (26 Sep 2026): the text of the message Rick's reply answers - a bare "yes" to
+    a Foreman question means nothing without it."""
     now = now or datetime.now(SYD)
     at = at if at.tzinfo else at.replace(tzinfo=SYD)
     box = inbox()
@@ -176,6 +189,8 @@ def hand_over(text: str, at: datetime, why: str, *, now: datetime | None = None)
     name = f"{now:%Y%m%d-%H%M%S}-{BOT}-{secrets.token_hex(2)}"
     body = {"bot": BOT, "from": "Rick", "text": text, "at": at.isoformat(timespec="seconds"),
             "why": why}  # fmt: skip
+    if reply_to:
+        body["reply_to"] = str(reply_to)[:2000]
     tmp, final = box / f"{name}.tmp", box / f"{name}.json"
     try:
         tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -240,10 +255,16 @@ _KNOWING = re.compile(
     r"\bcan(?:'t|not| not) (?:tell|say|be sure|know|see|recall|remember|find|work out|"
     r"confirm|verify|guarantee|promise|predict|rule out|explain)\b"
 )  # fmt: skip
-# ... and "orders aren't placed from this chat" is a hard rule, not a gap.
+# ... and "orders aren't placed from this chat" is a hard rule, not a gap. 26 Sep 2026: so is
+# anything about how the arena trades - "I can't change the stop rules mid-test" was handed
+# over and became a queued build. The playbooks, their limits and the models are frozen for
+# the test, and a refusal about them is honest, never a gap for the Foreman to fill.
 _RULE = re.compile(
-    r"\b(?:orders?|trades?|trading|buy|sell|short|close|cover|positions?|real[- ]money|live "
-    r"(?:account|broker|trading)|broker|ibkr|passwords?|credentials?|jarvis)\b"
+    r"\b(?:orders?|trades?|trading|buy|buying|sell|selling|short|close|cover|positions?|"
+    r"real[- ]money|live (?:account|broker|trading)|broker|ibkr|passwords?|credentials?|jarvis|"
+    r"stops?|target|targets|risk|(?<!usage )(?<!weekly )(?<!session )(?<!claude )(?<!plan )"
+    r"(?<!rate )(?<!hour )limits?|size|sizes|sizing|entry|entries|rule|rules|"
+    r"strategy|strategies|playbook|playbooks|threshold|thresholds|model|models|watcher)\b"
 )  # fmt: skip
 
 

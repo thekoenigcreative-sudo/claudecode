@@ -36,7 +36,7 @@ PHRASES = [
     ("any trades today", "trades"),
     ("did it buy anything", "trades"),
     ("show me the fills", "trades"),
-    ("stop it for today", "stop"),
+    ("stop it for today", "pause"),
     ("stop", "stop"),
     ("cancel that", "stop"),
     ("never mind", "stop"),
@@ -92,7 +92,7 @@ PHRASES = [
     ("sell everything", "order_request"),
     ("open positions", "positions"),
     ("trade list", "trades"),
-    ("stop trading for now", "stop"),
+    ("stop trading for now", "pause"),
     ("i want the decider to think harder", "think_set"),
     ("when is the evening report", "hours"),
     ("how did it go last friday", "today"),
@@ -110,6 +110,98 @@ PHRASES = [
     ("the decider used opus yesterday and passed on everything", None),
     ("the decider thought the high was fine and passed", None),
     ("was it opus that passed on NWL this morning", "model_show"),
+    # 26 Sep 2026, a review of the chat (tests/test_chat_review.py). F1: a question, a
+    # negation or a hedge only shows the models; "six words or fewer" is no instruction.
+    ("dont switch the decider to sonnet", "model_show"),
+    ("sonnet for the reader?", "model_show"),
+    ("maybe opus for the reader", "model_show"),
+    ("use sonnet for the reader tomorrow", "model_show"),
+    ("the decider stays on opus", "model_show"),
+    ("decider think harder about exits", None),
+    ("less thinking more trading", None),
+    ("opus 5.5 passed on everything", None),
+    ("I think we are up today", "pnl"),
+    ("decider think harder", "think_set"),
+    ("reader think less", "think_set"),
+    ("put it back to opus", "model_set"),  # read back, and refused mid-test unless confirmed
+    # F4: Rick's "no new entries today"
+    ("can you make it stop trading today", "pause"),
+    ("no new entries today", "pause"),
+    ("stop buying for today", "pause"),
+    ("halt entries", "pause"),
+    ("kill switch", "pause"),
+    ("shut it down", "pause"),
+    ("switch it off", "pause"),
+    ("emergency stop", "pause"),
+    ("fuck it stop everything", "pause"),
+    ("stop everything", "pause"),
+    ("dont open any more positions today", "pause"),
+    ("dont trade today", "pause"),
+    ("no more trades today", "pause"),
+    ("call it a day", "pause"),
+    ("stop the watcher", "pause"),
+    ("resume trading", "resume"),
+    ("start trading again", "resume"),
+    ("allow entries again", "resume"),
+    ("stop it", "stop"),
+    ("stop the answer", "stop"),
+    # F5: ordinary words are not stock codes
+    ("what happened today pls", "today"),
+    ("wow", None),
+    ("omg", None),
+    ("bet", None),
+    # F6: quick spellings and swearing
+    ("whats running", "tasks"),
+    ("whats the status", "status"),
+    ("hows it goin", "today"),
+    ("hows the day trader going", "today"),
+    ("watcher up?", "status"),
+    ("wat happened today", "today"),
+    ("ffs how did it go today", "today"),
+    # F7: money in Rick's words
+    ("how much did we make today", "pnl"),
+    ("did we lose money", "pnl"),
+    ("what's the damage", "pnl"),
+    ("what's the total", "pnl"),
+    ("bot vs agent", "pnl"),
+    ("is the agent beating the bot", "pnl"),
+    ("who's winning", "pnl"),
+    # F8: IB Gateway and the prices
+    ("is ibkr connected", "feed"),
+    ("is the gateway up", "feed"),
+    ("gateway should be back", "feed"),
+    ("is the data live", "feed"),
+    ("is it on ibkr or yahoo", "feed"),
+    ("has the gateway crashed", "feed"),
+    ("are we on live prices", "feed"),
+    # F11: the week, and "c'mon" is not Monday
+    ("c'mon why no trades today", "trades"),
+    ("how did we go this week", "week"),
+    ("how did we go last week", "week"),
+    # F12: misroutes
+    ("open a new chat", "new"),
+    ("short answer please", None),
+    ("short version", None),
+    ("cover the basics", None),
+    ("double check the positions", "positions"),
+    ("add to the list", None),
+    ("exit", None),
+    ("would you buy BHP", None),
+    ("sorry to interrupt", None),
+    ("i didnt mean to interrupt", None),
+    ("take it one at a time", None),
+    ("interrupt mode", "queue_set"),
+    ("what changes did it make to the stops", None),
+    ("reduce the position size", None),
+    ("did the evening report go out", "report_sent"),
+    ("has the report been sent", "report_sent"),
+    ("i didnt get the evening report", "report_sent"),
+    ("is the market open", "hours"),
+    ("is today a trading day", "hours"),
+    ("restart the watcher", "watcher_restart"),
+    ("can you restart the watcher", "watcher_restart"),
+    ("sell BHP", "order_request"),
+    ("could you close NWL", "order_request"),
 ]
 
 
@@ -133,7 +225,9 @@ def test_the_words_carry_their_details():
     assert plain.understand("reader effort low", KNOWN).level == "low"
     assert plain.understand("set the decider's thinking to max", KNOWN).level == "max"
     assert plain.understand("turn the reader's thinking down", KNOWN).level == "down"
-    assert plain.understand("stop it for today", KNOWN).trading is True
+    assert plain.understand("stop it for today", KNOWN).stop_answer is True
+    assert plain.understand("no new entries today", KNOWN).stop_answer is False
+    assert plain.understand("stop the watcher", KNOWN).watcher is True
     assert plain.understand("stop", KNOWN).trading is False
     assert plain.understand("reset the chat", KNOWN).reset is True
     assert plain.understand("answer my messages one at a time", KNOWN).mode == "followup"
@@ -155,6 +249,14 @@ def test_the_words_carry_their_details():
     assert T.named_day("how did it go on friday", DAY) is None  # a Friday's Friday is today
     assert T.named_day("how did it go", DAY) is None
     assert T.named_day("what happened yesterday", date(2026, 9, 28)) == DAY  # Monday: Friday
+    assert T.named_day("c'mon why no trades today", DAY) is None  # not Monday
+    assert T.named_day("wed be up if it had traded", DAY) is None  # "we'd", not Wednesday
+    assert T.named_day("how did it go on wed", DAY) == date(2026, 9, 23)
+    assert plain.normalise("whats running") == "what's running"
+    assert plain.normalise("i didnt get the report") == "i didn't get the report"
+    assert plain.normalise("fuck it stop everything") == "stop everything"
+    assert plain.yes_no("ok do it") == "yes" and plain.yes_no("nah") == "no"
+    assert plain.yes_no("yes but why") is None
 
 
 def test_a_slash_command_is_never_read_as_plain_words():
@@ -332,7 +434,7 @@ def test_why_did_it_pass_is_the_stocks_day_from_the_records(records):
     assert lines[3].startswith("08:20 reader: trade-worthy YES")
     assert lines[4] == ("08:21 decider (pre-open look): PASS - the market has had four days to "
                         "price it; deciding after ten minutes of trading beats a blind auction "
-                        "fill")
+                        "fill [prices: not recorded]")
     assert "10:16 reaction look: quiet - no previous close in the minute cache" in text
     assert "10:53 10:30 rule bot: signal - -3.15% vs the ASX 200 at 10:30" in text
     assert "10:54 filled: BOT short 285 NWL @ 17.8656" in text
@@ -372,10 +474,16 @@ def test_a_question_for_the_decider_carries_the_records(records):
     assert "FACTS ON RECORD" not in records.decider.calls[-1][0]
 
 
-def test_stop_for_today_is_honest_about_trading(records):
+def test_stop_for_today_is_the_pause_and_a_bare_stop_the_answer(records):
+    # 17:00, after the close: nothing more enters today anyway, and nothing is set
     text = _reply(records, "stop it for today")
-    assert text.startswith("Nothing was running, so there was nothing to stop.")
-    assert chat.TRADING_NOTE in text and "never stopped in market hours" in text
+    assert text.startswith("The market has closed for today (4:10pm)")
+    assert records.tg.sent[-1][1] is None
+    # in the session it is a read-back with buttons (tests/test_chat_review.py taps them)
+    records.app.clock = lambda: NOW.replace(hour=11)
+    text = _reply(records, "stop it for today")
+    assert text.startswith("Stop NEW entries for the rest of today, for both playbooks")
+    assert [b[0] for b in records.tg.sent[-1][1]] == ["Pause new entries", "Cancel"]
     assert _reply(records, "stop") == "Nothing was running, so there was nothing to stop."
     assert records.decider.calls == []
 
@@ -392,39 +500,67 @@ def _agents(r: Path) -> dict:
     return yaml.safe_load((r / "config.yaml").read_text(encoding="utf-8"))["arena"]["agents"]
 
 
-def test_a_model_change_in_plain_words_is_the_same_strategy_change(records):
+def _tap(rec, which: int = 0) -> str:
+    """Tap a button of the last message that had buttons (0: go ahead, 1: cancel)."""
+    from test_chat import tap
+
+    data = next(b for _, b in reversed(rec.tg.sent) if b)[which][1]
+    n = len(rec.tg.sent)
+    assert rec.app.on_update(tap(data)) == "button"
+    assert len(rec.tg.sent) > n, f"no reply to the tap on {data}"
+    return rec.tg.texts()[-1]
+
+
+def test_a_model_change_in_plain_words_is_read_back_and_the_test_freeze_named(records):
+    """26 Sep 2026: a plain-words change is never applied at once. Mid-test (config.yaml's
+    playbooks are in their 10-day test) the read-back says it breaks the frozen test."""
     text = _reply(records, "use sonnet for the decider")
+    assert text.startswith("Switching the decider's model from Opus 5.5 to Sonnet 5 now would "
+                           "break the 10-day test of ASX announcements v2 and ASX day trader "
+                           "(Fri 25 Sep to Thu 08 Oct)")
+    assert [b[0] for b in records.tg.sent[-1][1]] == ["Change it anyway", "Cancel"]
+    assert _agents(records.repo)["history"] == [] and records.run.sets() == []
+    text = _tap(records)
     assert "decider model set to Sonnet 5" in text and "was Opus 5.5" in text
     assert "Recorded as a dated strategy change in config.yaml (commit " in text
     ag = _agents(records.repo)
     assert ag["models"]["decider"] == "anthropic/claude-sonnet-5"
-    assert ag["history"][-1]["by"] == "Rick, /model in the Trader chat"
+    assert ag["history"][-1]["by"] == ("Rick, plain words in the Trader chat, confirmed on a "
+                                       "read-back; breaks the frozen 10-day test")
+    assert "breaks the frozen playbook test (to 08 Oct)" in ag["history"][-1]["note"]
     assert json.loads(records.oc.read_text())["agents"]["list"][2]["model"] == \
         "anthropic/claude-sonnet-5"  # fmt: skip
 
-    # no agent named: the chat asks, and the next message answers it
+    # no agent named: the chat asks, the next message answers it, and it is read back
     assert _reply(records, "use opus 5.5") == chat.WHICH_AGENT
     text = _reply(records, "the reader")
-    assert "reader model set to Opus 5.5" in text and "was Sonnet 5" in text
-    assert _agents(records.repo)["models"]["reader"] == "anthropic/claude-opus-5-5"
+    assert "the reader's model from Sonnet 5 to Opus 5.5" in text
+    text = _tap(records, 1)  # Cancel
+    assert text == "Cancelled. Nothing was changed."
+    assert _agents(records.repo)["models"]["reader"] == "anthropic/claude-sonnet-5"
     # "normal" is what config.yaml expects now - the change just recorded - as /model default
-    assert _reply(records, "put the reader back to normal") == \
-        "The Trader's reader already uses Opus 5.5."  # fmt: skip
+    assert _reply(records, "put the decider back to normal") == \
+        "The Trader's decider already uses Sonnet 5."  # fmt: skip
     assert records.decider.calls == []
 
 
 def test_think_harder_steps_the_level_and_records_it(records):
-    text = _reply(records, "make the reader think harder")  # medium -> high
+    text = _reply(records, "make the reader think harder")  # medium -> high, read back
+    assert "the reader's thinking from medium to high" in text
+    text = _tap(records)
     assert "reader thinking level set to high" in text and "was medium" in text
     assert _agents(records.repo)["effort"]["reader"] == "high"
-    assert "reader thinking level set to low" in _reply(records, "reader effort low")
-    assert "decider thinking level set to xhigh" in _reply(records, "decider think harder")
-    assert _reply(records, "turn the reader's thinking down") .startswith(
-        "The Trader's reader thinking level set to minimal")
+    _reply(records, "reader effort low")
+    assert "reader thinking level set to low" in _tap(records)
+    _reply(records, "decider think harder")
+    assert "decider thinking level set to xhigh" in _tap(records)
+    _reply(records, "turn the reader's thinking down")
+    assert _tap(records).startswith("The Trader's reader thinking level set to minimal")
     assert _reply(records, "reader think less") == \
         "The reader is already at minimal, the bottom of the ladder."  # fmt: skip
     assert _reply(records, "think less") == chat.WHICH_AGENT
-    assert "decider thinking level set to high" in _reply(records, "decider")
+    assert "the decider's thinking from xhigh to high" in _reply(records, "decider")
+    assert "decider thinking level set to high" in _tap(records)
     assert records.decider.calls == []
 
 
@@ -453,7 +589,8 @@ def test_the_rest_of_the_commands_from_plain_words(records):
     assert "Conversation: #2 (say \"start over\" for a fresh one)" in text
     text = _reply(records, "when does it start")
     assert text.startswith("Fri 25 Sep: an ASX trading day.")
-    assert "the watcher starts itself at 7:30am and stops at 7:25pm" in text
+    assert "the watcher starts itself at 7:30am and stops at " in text  # hours.py says when
+    assert "Right now (17:00) the market is closed" in text
     assert _reply(records, "answer my messages one at a time") == "Queue mode set to followup."
     text = _reply(records, "what happens if I message you while you're busy")
     assert text.startswith("While I'm busy with an answer, a new message waits its turn")
@@ -474,9 +611,10 @@ def test_a_change_request_still_wins_over_a_look_alike(records, monkeypatch):
     assert seen == ["can you make it show the positions first"]
     assert not records.tg.texts()[-1].startswith("Arena positions")
     assert [b[0] for b in records.tg.sent[-1][1]] == ["Build it", "Cancel"]
-    # ... but a setting in the same shape is done on the spot, not offered as a build
+    # ... but a setting in the same shape is read back on the spot, not offered as a build
     text = _reply(records, "can you make the decider think harder")
-    assert "decider thinking level set to xhigh" in text and len(seen) == 1
+    assert "the decider's thinking from high to xhigh" in text and len(seen) == 1
+    assert [b[0] for b in records.tg.sent[-1][1]] == ["Change it anyway", "Cancel"]
     assert records.decider.calls == []
 
 
@@ -492,3 +630,10 @@ def test_no_reply_tells_rick_to_type_a_command(records):
     for text in asked:
         reply = _reply(records, text)
         assert not re.search(r"(?<![\w.])/[a-z]", reply), f"{text!r} -> {reply!r}"
+
+
+def test_an_order_for_an_unknown_code_is_still_refused_in_code():
+    # 26 Sep 2026: "sell BHP" with no directory loaded went to the decider
+    assert plain.understand("sell BHP", set(), []).name == "order_request"
+    reply = plain.understand("short answer please", set(), [])
+    assert reply is None or reply.name != "order_request"

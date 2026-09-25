@@ -129,9 +129,13 @@ def test_trading_messages_are_still_the_traders_even_straight_after_the_night(al
     chat.wait_idle(alive.app, 10)
     handed = len(_inbox())
     t = _at("2026-09-25 23:47:00")
+    clock = {"t": t}
+    alive.app.clock = lambda: clock["t"]
     _say(alive, "stop trading for today", t)
-    assert alive.tg.texts()[-1].startswith("Nothing was running, so there was nothing to stop.")
-    assert chat.TRADING_NOTE in alive.tg.texts()[-1]
+    # 26 Sep 2026: "stop trading for today" is Rick's no-new-entries switch (arena/pause.py);
+    # at 23:47 the market has closed, so nothing is set - and it is still the Trader's.
+    assert alive.tg.texts()[-1].startswith("The market has closed for today")
+    clock["t"] = t + timedelta(seconds=20)
     _say(alive, "sell BHP", t + timedelta(seconds=20))
     assert alive.tg.texts()[-1] == chat.NO_ORDERS
     _say(alive, "what's my risk per trade", t + timedelta(seconds=40))

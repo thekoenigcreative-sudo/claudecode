@@ -15,6 +15,10 @@ deliberate change, not a finding"):
 The evening report lists the entries since the previous report (report.settings_changed).
 The Trader chat (asxbot.chat) calls `refusal` before a change and `record` after it; if
 `record` raises, botctl puts the OpenClaw setting back.
+
+26 Sep 2026: while a playbook is in its test (`frozen_test`) the models are frozen, and the
+chat changes one only after Rick taps "Change it anyway" on a read-back that says so. The
+entry's `by` says how he asked ("in plain words" or "/model") and that he confirmed.
 """
 
 from __future__ import annotations
@@ -63,6 +67,41 @@ def _same_repo(a: str, b: str) -> bool:
         return str(p).replace("/", "\\").rstrip("\\").lower()
 
     return bool(a) and norm(a) == norm(b)
+
+
+def frozen_test(raw: dict, is_trading_day=None) -> dict | None:
+    """The playbook test that freezes the models, or None (26 Sep 2026).
+
+    While any enabled playbook in config.yaml has `status: test`, the agents' models and
+    thinking levels are part of what is being tested: a change from the chat is refused
+    unless Rick confirms, on a read-back, that it breaks the test. Returns {"titles": [...],
+    "start": date, "end": date, "days": n} - `end` is the last of the test's `test_days` ASX
+    sessions from `test_start` (the latest end, if the tests differ)."""
+    if is_trading_day is None:
+        from asxbot.announcements.live import is_trading_day
+    playbooks = ((raw.get("arena") or {}).get("playbooks")) or {}
+    titles, starts, ends, days = [], [], [], 0
+    for key, pb in playbooks.items():
+        if not isinstance(pb, dict) or not pb.get("enabled") or pb.get("status") != "test":
+            continue
+        titles.append(re.sub(r"\s*\(.*?\)\s*", " ", str(pb.get("title") or key)).strip())
+        n = int(pb.get("test_days") or 10)
+        days = max(days, n)
+        try:
+            first = date.fromisoformat(str(pb.get("test_start")))
+        except ValueError:
+            continue
+        k, d, last = 0, first, first
+        while k < n:
+            if d.weekday() < 5 and is_trading_day(d):
+                k, last = k + 1, d
+            d += timedelta(days=1)
+        starts.append(first)
+        ends.append(last)
+    if not titles:
+        return None
+    return {"titles": titles, "start": min(starts) if starts else None,
+            "end": max(ends) if ends else None, "days": days or 10}  # fmt: skip
 
 
 def refusal(repo: Path, requests: list[dict], role: str, setting: str) -> str | None:

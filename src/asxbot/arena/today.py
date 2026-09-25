@@ -12,6 +12,16 @@ the screen, the reader, the decider, the reaction look, the rule bot, the day tr
 setups, the orders and fills, the pre-close sweep. A stock nothing mentions gets "nothing on
 record", which is the honest answer, with what the record does say (in the day trader's
 universe or not).
+
+26 Sep 2026 (a review of the chat):
+- every decision in a stock's story says which prices it was made on ("[prices: delayed data
+  (Yahoo) - IBKR unavailable]" on 25 Sep's 08:21 NWL pass), from the decision's own record
+  or data/arena/price_sources/<day>.json;
+- open positions are marked from the minute bars already on disk, with the bar's time, and
+  never fetched from here (the chat's arena has no network: chat.light_arena);
+- a past day no longer lists the positions held NOW - it says how many its closing mark
+  held; the header names the date once; "this week" is answered day by day (`week_lines`);
+- Rick's "no new entries today" pause (arena/pause.py) is in the day's summary.
 """
 
 from __future__ import annotations
@@ -61,7 +71,7 @@ def _money(v) -> str:
 
 
 def _signed(v) -> str:
-    return f"{float(v):+,.2f}"
+    return f"{(float(v) or 0.0):+,.2f}"  # never "-0.00"
 
 
 def _yes(v) -> bool:
@@ -126,6 +136,9 @@ def has_records(data_dir: Path, day: date) -> bool:
     return False
 
 
+LAST_SESSION = "the last session on record"
+
+
 def pick_day(data_dir: Path, today: date, back: int = 7) -> tuple[date, str]:
     """The day a question about "today" is answered for: today if the arena has recorded
     anything today, otherwise the most recent day (within `back`) that it did. The label
@@ -136,21 +149,24 @@ def pick_day(data_dir: Path, today: date, back: int = 7) -> tuple[date, str]:
     for _ in range(back):
         d -= timedelta(days=1)
         if has_records(data_dir, d):
-            return d, f"the last session on record, {d:%a %d %b}"
+            return d, LAST_SESSION
     return today, "today"
 
 
 def named_day(text: str, today: date) -> date | None:
     """A day Rick named in his words: 'yesterday', 'on Tuesday', 'last Friday'; None if he
-    did not name one (so the question is about today)."""
-    t = text.lower()
+    did not name one (so the question is about today). A short form (mon, wed, fri) counts
+    only after on/last/this/since/from/for: 'c'mon why no trades' is not Monday, and "wed"
+    is how "we'd" is typed (26 Sep 2026)."""
+    t = re.sub(r"\bc'?mon\b|\bcome on\b", " ", text.lower().replace("’", "'"))
     if re.search(r"\byesterday\b", t):
         d = today - timedelta(days=1)
         while d.weekday() > 4:  # over a weekend, "yesterday" means Friday
             d -= timedelta(days=1)
         return d
-    m = re.search(r"\b(?:on |last )?(monday|tuesday|wednesday|thursday|friday|mon|tue|tues|"
-                  r"wed|thu|thur|thurs|fri)\b", t)  # fmt: skip
+    m = re.search(r"\b(?:on |last )?(monday|tuesday|wednesday|thursday|friday)\b", t) or \
+        re.search(r"\b(?:on|last|this|since|from|for) (mon|tue|tues|wed|thu|thur|thurs|fri)\b",
+                  t)  # fmt: skip
     if m:
         wd = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4}[m.group(1)[:3]]
         d = today
@@ -207,6 +223,70 @@ def known_codes(data_dir: Path) -> set[str]:
     return out
 
 
+def record_codes(data_dir: Path, day: date) -> set[str]:
+    """The codes the day's records name - news, screens, decisions, reaction looks, orders,
+    fills, the day trader's setups. A lower-case code in Rick's words counts as a stock when
+    it is one of these (plain.tickers_in)."""
+    from asxbot.arena.daytrader import load_state
+
+    out: set[str] = set()
+    for kind in ("arena_alerts", "arena_screened", "arena_decisions", "v2_reaction",
+                 "arena_orders", "arena_fills"):  # fmt: skip
+        out |= {str(r.get("ticker")).upper() for r in _read(data_dir, kind, day)
+                if r.get("ticker")}  # fmt: skip
+    out |= {str(s.get("ticker")).upper() for s in load_state(data_dir, day).get("signals") or []
+            if s.get("ticker")}  # fmt: skip
+    return out
+
+
+def price_fixes(data_dir: Path, day: date) -> dict[str, str]:
+    """Price labels established after the fact for decisions made before they were recorded
+    (data/arena/price_sources/<day>.json: {"<ticker> <stage>": label}; report.py reads the
+    same file)."""
+    p = Path(data_dir) / "arena" / "price_sources" / f"{day.isoformat()}.json"
+    try:
+        labels = json.loads(p.read_text(encoding="utf-8")).get("labels") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {str(k): str(v) for k, v in labels.items()} if isinstance(labels, dict) else {}
+
+
+def disk_price(arena, code: str, day: date) -> tuple[float | None, datetime | None]:
+    """The last traded minute's close for `code` on `day` from the minute bars already on
+    disk, and that bar's time - never a fetch. (None, None) when there is none."""
+    minutes = getattr(arena.broker, "minutes", None)
+    if minutes is None:
+        return None, None
+    try:
+        df = minutes.cached(code, day)
+    except Exception:  # noqa: BLE001 - an unreadable cache file is simply no price
+        return None, None
+    if df is None or not len(df) or "volume" not in df or "close" not in df:
+        return None, None
+    traded = df[df["volume"] > 0]
+    if not len(traded):
+        return None, None
+    at = traded.index[-1]
+    at = at.to_pydatetime() if hasattr(at, "to_pydatetime") else at
+    return float(traded["close"].iloc[-1]), (at.astimezone(SYD) if at.tzinfo else at)
+
+
+def pause_line(data_dir: Path, day: date, today: bool = True) -> str | None:
+    """Rick's switch for the day (arena/pause.py) as a line - 'New entries paused since
+    11:05 (Rick), ...' - or None when entries were not paused."""
+    from asxbot.arena.pause import read_pause
+
+    body = read_pause(data_dir, day)
+    if not body:
+        return None
+    at = str(body.get("at") or "")[11:16] or "?"
+    who = str(body.get("by") or "Rick")
+    if today:
+        return (f"New entries paused since {at} ({who}), for both playbooks and both books; "
+                "exits, stops and the close keep working.")  # fmt: skip
+    return f"New entries were paused from {at} ({who})."
+
+
 # --------------------------------------------------------------------------- the day
 
 
@@ -223,6 +303,11 @@ class DayFacts:
     fills: list = field(default_factory=list)
     accounts: list = field(default_factory=list)  # per playbook
     labels: dict = field(default_factory=dict)  # account name -> "ASX day trader bot"
+    pause: str | None = None  # Rick's "no new entries today", if set that day
+
+    @property
+    def is_today(self) -> bool:
+        return self.label == "today"
 
 
 def _labels(arena) -> dict[str, str]:
@@ -237,17 +322,25 @@ def _labels(arena) -> dict[str, str]:
 def account_facts(arena, day: date, today: bool = True) -> list[dict]:
     """Every enabled playbook's two accounts: equity, cash, the day's move (against the
     day's starting equity, as the daily loss limit is), the running total, fees, positions
-    and pending fills. Today is marked at the prices the broker can see now; a past day is
-    read from that day's closing mark, and says so when there is none."""
+    and pending fills. Today is marked at the last minute bar on disk for each position
+    (with its time; at cost when there is none) - nothing is fetched. A past day is read
+    from that day's closing mark, and says so when there is none; its positions are the
+    mark's count, never the positions held now."""
     out = []
     for pb in arena.playbooks():
         row = {"key": pb.key, "title": _title(pb), "accounts": []}
         for kind in ("agent", "bot"):
             acct = arena.account(pb, kind)
-            prices = arena.broker.prices(acct)
+            marks_at: dict[str, datetime | None] = {}
+            prices: dict[str, float] = {}
+            for t, p in acct.positions.items():
+                px, at = disk_price(arena, t, day) if today else (None, None)
+                prices[t] = px if px is not None else p.avg_cost
+                marks_at[t] = at if px is not None else None
             equity = acct.equity(prices)
             start = arena.store.day_start_equity(acct, day)
             day_move: float | None = equity - start
+            held_at_close: int | None = None
             if not today:
                 mark = next((m for m in arena.store.marks(acct.name)
                              if m.day == day.isoformat()), None)  # fmt: skip
@@ -255,19 +348,23 @@ def account_facts(arena, day: date, today: bool = True) -> list[dict]:
                     day_move = None
                 else:
                     equity, day_move = mark.equity, mark.equity - start
+                    held_at_close = int(mark.positions)
             positions = []
-            for t, p in acct.positions.items():
-                px = prices.get(t, p.avg_cost)
+            for t, p in acct.positions.items() if today else ():
+                px = prices[t]
                 positions.append({
                     "ticker": t, "qty": p.qty, "avg_cost": p.avg_cost, "last": px,
-                    "open_pnl": (px - p.avg_cost) * p.qty, "stop": p.stop, "target": p.target,
-                    "opened_at": p.opened_at, "by": p.opened_by,
+                    "priced_at": marks_at.get(t), "open_pnl": (px - p.avg_cost) * p.qty,
+                    "stop": p.stop, "target": p.target, "opened_at": p.opened_at,
+                    "by": p.opened_by,
                 })  # fmt: skip
             row["accounts"].append({
                 "kind": kind, "name": acct.name, "equity": equity, "cash": acct.cash,
                 "today": day_move, "total": equity - acct.starting_cash,
                 "fees": acct.fees_paid + acct.borrow_paid, "positions": positions,
-                "pending": sum(1 for o in acct.orders.values() if o.status == "pending_fill"),
+                "held_at_close": held_at_close,
+                "pending": sum(1 for o in acct.orders.values() if o.status == "pending_fill")
+                if today else 0,
             })  # fmt: skip
         out.append(row)
     return out
@@ -320,6 +417,7 @@ def gather(arena, day: date, label: str = "today") -> DayFacts:
         fills=_read(data_dir, "arena_fills", day),
         accounts=account_facts(arena, day, today=(label == "today")),
         labels=_labels(arena),
+        pause=pause_line(data_dir, day, today=(label == "today")),
     )  # fmt: skip
 
 
@@ -327,10 +425,11 @@ def gather(arena, day: date, label: str = "today") -> DayFacts:
 
 
 def when_text(day: date, label: str) -> str:
-    """'Fri 25 Sep, today' / 'Fri 25 Sep, the last session on record, Fri 25 Sep' /
-    'Wed 24 Sep' (a day Rick named)."""
+    """'Fri 25 Sep, today' / 'Fri 25 Sep, the last session on record' / 'Wed 24 Sep' (a day
+    Rick named). The date is said once."""
     if label == "today":
         return f"{day:%a %d %b}, today"
+    label = label.replace(f", {day:%a %d %b}", "") if label else ""
     return f"{day:%a %d %b}" + (f", {label}" if label else "")
 
 
@@ -381,6 +480,8 @@ def accounts_lines(f: DayFacts) -> list[str]:
                     f"{p['ticker']} {p['qty']:+,}" for p in a["positions"])
             if a["pending"]:
                 extra += f", {a['pending']} fill pending"
+            if a.get("held_at_close"):
+                extra += f", {a['held_at_close']} position(s) held at that close"
             if a["today"] is None:
                 move = "no mark for that day"
             else:
@@ -391,6 +492,15 @@ def accounts_lines(f: DayFacts) -> list[str]:
     return out or ["no playbook is enabled"]
 
 
+def price_when(p: dict) -> str:
+    """Where a position's 'now' price came from: the last minute bar on disk and its time,
+    or the cost when there is none. Never a live quote."""
+    at = p.get("priced_at")
+    if at is None:
+        return "at cost - no price on disk yet"
+    return f"last minute bar on disk, {at:%H:%M}, not a live quote"
+
+
 def positions_lines(f: DayFacts) -> list[str]:
     out = []
     for row in f.accounts:
@@ -398,11 +508,25 @@ def positions_lines(f: DayFacts) -> list[str]:
             for p in a["positions"]:
                 out.append(
                     f"{p['ticker']} {p['qty']:+,} @ {_px(p['avg_cost'])}, now {_px(p['last'])} "
-                    f"({_signed(p['open_pnl'])}), stop {_px(p['stop'])}"
+                    f"({price_when(p)}; {_signed(p['open_pnl'])}), stop {_px(p['stop'])}"
                     + (f", target {_px(p['target'])}" if p.get("target") is not None else "")
                     + f" [{row['title']} {a['kind']}]"
                 )
     return out
+
+
+def held_lines(f: DayFacts) -> list[str]:
+    """The positions part of an answer: those open now (today), or - for a past day - what
+    its closing marks say, never the positions held now."""
+    if f.is_today:
+        pos = positions_lines(f)
+        return (["Open positions:"] + ["  " + x for x in pos]) if pos else [
+            "Open positions: none."]  # fmt: skip
+    held = [a.get("held_at_close") for row in f.accounts for a in row["accounts"]]
+    if any(h is None for h in held):
+        return ["Positions at that day's close: not all on record (no closing mark)."]
+    n = sum(held)
+    return [f"Positions at that day's close: {n or 'none'} (from its closing marks)."]
 
 
 def summary_lines(f: DayFacts, arena, watcher: str | None = None) -> list[str]:
@@ -411,6 +535,8 @@ def summary_lines(f: DayFacts, arena, watcher: str | None = None) -> list[str]:
     lines = [header(f)]
     if watcher:
         lines.append(watcher)
+    if f.pause:
+        lines.append(f.pause)
     keys = {pb.key for pb in arena.playbooks()}
     if "asx_announcements_v2" in keys:
         split = ", ".join(f"{t} {n}" for t, n in sorted(c.by_test.items())) or "none"
@@ -461,10 +587,7 @@ def summary_lines(f: DayFacts, arena, watcher: str | None = None) -> list[str]:
         lines += ["  " + x for x in fills_lines(f)]
     lines.append("Accounts:")
     lines += ["  " + x for x in accounts_lines(f)]
-    pos = positions_lines(f)
-    lines.append("Open positions:" if pos else "Open positions: none.")
-    lines += ["  " + x for x in pos]
-    return lines
+    return lines + held_lines(f)
 
 
 def trades_lines(f: DayFacts, arena) -> list[str]:
@@ -507,13 +630,61 @@ def trades_lines(f: DayFacts, arena) -> list[str]:
 
 
 def money_lines(f: DayFacts) -> list[str]:
-    lines = [header(f), *accounts_lines(f)]
-    pos = positions_lines(f)
-    if pos:
-        lines.append("Open positions:")
-        lines += ["  " + x for x in pos]
-    else:
-        lines.append("Open positions: none.")
+    """Each playbook's agent against its rule bot: equity, the day's move, the total."""
+    return [header(f), *accounts_lines(f), *held_lines(f)]
+
+
+# --------------------------------------------------------------------------- the week
+
+
+def week_days(today: date, which: str = "this") -> list[date]:
+    """Monday to Friday of this week (a weekend's "this week" is the week just ended) or of
+    the week before, up to today."""
+    monday = today - timedelta(days=today.weekday())
+    if which == "last":
+        monday -= timedelta(days=7)
+    return [d for d in (monday + timedelta(days=i) for i in range(5)) if d <= today]
+
+
+def week_lines(arena, today: date, which: str = "this") -> list[str]:
+    """'How did we go this week': the days that have records, one line each, and each
+    account's move over the week from its closing marks. Said plainly that it is day by
+    day (26 Sep 2026: a week question used to get today only)."""
+    data_dir = arena.cfg.data_dir
+    days = week_days(today, which)
+    name = "This week" if which == "this" else "Last week"
+    if not days:
+        return [f"{name}: no trading days yet."]
+    lines = [f"{name}, {days[0]:%a %d %b} to {days[-1]:%a %d %b} - the arena, FAKE money. I "
+             "answer day by day from the records:"]  # fmt: skip
+    seen = [d for d in days if has_records(data_dir, d)]
+    if not seen:
+        return [*lines, "Nothing on record for those days."]
+    for d in seen:
+        orders = _read(data_dir, "arena_orders", d)
+        fills = _read(data_dir, "arena_fills", d)
+        placed = sum(1 for r in orders if r.get("event") == "submitted")
+        refused = sum(1 for r in orders if r.get("outcome") == "refused")
+        realised = sum(float(r.get("realised") or 0) for r in fills)
+        lines.append(f"  {d:%a %d %b}: {placed} order{'s' if placed != 1 else ''} placed, "
+                     f"{refused} refused, {len(fills)} fill{'s' if len(fills) != 1 else ''}"
+                     + (f", realised {_signed(realised)} before fees" if realised else ""))
+    lines.append("Over the week, from the closing marks:")
+    first, last = days[0].isoformat(), days[-1].isoformat()
+    for pb in arena.playbooks():
+        parts = []
+        for kind in ("agent", "bot"):
+            acct = arena.account(pb, kind)
+            marks = [m for m in arena.store.marks(acct.name) if first <= m.day <= last]
+            if not marks:
+                parts.append(f"{kind.upper()} no closing mark that week")
+                continue
+            start = arena.store.day_start_equity(acct, days[0])
+            end = date.fromisoformat(marks[-1].day)
+            parts.append(f"{kind.upper()} {_signed(marks[-1].equity - start)} (to "
+                         f"{_money(marks[-1].equity)} at the {end:%a} close)")  # fmt: skip
+        lines.append(f"  {_title(pb)}: " + "; ".join(parts))
+    lines.append("Ask about any one of those days for its detail.")
     return lines
 
 
@@ -545,6 +716,16 @@ def ticker_story(arena, day: date, ticker: str) -> list[str]:
         nonlocal n
         n += 1
         items.append((t or datetime.combine(day, datetime.min.time(), SYD), n, text))
+
+    fixes = price_fixes(data_dir, day)
+
+    def prices(label, stage: str = "") -> str:
+        """' [prices: live data (IBKR)]' - what a decision was made on (26 Sep 2026)."""
+        if not label and stage:
+            label = fixes.get(f"{code} {stage}")
+        if label:
+            return f" [prices: {_one_line(label)}]"
+        return " [prices: not recorded]" if stage == "pre_open" else ""
 
     seen_news: set[str] = set()
     for r in _read(data_dir, "arena_alerts", day):
@@ -580,13 +761,15 @@ def ticker_story(arena, day: date, ticker: str) -> list[str]:
                 continue
             d = r.get("decision") or {}
             action = str(d.get("action") or "pass").lower()
+            src = prices(r.get("data"), str(r.get("v2") or ""))
             if action == "trade":
                 conf = f", confidence {d.get('confidence_pct')}%" if d.get("confidence_pct") else ""
                 add(r["syd"], f"decider{_look(r)}: TRADE {d.get('side')} {d.get('qty')} @ "
                               f"{_px(d.get('limit'))}, stop {_px(d.get('stop'))}{conf} - "
-                              f"{_one_line(d.get('why'))}")  # fmt: skip
+                              f"{_one_line(d.get('why'))}{src}")  # fmt: skip
             else:
-                add(r["syd"], f"decider{_look(r)}: {action.upper()} - {_one_line(d.get('why'))}")
+                add(r["syd"], f"decider{_look(r)}: {action.upper()} - "
+                              f"{_one_line(d.get('why'))}{src}")  # fmt: skip
             if d.get("flag_for_claude"):
                 add(r["syd"], f"  (the decider flagged for Claude: "
                               f"{_one_line(d.get('flag_for_claude'))})")  # fmt: skip
@@ -606,6 +789,7 @@ def ticker_story(arena, day: date, ticker: str) -> list[str]:
             if rx.get("available"):
                 line += (f" [move {rx.get('move_pct')}% vs index {rx.get('index_move_pct')}%, "
                          f"volume {rx.get('volume_vs_usual_same_minutes')}x usual]")
+            line += prices(rx.get("data_label"))
         elif r.get("why"):
             line += f" - {_one_line(r.get('why'))}"
         if line != last_status:
@@ -623,9 +807,11 @@ def ticker_story(arena, day: date, ticker: str) -> list[str]:
             extra = (f"; ordered {hit.get('order_id')} {hit.get('side')} "
                      f"{int(hit.get('qty') or 0):,} @ {_px(hit.get('limit'))}, stop "
                      f"{_px(hit.get('stop'))}" if hit else "")  # fmt: skip
-            add(at, f"10:30 rule bot: signal - {_one_line(c.get('why'))}{extra}")
+            add(at, f"10:30 rule bot: signal - {_one_line(c.get('why'))}{extra}"
+                    f"{prices(bot.get('data'))}")  # fmt: skip
         else:
-            add(at, f"10:30 rule bot: no signal - {_one_line(c.get('why'))}")
+            add(at, f"10:30 rule bot: no signal - {_one_line(c.get('why'))}"
+                    f"{prices(bot.get('data'))}")  # fmt: skip
     dt = load_state(data_dir, day)
     for s in dt.get("signals") or []:
         if s.get("ticker") != code:
@@ -648,7 +834,7 @@ def ticker_story(arena, day: date, ticker: str) -> list[str]:
             line += f"; agent REJECTED - {_one_line(a.get('rejected'))}"
         elif a.get("skipped"):
             line += f"; agent not asked - {_one_line(a.get('skipped'))}"
-        add(t, line)
+        add(t, line + prices(s.get("data")))
     labels = _labels(arena)
     for r in _read(data_dir, "arena_orders", day):
         if r.get("ticker") != code:

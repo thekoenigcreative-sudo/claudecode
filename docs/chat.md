@@ -27,7 +27,7 @@ messages. Sending is not affected, because only reading messages (getUpdates) is
 
 Rick, 25 Sep: "i need to be able to just tell it things without commands". Every command
 below also works from an ordinary sentence, worked out in code (`src/asxbot/plain.py`, no
-model reads the words; `tests/test_plain.py` holds 70-odd phrasings to their meaning).
+model reads the words; `tests/test_plain.py` holds some 170 phrasings to their meaning).
 Replies never tell Rick to type a command; the commands stay as shortcuts.
 
 | Rick says, for example | What happens |
@@ -37,33 +37,90 @@ Replies never tell Rick to type a command; the commands stay as shortcuts.
 | "how much are we up", "what's the P&L" | Each playbook's agent and bot: equity, today's move, the total since the start |
 | "why did it pass on NWL", "what happened with hls", "tell me about REG" | That stock's day in time order from the records: news, screen, reader, decider (with its written reason), reaction look, 10:30 rule bot, day-trader setups (what the bot and the agent did), orders, fills, stop moves, the pre-close sweep. Nothing on record says so, and whether the day trader scanned it |
 | "show me the positions", "what are we holding" | `/positions` |
-| "is it running", "status", "are you there" | `/status` |
-| "stop", "cancel that", "stop it for today" | `/stop`. A "for today" adds that trading itself is not stopped from the chat: the watcher is never stopped in market hours or with a position open |
-| "use opus for the decider", "switch the reader to sonnet 5", "decider back to normal" | `/model`, the same strategy change. No agent named: "For the reader or the decider?", and the next message answers it |
-| "make the decider think harder", "reader effort low", "turn the reader's thinking down" | `/think`. "harder"/"less" step one level along minimal, low, medium, high, xhigh, max from the current level |
-| "what model is it on", "how hard is it thinking" | The models and levels, and how to switch them in words |
+| "is it running", "status", "are you there", "watcher up?" | `/status`, with a `Data:` line (the watcher's feed status) and Rick's pause if set |
+| "stop", "cancel that", "stop it" | `/stop`: drops the answer being worked on |
+| "no new entries today", "stop it for today", "stop trading today", "halt entries", "kill switch", "shut it down", "don't trade today", "don't open any more positions today" | Rick's pause (below): read back with **[Pause new entries] [Cancel]** |
+| "resume trading", "start trading again", "allow entries again" | Lifts the pause, after a read-back **[Allow entries again] [Cancel]** |
+| "use opus for the decider", "switch the reader to sonnet 5", "decider back to normal" | `/model`, the same strategy change, but READ BACK first (below). No agent named: "For the reader or the decider?", and the next message answers it |
+| "make the decider think harder", "reader effort low", "turn the reader's thinking down" | `/think`, read back first. "harder"/"less" step one level along minimal, low, medium, high, xhigh, max from the current level |
+| "what model is it on", "how hard is it thinking", and any model sentence with a "?", a negation ("don't switch the decider to sonnet", "the decider stays on opus") or a hedge ("maybe", "should", "tomorrow", "later") | The models and levels, whether a test freezes them, and how to switch them in words. Never a change |
+| "is the gateway up", "is ibkr connected", "gateway should be back", "is the data live", "is it on ibkr or yahoo", "are we on live prices" | IB Gateway and the prices from the records, each with its age: the watcher's feed status (`data/arena/live_data.json`: IBKR or Yahoo, connected, real-time, entries allowed or paused and why), the connection doctor's diagnosis, open problem and last episode (`doctor.json`), and the Gateway supervisor's last check - hand-started or the launcher's, whether Rick's login is stored (`supervisor.json`). Nothing is probed from the chat |
+| "did the evening report go out", "i didn't get the evening report" | From `data/arena/report_sent.json`, and whether tonight's is due, late or not on record |
+| "is the market open", "is today a trading day" | Today's hours, and whether the market is open right now |
+| "restart the watcher" | Why it isn't: the market-hours lock (7:25am-7:25pm on a trading day, and while any account holds a position or has an order working), and the watcher's state now |
+| "how did we go this week", "last week" | Day by day: each day of the week that has records, one line each, and each account's move over the week from its closing marks |
+| "how much did we make", "did we lose money", "is the agent beating the bot", "bot vs agent" | The money lines (each playbook's agent against its rule bot) |
 | "start over", "new conversation", "reset the chat" | `/new`, `/reset` |
 | "can you make it ...", "from now on ..." | A change request, as before (read back, Build it button) |
 | "what changes have I asked for", "undo the last change" | `/changes`, `/undo` |
 | "answer them one at a time", "bundle my messages", "what happens if I message you while you're busy" | `/queue` |
 | "when does it start", "what are the trading hours" | Today's window from `arena/hours.py` |
-| "close the NWL position", "sell everything" | Refused in code: nothing in the chat can place, change or close an order |
+| "close the NWL position", "sell everything", "could you sell BHP" | Refused in code: nothing in the chat can place, change or close an order. Only an order verb with something to trade counts: "short answer please", "cover the basics", "add to the list", "exit" and "would you buy PLS" (an opinion) are conversation |
 | "help", "what can you do" | `/help` |
 
-Order of precedence in `on_text`: slash commands; the answer to a change reader's open
-question; the Foreman's topics (below); plain-word intents; the change-request check; the
-decider. A sentence that reads
-like a change request ("can you make it show positions first") stays a change request
-unless it is a setting done on the spot ("can you make the decider think harder"). A stock
-code is recognised from the ASX directory and ASX 200 list in `data/universe` (in capitals
-always; in lower case only when it is not an ordinary word, so "all" is a word and "ALL"
-is Aristocrat).
+Order of precedence in `on_text`: slash commands (a `/model` or `/think` that would change a
+setting mid-test is read back first); a reply to a Foreman message (below); a plain yes or
+no to a read-back just sent; the answer to a change reader's open question - unless the
+message is a clear request (stop, status, today, P&L, feed, pause, resume), which is never
+swallowed as that answer; the Foreman's topics (below); plain-word intents; the
+change-request check; the decider. A sentence that reads like a change request ("can you
+make it show positions first") stays a change request unless it is a setting, the pause or
+a watcher restart ("can you make the decider think harder", "can you make it stop trading
+today"). Queue modes change only on an explicit instruction ("answer them one at a time",
+"bundle my messages", "interrupt mode"): "sorry to interrupt" and "take it one at a time"
+are conversation.
+
+Quick spellings are read as meant (26 Sep 2026): "whats", "hows", "wheres", "didnt",
+"dont", "isnt", "cant", "wont", "wat", "goin"; and "fuck it", "ffs", "jesus", "ugh", "oh",
+"wtf", "c'mon" at the start are dropped.
+
+A stock code is recognised from the ASX directory and ASX 200 list in `data/universe`. In
+capitals it counts (not when the whole message is in capitals); in lower case only when it
+is not an ordinary word AND it follows on/with/about/in/for/of (or another code: "hls and
+reg"), or the day's records name it. So "all" is a word and "ALL" is Aristocrat, and "what
+happened today pls" is about today, not Pilbara (PLS). Day names: full names anywhere, the
+short forms (mon, wed, fri) only after on/last/this/since/from/for - "c'mon" is not Monday.
 
 Anything else still goes to the decider as a conversation. If it names a stock or talks
-about the day's trading, the message carries a FACTS ON RECORD block - the same summary
-and stock stories the chat would have sent - with the rule to answer from it and say "not
-on record" where it is silent, so the decider's account of the day rests on the records and
-not on its memory.
+about the day's trading (money, the week, the feed and the report included), the message
+carries a FACTS ON RECORD block - the same summary and stock stories the chat would have
+sent, stamped with the time it was gathered - with the rule to answer from it, to say "not
+on record" where it is silent, and that numbers from earlier turns may be stale. On a
+trading day with nothing recorded yet, every day answer (and the block) leads with today's
+watcher state ("Nothing recorded today (Mon 28 Sep) - Watcher: ...") before the last
+session on record.
+
+What the records say, 26 Sep 2026:
+- A stock's story says which prices each decision was made on: "[prices: delayed data
+  (Yahoo) - IBKR unavailable]" on 25 Sep's 08:21 NWL pass, from the decision's own record
+  or `data/arena/price_sources/<day>.json`.
+- Open positions are marked from the minute bars already on disk, with the bar's time
+  ("last minute bar on disk, 15:59, not a live quote"), or at cost. The chat never fetches
+  a price: its arena's minute bars read the cache only.
+- A past day never lists the positions held now; it says how many its closing marks held.
+
+## Rick's pause: no new entries today (26 Sep 2026)
+
+"Stop it for today" used to have nothing to stop. Now "no new entries today" (and the
+phrasings in the table) reads back: "Stop NEW entries for the rest of today, for both
+playbooks and both books? Exits, stops and the 15:50 close keep working." with **[Pause new
+entries] [Cancel]** (a typed "yes" or "no" within ten minutes answers it too). The tap writes
+`data/arena/pause/<Sydney date>.json` through `asxbot.arena.pause.set_pause` (by "Rick",
+with his words) and an `arena_pause` event; the chat then checks the file is there before
+it says "Done". The watcher reads it before every new entry, for every playbook and both
+books; exits are never paused. The file is dated, so it clears itself the next day;
+"resume trading" lifts it sooner after its own read-back. Status and the day's summary say
+"New entries paused since 11:05 (Rick)". On a non-trading day or after the close the chat
+says nothing more enters today anyway, and sets nothing. "Stop everything" also stops the
+answer being worked on; a bare "stop" is still only that.
+
+## Replies to the Foreman (26 Sep 2026)
+
+A reply (Telegram's reply) to a message from the Foreman ("Foreman: ...") or to a change
+job's report ("Change #0926-1015 is live: ...") is handed to the Foreman with the text it
+answers, as `reply_to` in the handover file: a bare "yes", "ok do it" or "go ahead" means
+nothing to the decider on its own. A reply about trading ("sell BHP") or a stock is still
+the Trader's.
 
 ## One voice: the Foreman (26 Sep 2026)
 
@@ -92,12 +149,17 @@ messages of that night, replayed).
   answer here."). A reply that says "I can't ... from here" anyway is handed over the same
   way, with those sentences taken out. "I can't tell from the records" (knowing, not doing)
   and anything about orders, real money, the broker or passwords (hard rules) are left
-  alone, and a hard rule is never handed over. `SILENT` from the decider sends nothing (a
+  alone, and a hard rule is never handed over. Since 26 Sep 2026 so is a refusal about how
+  the arena trades - stops, targets, risk, limits, size, entries, rules, the strategy or a
+  playbook, thresholds, the models, the watcher: those are frozen for the test, so "I can't
+  change the stop rules mid-test" is honest and never becomes a queued build. `SILENT` from the decider sends nothing (a
   message that only answers or thanks the Foreman).
 - **Handing over** is one UTF-8 JSON file in `%USERPROFILE%\.foreman\inbox`
   (`FOREMAN_HOME` overrides it; every test uses a temporary one), written as
   `<yyyymmdd-hhmmss>-trader-<4 hex>.tmp` and renamed to `.json`:
-  `{"bot": "trader", "from": "Rick", "text", "at", "why": "foreman topic" | "can't do: ..."}`.
+  `{"bot": "trader", "from": "Rick", "text", "at", "why": "foreman topic" | "can't do: ..." |
+  "reply to a Foreman message"}`, plus `"reply_to": <the message he replied to>` when he
+  replied to one (below).
   The Foreman answers in this chat within a minute and acts; it skips a handover it has
   already answered from the chat log. chat.log shows `for the Foreman (...)` and `handed to
   the Foreman as <file>`.
@@ -170,11 +232,27 @@ rule, `/model` and `/think` in this chat do three things:
    differ only in those lines, and committed on its own.
 
 The next evening report says, for example, "Settings changed: decider model Opus 5.5 ->
-Sonnet 5 (Rick, 10:15pm)", and the decider is told it must mention the change.
+Sonnet 5 (Rick, 10:15pm)", and the decider is told it must mention the change. The reply
+says which report: tonight's (with its time, 7:30pm or 8:30pm in daylight saving) before
+tonight's slot on a trading day, otherwise the next one.
 
 It is refused, with the reason, while `config.yaml` has uncommitted edits, or while a
 change request is being built in this repo. If recording the change fails, the OpenClaw
 setting is put back.
+
+**Read back, and frozen during a test (26 Sep 2026).** A change in plain words is never
+applied at once: it is read back ("Switch the decider's model from Opus 5.5 to Sonnet 5?")
+with **[Change it] [Cancel]**. While any enabled playbook in `config.yaml` has `status:
+test`, the models and thinking levels are frozen for it (`settings_history.frozen_test`:
+the test ends on the last of `test_days` ASX sessions from `test_start`; for v2 and the
+day trader, Thu 8 Oct). Then every change - `/model` and `/think` included - is read back
+as breaking the test ("... would break the 10-day test of ASX announcements v2 and ASX day
+trader (Fri 25 Sep to Thu 08 Oct) ... Change it anyway?") with **[Change it anyway]
+[Cancel]**; a typed "yes" is not enough, only the button or the words "change it anyway".
+Any other path to a change mid-test (for example `/new <model>`) is refused in code. The
+history entry says how he asked and that he confirmed: `by: "Rick, plain words in the Trader
+chat, confirmed on a read-back; breaks the frozen 10-day test"`. Outside a test `/model`
+still changes at once (`by: "Rick, /model in the Trader chat"`).
 
 ## Guardrails
 
@@ -227,5 +305,5 @@ changes the setting.
    change) are `schtasks /end /tn "ASXBot Chat"` then `schtasks /run /tn "ASXBot Chat"`.
 4. Check chat.log for the commit line and "Running.", then send /help from Rick's Telegram.
 
-The watcher is never restarted for any of this. It runs itself 7:30am-7:25pm on trading
-days and picks up code changes at its next 7:30 start.
+The watcher is never restarted for any of this. It runs itself from 7:30am into the
+evening on trading days and picks up code changes at its next 7:30 start.

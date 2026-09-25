@@ -320,7 +320,19 @@ def _agents(repo):
     return yaml.safe_load((repo / "config.yaml").read_text(encoding="utf-8"))["arena"]["agents"]
 
 
+def unfreeze(repo):
+    """Take the copy of config.yaml's playbooks out of their test, committed: /model then
+    changes at once, as it did before 26 Sep 2026 (tests/test_chat_review.py covers the
+    frozen test, where it is read back with "Change it anyway")."""
+    p = repo / "config.yaml"
+    body = p.read_bytes()
+    assert b"status: test" in body
+    p.write_bytes(body.replace(b"status: test", b"status: passed"))
+    git(repo, "commit", "-q", "-am", "out of the test")
+
+
 def test_model_change_is_recorded_in_config_yaml_and_committed(env):
+    unfreeze(env.repo)
     before = (env.repo / "config.yaml").read_text(encoding="utf-8")
     env.app.on_update(msg("/model decider sonnet-5"))
     reply = env.tg.texts()[-1]
@@ -361,6 +373,7 @@ def test_model_change_is_recorded_in_config_yaml_and_committed(env):
 
 
 def test_model_change_waits_for_uncommitted_config_edits_or_a_building_change(env):
+    unfreeze(env.repo)
     p = env.repo / "config.yaml"
     p.write_text(p.read_text(encoding="utf-8") + "# someone's edit\n", encoding="utf-8")
     env.app.on_update(msg("/model decider sonnet-5"))
@@ -381,6 +394,7 @@ def test_a_failed_recording_puts_the_openclaw_setting_back(env, monkeypatch):
         raise H.RecordFailed("git commit failed: disk full")
 
     monkeypatch.setattr(H, "record", boom)
+    unfreeze(env.repo)
     env.app.on_update(msg("/model decider sonnet-5"))
     assert "Not changed: recording it failed (git commit failed: disk full)" in env.tg.texts()[-1]
     oc = json.loads(env.oc.read_text())
