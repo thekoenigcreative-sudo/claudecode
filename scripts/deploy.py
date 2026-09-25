@@ -125,8 +125,8 @@ def status(base: Path) -> int:
         live = R.release_info(base / cur).get("commit")
         print("HEAD is the deployed release (a task started before the deploy runs it from "
               "its next start)." if live == head else f"HEAD ({head[:12]}) is NOT deployed yet.")
-    shims = sorted(p.name for p in (base / "bin").glob("*.pyw")) if (base / "bin").exists() else []
-    print(f"shims in {base / 'bin'}: {', '.join(shims) or 'none'}")
+    shims = sorted(p.name for p in R.bin_dir().glob("*.pyw")) if R.bin_dir().exists() else []
+    print(f"shims in {R.bin_dir()}: {', '.join(shims) or 'none'}")
     return 0
 
 

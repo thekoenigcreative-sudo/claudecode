@@ -600,6 +600,106 @@ now also writes it (at most every 5 minutes) whenever history is asked for.
 
 ---
 
+## 26. A connection per cycle is a dropout per cycle
+
+25 Sep, evening. Rick's brief: "I want this engine fixed, I don't want dropouts of the API".
+The feed had been built to open a connection to IB Gateway when it needed prices and close it
+after, with 90-stock batches of history requests under one 40 s timeout. Every cycle was a
+fresh chance to fail, and the morning's failures (#24, #25) were that design working as
+written.
+
+Now (`298298a`): one read-only connection kept for the watcher's whole day; a time request
+every 30 s as a heartbeat (two misses, or 1100/1101/1102/2110, or the socket going, means a
+reconnect with backoff up to 60 s); every subscription re-requested after a reconnect, with
+the missed minutes fetched to close the gap. Bars stream as IBKR's 5-second real-time bars
+and are built into minutes here (a minute is closed 12 s after it ends); the ~280-stock
+universe rotates inside the account's market-data line limit (learned from IBKR's error 101,
+100 by default, 6 lines held back): the index, positions, working orders and today's news
+stocks always stream, the rest by how much they are moving, the quiet ones polled in small
+paced requests. Prior sessions come through one paced queue (4 in flight, 0.25 s apart)
+before the open and are cached on disk; at 09:55 a stock still without them is named and
+left out. And nothing enters on stale data: feed down, or the index's or the stock's newest
+bar older than 60 s in market hours, and no playbook makes a new entry ("paused: live feed
+down", one Telegram line); stops, targets and trailing keep working from the live minutes;
+entries resume by themselves. Yahoo fills gaps and writes reports; it decides nothing.
+
+Proof: 24 chaos tests with a fake Gateway (killed, socket dropped, 1100 then 1101, missed
+heartbeats, pacing violation, missing history, line limit, stale bars) and one real run at
+18:57 against the live Gateway (`scripts/ibkr_live_chaos.py`,
+reports/ibkr_chaos_20260925_1857.json): the socket dropped, the connection was back in 1 s
+with all three subscriptions re-requested under new request ids and the catch-up bars held;
+14 history requests, no pacing message; a frozen quote proved the subscription. Not proved,
+because it cannot be outside market hours: bars arriving live minute by minute. Monday 07:30
+is that test.
+
+- Open once, watch it, re-request everything after a drop. A connection per cycle is a
+  dropout per cycle.
+- Test the way back with the real thing. The fake proved the logic; the live socket drop
+  proved Gateway does what the fake assumed.
+- Stale is a state, not an error. Say it, pause entries, keep exits, resume alone.
+
+---
+
+## 27. The build wrote where the tasks could not see
+
+25 Sep, 18:28: the first deploy through the new release step wrote its release, pointer and
+shims under `%LOCALAPPDATA%\asx-bot` - and no scheduled task would ever have found them. A
+Claude Code shell runs inside the Claude desktop app's container, which virtualises
+%LOCALAPPDATA%: the same path, from that shell, is
+`...\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\asx-bot`; from a task it is
+the real folder. Found by reading the CURRENT pointer from the tasks' side
+(`\\localhost\C$\Users\Richa\AppData\Local\asx-bot`): nothing there. The logs moved to
+%LOCALAPPDATA% on 24 Sep (#35) had the same split: read from a Claude shell they were the
+container's copy, not the watcher's.
+
+Now `asxbot.localdir` writes a marker under the plain path and looks for it through the
+share; if the share does not show it, every local path (releases, logs, the supervisor's
+state, the history cache) is taken through `\\localhost\C$\...`, with one warning in the log
+(`9ae0e09`). Tests take the folder from the environment.
+
+Why the release step exists at all: until tonight every task ran the Drive checkout, so a
+half-edited tree was what 07:30 might start. `scripts/deploy.py` exports a commit, runs the
+suite inside the export, writes `releases\<stamp>-<sha>` and moves CURRENT; the tasks run
+`bin\<task>.pyw` shims that follow CURRENT; settings and data stay in the checkout
+(`ASXBOT_HOME`); `--rollback` moves the pointer back. Deploys and watcher restarts refuse
+07:25-19:25 on weekdays unless forced with a reason, and never with a position open
+(docs/releases.md, CLAUDE.md).
+
+- A path is a view, not a place. Check an artefact from the process that will read it.
+- The running bot is never the checkout. An edit reaches it through a deploy, or not at all.
+
+---
+
+## 28. "First close beyond the range" was read as "any"
+
+25 Sep, day 1 of the day trader. Six opening-range breakouts (CWY, HDN, AUB, ORI, CHC, DRR)
+were rejected as stale - "the trigger bar is 17-46 bars old" - and were read at first as a
+stale opening range. The range was right in all six. The scanner took the first bar that
+closed beyond the range AND carried twice the volume of the ten before it, so a range broken
+quietly at 10:31 became a "breakout" on a heavy bar 30-140 minutes later, with the stop half
+a range away. The rule (config.yaml, in words) is the first bar that closes beyond the range,
+on rising volume. The scanner now finds that bar, tests the volume on it, and never fires on
+a later one; the same for gap-and-go (`df05d8d`). Of the six first breaks, CWY (x1.8), HDN
+(x0.1), ORI (x0.5) and CHC (x1.3) had no volume, so no setup; AUB (x8.6, 10:38) and DRR
+(x6.8, 10:30) were real and would have been taken at the break. The fixture keeps the six
+days' bars unrounded: rounded to four places, the range edges moved enough to change the
+answer in float32.
+
+The same day the decider (Opus, 60 s a call) rejected 34 day-trader setups, about fifteen
+for one reason in its own words: with the stop a few cents away and the $5,000 position cap,
+1R was $6-$24 against about $23 of round-trip costs. Sized exactly as the written rule says;
+the cap is what shrinks 1R. A setup whose 1R at the largest size the rules allow is under 2x
+the round-trip cost (config `entry.min_r_over_costs`, Rick's figure, dated) is now filtered
+before either the bot or the agent sees it, with the arithmetic logged ("uneconomic"). That
+changes the frozen rule bot's record too: needs Rick's OK.
+
+- When the rule says "first", the code must find the first and stop. A scanner that keeps
+  looking finds a later, better-looking bar and calls it the signal.
+- A fixture keeps the data as it came. Rounding is an edit.
+- A setup that cannot pay its round trip is not a setup; do not spend a decider call on it.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not
@@ -619,3 +719,5 @@ now also writes it (at most every 5 minutes) whenever history is asked for.
 9. On fake money, an observation is worth more than a rule that prevents all
    observation.
 10. Nothing on yfinance data is a go or a no-go. Norgate first.
+11. A path is a view, not a place. Verify an artefact from the process that will read
+    it, not the one that wrote it.
