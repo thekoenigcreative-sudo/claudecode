@@ -13,7 +13,8 @@ plumbing replay run the same code.
 
 DATA HONESTY: on Yahoo's delayed bars a setup is seen ~20 minutes after its trigger bar and
 filled at the first bar after the decision. Every report says "delayed data - rehearsal
-until IBKR live prices".
+until IBKR live prices". On IBKR's live bars (from 25 Sep) the decider's packet says so, with
+the age of the newest bar it shows (`data_line`).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import time as time_mod
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from datetime import time as time_cls
@@ -43,7 +45,22 @@ from asxbot.log import EventLog, get_logger
 log = get_logger("asxbot.arena.daytrader")
 SYD = ZoneInfo("Australia/Sydney")
 OPEN = time_cls(10, 0)
+ONE_MIN = timedelta(minutes=1)
 SETUPS = ("gap_and_go", "opening_range_breakout", "vwap_reclaim", "halt_resumption")
+
+
+def _px(x) -> str:
+    """A price as the agent and Rick read it: every decimal it has up to four, at least two.
+    26 Sep 2026: prices were printed `:.4g`, which drops a half-cent above $100 (a close of
+    108.85 read "closed back above it at 108.8 (VWAP 108.8)") and rounds 12.345 to 12.35."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if not math.isfinite(v):
+        return str(v)
+    head, _, tail = f"{v:.4f}".rstrip("0").partition(".")
+    return f"{head}.{tail.ljust(2, '0')}"
 
 
 @dataclass
@@ -97,8 +114,16 @@ class Ctx:
     shortable: bool
     news: bool  # price-sensitive or reinstatement announcement today
     conf: dict  # config setups block
+    # Did the feed watch this stock from `start` to `end` (MarketView.covered)? None: it
+    # always did (a feed that returns whole days, the replay, the tests). 26 Sep 2026.
+    covered: Callable[[datetime, datetime], bool] | None = None
     _vwap: pd.Series | None = None
     _resumed: list | None = None
+
+    def watched(self, start, end) -> bool:
+        """True when a stretch with no bars from `start` to `end` (minutes, inclusive) means
+        the stock did not trade, not that the feed was not looking."""
+        return True if self.covered is None else bool(self.covered(start, end))
 
     @property
     def vw(self) -> pd.Series:
@@ -155,8 +180,8 @@ def gap_and_go(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             lo,
             rv,
-            f"gap {gap:+.1f}% vs index, first close ({bar['close']:.4g}) above the "
-            f"{p['range_minutes']}-min high {hi:.4g}, gap unfilled, RVOL {rv:.1f}",
+            f"gap {gap:+.1f}% vs index, first close ({_px(bar['close'])}) above the "
+            f"{p['range_minutes']}-min high {_px(hi)}, gap unfilled, RVOL {rv:.1f}",
             {**ctx, "first_break": ts.strftime("%H:%M")},
         )
     if (
@@ -175,8 +200,8 @@ def gap_and_go(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             hi,
             rv,
-            f"gap {gap:+.1f}% vs index, first close ({bar['close']:.4g}) below the "
-            f"{p['range_minutes']}-min low {lo:.4g}, gap unfilled, RVOL {rv:.1f}",
+            f"gap {gap:+.1f}% vs index, first close ({_px(bar['close'])}) below the "
+            f"{p['range_minutes']}-min low {_px(lo)}, gap unfilled, RVOL {rv:.1f}",
             {**ctx, "first_break": ts.strftime("%H:%M")},
         )
     return None
@@ -243,7 +268,7 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             mid,
             rv,
-            f"first close ({bar['close']:.4g}) above the 30-min high {hi:.4g} on {vol_x:.1f}x "
+            f"first close ({_px(bar['close'])}) above the 30-min high {_px(hi)} on {vol_x:.1f}x "
             f"the prior {look} bars' volume, RVOL {rv:.1f}",
             ctx,
         )
@@ -256,7 +281,7 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
             float(bar["close"]),
             mid,
             rv,
-            f"first close ({bar['close']:.4g}) below the 30-min low {lo:.4g} on {vol_x:.1f}x "
+            f"first close ({_px(bar['close'])}) below the 30-min low {_px(lo)} on {vol_x:.1f}x "
             f"the prior {look} bars' volume, RVOL {rv:.1f}",
             ctx,
         )
@@ -303,8 +328,8 @@ def vwap_reclaim(c: Ctx, i: int) -> Setup | None:
             float(recent["low"].min()),
             rv,
             f"up {move:+.1f}% vs index, VWAP rising, {below} of the last {lookback} "
-            f"bars below VWAP, closed back above it at {bar['close']:.4g} "
-            f"(VWAP {vw.iloc[i]:.4g})",
+            f"bars below VWAP, closed back above it at {_px(bar['close'])} "
+            f"(VWAP {_px(vw.iloc[i])})",
         )
     if (
         c.shortable
@@ -323,8 +348,8 @@ def vwap_reclaim(c: Ctx, i: int) -> Setup | None:
             float(recent["high"].max()),
             rv,
             f"down {move:+.1f}% vs index, VWAP falling, {above} of the last {lookback} "
-            f"bars above VWAP, closed back below it at {bar['close']:.4g} "
-            f"(VWAP {vw.iloc[i]:.4g})",
+            f"bars above VWAP, closed back below it at {_px(bar['close'])} "
+            f"(VWAP {_px(vw.iloc[i])})",
         )
     return None
 
@@ -350,8 +375,21 @@ def resumptions(c: Ctx) -> list[tuple]:
             )
             if n_prior < float(p["prior_activity_share"]) * 30:
                 continue
+            # 26 Sep 2026 (review B1): a gap is a halt only if the feed watched those
+            # minutes. A hole in the IBKR feed's bars (a stretch it was not streaming or
+            # fetching the stock) read as a halt, and a bar after it fired a "resumption"
+            # (reproduced: resumed 11:45 after 11:29, SETUP halt_resumption buy 11:55). The
+            # halt rule is unchanged; a hole is simply not a halt.
+            if not c.watched(a + ONE_MIN, b - ONE_MIN):
+                continue
             out.append((b, float(c.bars["close"].iloc[k]), a))
-    if len(idx) and idx[0].time() >= _t(p["late_first_trade"]) and c.news:
+    day_open = datetime.combine(c.day, OPEN, tzinfo=SYD)
+    if (
+        len(idx)
+        and idx[0].time() >= _t(p["late_first_trade"])
+        and c.news
+        and c.watched(day_open, idx[0] - ONE_MIN)  # a late start, not a late first look
+    ):
         out.append((idx[0], c.prev_close, None))
     c._resumed = out
     return out
@@ -389,8 +427,8 @@ def halt_resumption(c: Ctx, i: int) -> Setup | None:
                 float(bar["close"]),
                 lo,
                 c.rvol(ts),
-                f"resumed {resumed:%H:%M} {move:+.1f}% vs index; closed {bar['close']:.4g} "
-                f"above the resumption range high {hi:.4g}",
+                f"resumed {resumed:%H:%M} {move:+.1f}% vs index; closed {_px(bar['close'])} "
+                f"above the resumption range high {_px(hi)}",
             )
         if move <= -need and c.shortable and bar["close"] < lo and not (after["close"] < lo).any():
             return Setup(
@@ -401,8 +439,8 @@ def halt_resumption(c: Ctx, i: int) -> Setup | None:
                 float(bar["close"]),
                 hi,
                 c.rvol(ts),
-                f"resumed {resumed:%H:%M} {move:+.1f}% vs index; closed {bar['close']:.4g} "
-                f"below the resumption range low {lo:.4g}",
+                f"resumed {resumed:%H:%M} {move:+.1f}% vs index; closed {_px(bar['close'])} "
+                f"below the resumption range low {_px(lo)}",
             )
     return None
 
@@ -415,14 +453,16 @@ DETECTORS = {
 }
 
 
-def detect(c: Ctx, since: datetime | None, fired: set[str], scan_end: time_cls) -> list[Setup]:
-    """Setups triggered by bars after `since`, first trigger of each (stock, setup, side)
-    only. Bars after the scan's end time are not triggers."""
+def detect(
+    c: Ctx, since: datetime | None, fired: set[str], scan_end: time_cls, until=None
+) -> list[Setup]:
+    """Setups triggered by bars after `since` (and up to `until`, when given), first trigger
+    of each (stock, setup, side) only. Bars after the scan's end time are not triggers."""
     out = []
     for i, ts in enumerate(c.bars.index):
         if since is not None and ts <= since:
             continue
-        if ts.time() > scan_end:
+        if ts.time() > scan_end or (until is not None and ts > until):
             break
         for fn in DETECTORS.values():
             s = fn(c, i)
@@ -430,6 +470,35 @@ def detect(c: Ctx, since: datetime | None, fired: set[str], scan_end: time_cls) 
                 fired.add(s.key)
                 out.append(s)
     return out
+
+
+def watched_through(c: Ctx, since) -> pd.Timestamp | None:
+    """The newest bar the scan may evaluate: the last bar before the first stretch without
+    bars, after `since`, that the feed did not watch (a hole in the data, not a stretch with
+    no trades) - every bar when there is none. None: not even the first (the feed has not
+    watched the day from its open).
+
+    26 Sep 2026 (review B1). Bars after a hole were evaluated as if the hole were real, and
+    `last_eval` moved past it, so bars that filled it later were never evaluated (`detect`
+    skips every bar at or before `last_eval`). A bar after a hole could then pass for "the
+    first close beyond the range" (LEARNINGS #28) or a halt resumption. Now the scan stops
+    at the hole and picks up from it once the feed has the minutes; the rules are unchanged.
+    """
+    idx = c.bars.index
+    if not len(idx):
+        return None
+    day_open = datetime.combine(c.day, OPEN, tzinfo=SYD)
+    if since is None and idx[0] > day_open and not c.watched(day_open, idx[0] - ONE_MIN):
+        return None
+    if len(idx) > 1:
+        steps = idx[1:] - idx[:-1]
+        for k in (steps > ONE_MIN).nonzero()[0]:
+            a, b = idx[k], idx[k + 1]
+            if since is not None and b <= since:
+                continue
+            if not c.watched(a + ONE_MIN, b - ONE_MIN):
+                return a
+    return idx[-1]
 
 
 # --------------------------------------------------------------------------
@@ -471,9 +540,9 @@ def build_universe(arena, pb: Playbook) -> tuple[list[str], dict]:
     return liquid_universe(list(a.codes), daily, rule, order, float(conf.get("max_tick_pct", 1.0)))
 
 
-def news_today(data_dir: Path, day: date) -> set[str]:
-    """Codes with a price-sensitive announcement (or a reinstatement) since the previous
-    session's close."""
+def announcements_since_close(data_dir: Path, day: date) -> pd.DataFrame | None:
+    """Every announcement the live collector holds since the previous session's 16:10
+    close: the window of "news today" for the scan and for the agent's packet alike."""
     from asxbot.arena.intraday import prior_sessions
 
     frames = []
@@ -483,10 +552,18 @@ def news_today(data_dir: Path, day: date) -> set[str]:
         if p.exists():
             frames.append(pd.read_parquet(p))
     if not frames:
-        return set()
+        return None
     df = pd.concat(frames)
     start = datetime.combine(prev[0], time_cls(16, 10)) if prev else datetime.combine(day, OPEN)
-    df = df[df["released_at"] >= start]
+    return df[df["released_at"] >= start]
+
+
+def news_today(data_dir: Path, day: date) -> set[str]:
+    """Codes with a price-sensitive announcement (or a reinstatement) since the previous
+    session's close."""
+    df = announcements_since_close(data_dir, day)
+    if df is None:
+        return set()
     keep = df["price_sensitive"].astype(bool) | df["headline"].str.contains(
         "reinstat", case=False, na=False
     )
@@ -534,11 +611,16 @@ def scan(
             code in shortable,
             code in news,
             conf,
+            covered=lambda a, b, code=code: view.covered(code, a, b),
         )
         last_eval = state["last_eval"].get(code)
         since = datetime.fromisoformat(last_eval) if last_eval else None
-        new = detect(c, since, fired, end)
-        state["last_eval"][code] = bars.index.max().isoformat(timespec="minutes")
+        # Only up to the first hole the feed has not watched; `last_eval` stays before it,
+        # so the bars that fill it are evaluated when they come (26 Sep 2026, B1).
+        through = watched_through(c, since)
+        new = [] if through is None else detect(c, since, fired, end, until=through)
+        if through is not None and (since is None or through > since):
+            state["last_eval"][code] = through.isoformat(timespec="minutes")
         for s in new:
             pos = bars.index.get_loc(pd.Timestamp(s.trigger_bar))
             age = len(bars) - 1 - int(pos)
@@ -657,13 +739,22 @@ def eligible(acct, pb: Playbook, code: str, day: date) -> tuple[bool, str]:
     return True, ""
 
 
-def terms(arena, pb: Playbook, acct, s: Setup, stop: float | None = None) -> dict | None:
-    """(qty, limit, stop) by the rules: a limit through the last price, risk <= the
-    playbook's share of equity, <= the level's max position, <= 5% of turnover."""
+def terms(
+    arena, pb: Playbook, acct, s: Setup, stop: float | None = None, last: float | None = None
+) -> dict | None:
+    """(qty, limit, stop) by the rules: a limit through the last visible price, risk <= the
+    playbook's share of equity, <= the level's max position, <= 5% of turnover.
+
+    `last` is the stock's newest visible close when the order is made. 26 Sep 2026 (review
+    B7): the limit was set through the trigger bar's close (`s.last`), but the written rule
+    is "a limit this far through the LAST VISIBLE PRICE" - up to five bars later, the price
+    can have moved past a limit set from the trigger. Without `last` (the replay's old
+    callers), the trigger bar's close, as before."""
     entry = pb.raw.get("entry") or {}
     slack = float(entry.get("limit_slack_pct", 1.0)) / 100.0
     buy = s.side == "buy"
-    limit = round_to_tick(s.last * (1 + slack if buy else 1 - slack), up=buy)
+    ref = float(s.last if last is None else last)
+    limit = round_to_tick(ref * (1 + slack if buy else 1 - slack), up=buy)
     stop = round_to_tick(float(stop if stop is not None else s.stop), up=not buy)
     per_share = abs(limit - stop)
     if per_share <= 0 or (buy and stop >= limit) or (not buy and stop <= limit):
@@ -687,6 +778,7 @@ def terms(arena, pb: Playbook, acct, s: Setup, stop: float | None = None) -> dic
         "stop": stop,
         "risk": round(per_share * qty, 2),
         "value": round(qty * limit, 2),
+        "last": ref,  # the price the limit went through; economic() measures 1R from it
     }
 
 
@@ -712,12 +804,14 @@ def economic(arena, pb: Playbook, t: dict, s: Setup) -> tuple[bool, str]:
     cost = round_trip_cost(arena, float(t["value"]), s.ticker)
     # 1R as the trade will actually carry it: the fill is at the next bar, near the last
     # price, so R is |last - stop| a share (the limit's 1% slack is a cap on the fill, and
-    # `t["risk"]` is the conservative figure the risk cap is checked against).
-    r = abs(float(s.last) - float(t["stop"])) * int(t["qty"])
+    # `t["risk"]` is the conservative figure the risk cap is checked against). The last
+    # price is the one terms() set the limit through (26 Sep 2026, B7), not the trigger's.
+    last = float(t.get("last", s.last))
+    r = abs(last - float(t["stop"])) * int(t["qty"])
     if r < mult * cost:
         return False, (
             f"uneconomic: 1R ${r:,.0f} at the largest size the rules allow "
-            f"(${t['value']:,.0f}, stop {abs(s.last - t['stop']) / s.last * 100:.2f}% "
+            f"(${t['value']:,.0f}, stop {abs(last - t['stop']) / last * 100:.2f}% "
             f"from the last price) is below {mult:g}x the round-trip cost ${cost:,.2f}"
         )
     return True, ""
@@ -762,7 +856,26 @@ def place(
 # --------------------------------------------------------------------------
 # the agent: confirm or reject, one call per setup
 # --------------------------------------------------------------------------
-def agent_packet(arena, pb: Playbook, s: Setup, t: dict, context: dict, now: datetime) -> str:
+def data_line(view: MarketView, code: str, at: datetime) -> str:
+    """The packet's DATA line: the feed in use and how old the newest bar of this stock is.
+    26 Sep 2026 (review G5/I1): the line was fixed text - "delayed data - rehearsal until
+    IBKR live prices. The bars below are ~20 minutes behind the market" - and false since 25
+    Sep's switch to IBKR, when the newest bar was a median 1.6 minutes old. A factual
+    correction of the prompt, not a change of rule."""
+    at = at.astimezone(SYD)
+    bars = continuous(view.bars(code, at, fetch=False))
+    if not len(bars):
+        return f"DATA: {view.label}; no bar for {code} yet today."
+    ended = bars.index.max().to_pydatetime() + ONE_MIN  # a bar is named by its start
+    mins = (at - ended).total_seconds() / 60.0
+    ago = "under a minute ago" if mins < 1 else (
+        f"{mins:.0f} minute{'' if round(mins) == 1 else 's'} ago")  # fmt: skip
+    return f"DATA: {view.label}; the newest {code} bar below ended at {ended:%H:%M}, {ago}."
+
+
+def agent_packet(
+    arena, pb: Playbook, s: Setup, t: dict, context: dict, now: datetime, data: str = ""
+) -> str:
     from asxbot.arena.watch import UNTRUSTED, _membership
 
     return f"""You are trader-decider, working as a DAY TRADER (playbook "{pb.title}", level
@@ -772,13 +885,14 @@ answer in time is a rejection. Be brief.
 
 {UNTRUSTED}
 
-DATA: delayed data - rehearsal until IBKR live prices. The bars below are ~20 minutes behind
-the market; your order fills at the first bar after it is recorded.
+{data or "DATA: the feed was not stated."}
+Your order fills at the first bar after it is recorded.
 YOU ARE DECIDING AT: {now:%Y-%m-%d %H:%M} Sydney
 
 THE SETUP ({s.setup}, {s.side.upper()}) - {s.ticker}
   trigger bar {s.trigger_bar[11:16]}: {s.why}
-{_range_line(s)}  the setup's stop (its invalidation): {t["stop"]}   entry limit: {t["limit"]}
+{_range_line(s)}  the setup's stop (its invalidation): {_px(t["stop"])}   entry limit: \
+{_px(t["limit"])}
   code's size: {t["qty"]:,} shares (${t["value"]:,.0f}), risk ${t["risk"]:,.0f}
   (risk per trade is capped at {pb.risk_per_trade_pct}% of the account)
   code manages the trade: stop to breakeven at +1R, half off at +2R, then a 1R trail;
@@ -806,8 +920,8 @@ def _range_line(s: Setup) -> str:
     if c.get("range_high") is None:
         return ""
     return (
-        f"  the {c.get('range_minutes')}-min opening range: low {c.get('range_low'):.4g}, high "
-        f"{c.get('range_high'):.4g}; this bar ({c.get('first_break')}) is the FIRST close "
+        f"  the {c.get('range_minutes')}-min opening range: low {_px(c.get('range_low'))}, high "
+        f"{_px(c.get('range_high'))}; this bar ({c.get('first_break')}) is the FIRST close "
         "beyond it today\n"
     )
 
@@ -848,14 +962,17 @@ def setup_context(
         "industry_peers_n": len(peers),
         "news_today": news_rows.get(s.ticker, []),
         "last_15_bars": [
-            f"{ts:%H:%M} o{r.open:.4g} h{r.high:.4g} l{r.low:.4g} c{r.close:.4g} v{int(r.volume)}"
+            f"{ts:%H:%M} o{_px(r.open)} h{_px(r.high)} l{_px(r.low)} c{_px(r.close)} "
+            f"v{int(r.volume)}"
             for ts, r in bars.tail(15).iterrows()
         ],
     }
     return out
 
 
-def ask_agent(arena, pb: Playbook, s: Setup, t: dict, context: dict, now: datetime) -> dict:
+def ask_agent(
+    arena, pb: Playbook, s: Setup, t: dict, context: dict, now: datetime, data: str = ""
+) -> dict:
     """One decider call, answer within the configured seconds, or it is a rejection."""
     from asxbot.arena.agents import expected_model, parse_decision
 
@@ -864,7 +981,7 @@ def ask_agent(arena, pb: Playbook, s: Setup, t: dict, context: dict, now: dateti
     try:
         reply = call_agent(
             DECIDER,
-            agent_packet(arena, pb, s, t, context, now),
+            agent_packet(arena, pb, s, t, context, now, data),
             expect_model=expected_model(arena.cfg, "decider"),
             timeout_s=limit_s,
             data_dir=arena.cfg.data_dir,
@@ -875,11 +992,17 @@ def ask_agent(arena, pb: Playbook, s: Setup, t: dict, context: dict, now: dateti
         return {"action": "reject", "why": f"no answer within {limit_s}s ({e})", "model": ""}
     took = time_mod.monotonic() - started
     d = parse_decision(reply.text) if "action" in reply.text else {"action": "reject"}
-    if took > limit_s + 15:
+    # The rule: "No answer within 60 s is a rejection." 26 Sep 2026 (review B9): this was
+    # `took > limit_s + 15`, and the process is itself killed at limit_s + 15, so an answer
+    # at 60-75 s was accepted and the check could never fire. The extra 15 s stay on the
+    # process only, so a late answer still comes back and is recorded - as a rejection.
+    if took > limit_s:
         return {
             "action": "reject",
             "why": f"answered after {took:.0f}s, past {limit_s}s",
             "model": reply.model,
+            "seconds": round(took, 1),
+            "late_answer": str(d.get("action", "")),
         }
     action = str(d.get("action", "reject")).lower()
     return {
@@ -947,8 +1070,11 @@ def cycle(
     if now.time() < _t(scan_conf.get("start", "10:00")):
         _prepare_history(arena, pb, view)
         return []
+    reported = _history_report_once(arena, pb, view, now)  # late, if 09:55-10:00 was missed
     ev = EventLog(cfg.data_dir)
     state = load_state(cfg.data_dir, day)
+    if reported and _DAY.get("day") == day and state.get("universe"):
+        _DAY["codes"] = state["universe"]  # the report leaves out stocks with no history
     if _DAY.get("day") != day or _DAY.get("data_dir") != str(cfg.data_dir):
         codes, _why = (
             (state["universe"], None) if state.get("universe") else build_universe(arena, pb)
@@ -989,6 +1115,11 @@ def cycle(
         refreshed = view.feed.refresh(codes, now)
         view.mark_fetched(refreshed, now)
     found, summary = scan(view, pb, codes, now, state, set(arena.short_universe), _DAY["news"])
+    # 26 Sep 2026 (review B12): saved as soon as the scan has marked what fired and how far
+    # each stock was evaluated, and again after every decision below. It was saved only at
+    # the end of the cycle, so an exception after an order was placed lost `fired` and
+    # `last_eval`, and the next cycle found the same setup and asked the agent again.
+    save_state(cfg.data_dir, day, state)
     interest = summary.pop("interest", {}) if summary else {}
     if interest and hasattr(view.feed, "note_interest"):
         view.feed.note_interest(interest)  # who streams next cycle (ibkr/feed.py rotation)
@@ -1002,12 +1133,9 @@ def cycle(
                 **summary,
             },
         )
-    rows = {}
-    for code in codes:
-        b = continuous(view.bars(code, now, fetch=False))
-        p = view.prev_close(code)
-        if len(b) and p:
-            rows[code] = (float(b["close"].iloc[-1]) / p - 1) * 100
+    if not found:
+        return []
+    rows, lasts = _peer_moves(view, codes, now)
     out = []
     order = sorted(found, key=lambda s: -(s.rvol or 0.0))
     last_entry = pb.last_entry_time
@@ -1023,25 +1151,92 @@ def cycle(
         elif last_entry is not None and scanned_at.astimezone(SYD).time() > last_entry:
             rec["skipped"] = f"after the last entry time {last_entry:%H:%M}"
         else:
-            rec["bot"] = _bot_take(arena, pb, s, now, day)
+            # 26 Sep 2026 (review B8/A6): the feed is asked about THIS stock's prices before
+            # either book acts. The check above the scan named no stock, so only the index's
+            # freshness was ever tested (ibkr/live.py checks each named, streamed stock).
+            ok, why = entries_allowed(view, now, [s.ticker])
+            if not ok:
+                rec["skipped"] = f"no new entry on {s.ticker}'s prices now: {why}"
+            else:
+                rec["bot"] = _guarded("the bot", s, lambda s=s: _bot_take(
+                    arena, pb, s, now, day, last=lasts.get(s.ticker)))  # fmt: skip
         recs.append((s, rec))
+        state["signals"].append(rec)
+    save_state(cfg.data_dir, day, state)
     # Then the agent, one call per setup, while the setup is still fresh: its trigger bar's
-    # age plus the minutes spent on the calls before it must stay within max_signal_age_bars.
+    # age plus the whole minutes spent on the calls before it must stay within
+    # max_signal_age_bars - the same test the bot passed (`age > max_age` is stale).
     for s, rec in recs:
         if use_agent and not rec.get("skipped"):
             waited = (arena.broker.clock() - scanned_at).total_seconds() / 60.0
-            if int(s.context.get("age_bars", 0)) + waited > max_age:
+            # 26 Sep 2026 (review B3/G4): was `age + waited > max_age` with `waited` in
+            # fractional minutes, never exactly 0 live, so a setup exactly at the limit went
+            # to the bot and never to the agent (25 Sep: NWL and DOW at 11:20, "5 bars old at
+            # the scan, 0.0 minutes"). Whole minutes, as bars are.
+            if int(s.context.get("age_bars", 0)) + math.floor(waited) > max_age:
                 rec["agent"] = {
                     "skipped": f"stale by its turn: {s.context.get('age_bars', 0)} bars old at "
                     f"the scan, {waited:.1f} minutes of agent calls before it"
                 }
             else:
-                rec["agent"] = _agent_take(arena, pb, view, s, now, day, rows)
-        state["signals"].append(rec)
+                rec["agent"] = _guarded("the agent", s, lambda s=s: _agent_take(
+                    arena, pb, view, s, now, day, rows))  # fmt: skip
+            save_state(cfg.data_dir, day, state)
         ev.append("daytrader_setups", rec)
         out.append(rec)
     save_state(cfg.data_dir, day, state)
     return out
+
+
+def _guarded(who: str, s: Setup, fn) -> dict:
+    """One book's action on one setup. An exception is logged and recorded, and the other
+    setups in the cycle still get theirs (26 Sep 2026, with B12: one failure lost them all)."""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        log.exception("day trader: %s failed on %s %s: %s", who, s.ticker, s.setup, e)
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def _peer_moves(view: MarketView, codes: list[str], now: datetime) -> tuple[dict, dict]:
+    """Each stock's move against the ASX 200 since the previous close (for the agent's
+    industry peers), and its newest visible close (for the bot's limit, B7).
+
+    26 Sep 2026: the peers' figure was the plain move since the previous close, handed to the
+    agent as "industry_peers_median_move_vs_index_pct"; on a day the index fell 1%, a flat
+    industry read as 1% ahead of the market. Now it is against the index, as it says."""
+    index = continuous(view.bars(view.index, now, fetch=False))
+    iprev = view.prev_close(view.index)
+    ix = (float(index["close"].iloc[-1]) / iprev - 1) * 100 if len(index) and iprev else None
+    rows, lasts = {}, {}
+    for code in codes:
+        b = continuous(view.bars(code, now, fetch=False))
+        if not len(b):
+            continue
+        lasts[code] = float(b["close"].iloc[-1])
+        p = view.prev_close(code)
+        if p and ix is not None:
+            rows[code] = (lasts[code] / p - 1) * 100 - ix
+    return rows, lasts
+
+
+def _last_visible(view: MarketView, code: str, at: datetime) -> float | None:
+    """The stock's newest visible close at `at`: the "last visible price" of the entry rule."""
+    b = continuous(view.bars(code, at, fetch=False))
+    return float(b["close"].iloc[-1]) if len(b) else None
+
+
+def _pre_codes(arena, pb: Playbook, view: MarketView) -> bool:
+    """Today's universe and the index, for the prior-session fetch and the history report."""
+    if _PRE.get("day") != view.day:
+        try:
+            codes, _why = build_universe(arena, pb)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not list the universe for the pre-open history: %s", e)
+            return False
+        _PRE.clear()
+        _PRE.update(day=view.day, codes=[view.index, *codes])
+    return True
 
 
 def _prepare_history(arena, pb: Playbook, view: MarketView) -> None:
@@ -1051,19 +1246,35 @@ def _prepare_history(arena, pb: Playbook, view: MarketView) -> None:
     minute cache instead, so nothing is done for it."""
     if view.replay or view.feed.history_source() is view.minutes:
         return
-    if _PRE.get("day") != view.day:
-        try:
-            codes, _why = build_universe(arena, pb)
-        except Exception as e:  # noqa: BLE001
-            log.warning("could not list the universe for the pre-open history: %s", e)
-            return
-        _PRE.clear()
-        _PRE.update(day=view.day, codes=[view.index, *codes])
+    if not _pre_codes(arena, pb, view):
+        return
     view.prepare(_PRE["codes"])
-    now = arena.broker.clock().astimezone(SYD)
-    if now.time() >= HISTORY_DEADLINE and _PRE.get("reported") != view.day:
-        _PRE["reported"] = view.day
+    _history_report_once(arena, pb, view, arena.broker.clock().astimezone(SYD))
+
+
+def _history_report_once(arena, pb: Playbook, view: MarketView, now: datetime) -> bool:
+    """The 09:55 history report, at the first cycle at or after 09:55 whatever the time,
+    once a day (the day's state remembers it across a restart). True when it ran now.
+
+    26 Sep 2026 (review A12): it ran only from the pre-open path, so on a busy pre-open with
+    no cycle between 09:55 and 10:00 it never ran - no report, no alert to Rick, and stocks
+    with no prior sessions stayed in the scan."""
+    if view.replay or view.feed.history_source() is view.minutes:
+        return False
+    if now.astimezone(SYD).time() < HISTORY_DEADLINE or _PRE.get("reported") == view.day:
+        return False
+    if load_state(arena.cfg.data_dir, view.day).get("history"):
+        _PRE["reported"] = view.day  # reported before a restart
+        return False
+    if not _pre_codes(arena, pb, view):
+        return False
+    _PRE["reported"] = view.day
+    try:
         history_deadline_report(arena, view, _PRE["codes"], now)
+    except Exception as e:  # noqa: BLE001 - a report must never stop the scan
+        log.exception("the IBKR history report failed: %s", e)
+        return False
+    return True
 
 
 HISTORY_DEADLINE = time_cls(9, 55)
@@ -1110,12 +1321,12 @@ def history_deadline_report(arena, view: MarketView, codes: list[str], now: date
     return state["history"]
 
 
-def _bot_take(arena, pb, s: Setup, now: datetime, day: date) -> dict:
+def _bot_take(arena, pb, s: Setup, now: datetime, day: date, last: float | None = None) -> dict:
     acct = arena.account(pb, "bot")
     ok, why = eligible(acct, pb, s.ticker, day)
     if not ok:
         return {"skipped": why}
-    t = terms(arena, pb, acct, s)
+    t = terms(arena, pb, acct, s, last=last)
     if t is None:
         return {"skipped": "cannot be sized (stop on the wrong side, or below the minimum order)"}
     ok, why = economic(arena, pb, t, s)
@@ -1130,7 +1341,13 @@ def _agent_take(arena, pb, view, s: Setup, now: datetime, day: date, rows: dict)
     ok, why = eligible(acct, pb, s.ticker, day)
     if not ok:
         return {"skipped": why}
-    t = terms(arena, pb, acct, s)
+    # Earlier agent calls in this cycle take time: the stock's prices are asked about again,
+    # and the packet shows the market as it is now, not as it was at the scan (26 Sep 2026).
+    at = arena.broker.clock().astimezone(SYD)
+    ok, why = entries_allowed(view, at, [s.ticker])
+    if not ok:
+        return {"skipped": f"no new entry on {s.ticker}'s prices now: {why}"}
+    t = terms(arena, pb, acct, s, last=_last_visible(view, s.ticker, at))
     if t is None:
         return {"skipped": "cannot be sized"}
     ok, why = economic(arena, pb, t, s)
@@ -1139,9 +1356,9 @@ def _agent_take(arena, pb, view, s: Setup, now: datetime, day: date, rows: dict)
         return {"skipped": why, **t}
     if "industry" not in _DAY:
         _DAY["industry"] = _industries(arena)
-    ctx = setup_context(view, s, now, _DAY["industry"], rows, _news_rows(arena, day))
+    ctx = setup_context(view, s, at, _DAY["industry"], rows, _news_rows(arena, day))
     seen_at = arena.broker.clock()
-    answer = ask_agent(arena, pb, s, t, ctx, now)
+    answer = ask_agent(arena, pb, s, t, ctx, at, data_line(view, s.ticker, at))
     EventLog(arena.cfg.data_dir).append(
         "arena_decisions",
         {
@@ -1158,19 +1375,39 @@ def _agent_take(arena, pb, view, s: Setup, now: datetime, day: date, rows: dict)
         # the digest is for passes worth reading (#37). They are counted in the evening
         # report and each is in the event log (arena_decisions, stage daytrader).
         return {"rejected": answer.get("why", ""), "seconds": answer.get("seconds")}
+    # Placed at the prices as they are once the agent has answered: the entry rule's "last
+    # visible price", and the feed asked once more about this stock (26 Sep 2026, B7, B8).
+    placing = arena.broker.clock().astimezone(SYD)
+    ok, why = entries_allowed(view, placing, [s.ticker])
+    if not ok:
+        log.warning("day trader: %s %s confirmed by the agent but not placed - %s",
+                    s.ticker, s.setup, why)  # fmt: skip
+        return {"refused": f"confirmed, but no new entry on {s.ticker}'s prices now: {why}",
+                "seconds": answer.get("seconds")}  # fmt: skip
+    last = _last_visible(view, s.ticker, placing)
+    ref = float(s.last if last is None else last)
     stop = s.stop
     try:
         new = float(answer.get("stop")) if answer.get("stop") not in (None, "") else None
     except (TypeError, ValueError):
         new = None
     if new is not None:
-        tighter = (s.side == "buy" and s.stop < new < s.last) or (
-            s.side == "short" and s.last < new < s.stop
+        tighter = (s.side == "buy" and s.stop < new < ref) or (
+            s.side == "short" and ref < new < s.stop
         )
         stop = new if tighter else s.stop
-    t = terms(arena, pb, acct, s, stop)
+    t = terms(arena, pb, acct, s, stop, last=last)
     if t is None:
         return {"skipped": "cannot be sized with the agent's stop"}
+    # 26 Sep 2026 (review G13): the filter the bot's order passed is asked again of the order
+    # the agent will actually place. A tighter stop re-sizes the order; without this check
+    # the agent could place what the uneconomic filter refuses the bot.
+    ok, why = economic(arena, pb, t, s)
+    if not ok:
+        log.info("day trader: %s %s confirmed by the agent but not placed - %s",
+                 s.ticker, s.setup, why)  # fmt: skip
+        return {"refused": f"with the agent's stop, {why}", "seconds": answer.get("seconds"),
+                **t}  # fmt: skip
     res = place(
         arena,
         pb,
@@ -1196,13 +1433,17 @@ def _industries(arena) -> dict:
 
 
 def _news_rows(arena, day: date) -> dict:
-    p = Path(arena.cfg.data_dir) / "announcements" / "live" / f"{day.isoformat()}.parquet"
-    if not p.exists():
+    """The agent's "news_today", over the window the scan's `news_today` uses. 26 Sep 2026
+    (review B5): it read only today's file, so a stock flagged for last evening's
+    price-sensitive announcement reached the agent with no news in its packet."""
+    df = announcements_since_close(arena.cfg.data_dir, day)
+    if df is None or not len(df):
         return {}
-    df = pd.read_parquet(p)
+    df = df.drop_duplicates(subset=["code", "released_at", "headline"])
     out: dict = {}
-    for r in df.itertuples():
-        out.setdefault(str(r.code).upper(), []).append(
-            f"{r.released_at:%H:%M} {'[price sensitive] ' if r.price_sensitive else ''}{r.headline}"
-        )
+    for r in df.sort_values("released_at").itertuples():
+        when = f"{r.released_at:%H:%M}" if r.released_at.date() == day else (
+            f"{r.released_at:%a %d %b %H:%M}")  # fmt: skip
+        sens = "[price sensitive] " if r.price_sensitive else ""
+        out.setdefault(str(r.code).upper(), []).append(f"{when} {sens}{r.headline}")
     return out

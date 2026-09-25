@@ -33,6 +33,7 @@ from asxbot.arena.intraday import (
     continuous,
     counted_volume,
     minute_of_session,
+    prior_sessions,
     vwap,
 )
 from asxbot.arena.liquid import size_rule
@@ -49,6 +50,27 @@ PREV_CLOSE_TIME = time_cls(16, 10)
 # A data failure, never a verdict: a look or a rule that meets it waits (reaction_looks,
 # v2_bot_cycle), and the evening report counts it as "no usable prices".
 NO_PREV_CLOSE = "no previous close in the minute cache"
+# 26 Sep 2026 (review C1/C2): the other inputs whose absence is a data failure, not a
+# verdict. On 25 Sep one stock at a time met them (its prior sessions were first asked for
+# at 10:30, from IBKR) and was recorded "no signal" or "quiet" for good. A look or a rule
+# candidate that meets one now waits for it, until its own deadline, and is then recorded
+# as missed for want of data.
+NO_USUAL = "no usual-volume baseline (too few prior sessions cached)"
+NO_BARS = "no bars, and the feed has not shown it watched the stock then (no data)"
+NOT_REACHED = "the feed has not reached 10:30 yet"
+NO_INDEX_BAR = "no index bar at 10:29"
+DATA_WAITS = (NO_PREV_CLOSE, NO_USUAL, NO_BARS, NOT_REACHED, NO_INDEX_BAR)
+
+
+def waits_for_data(why: str | None) -> bool:
+    """Is this "no signal" reason really missing data (wait), not a verdict?"""
+    return why in DATA_WAITS
+
+
+def _covered(view, code: str, start: datetime, end: datetime) -> bool:
+    """MarketView.covered, for a view that may not have it (True: it returns whole days)."""
+    fn = getattr(view, "covered", None)
+    return True if fn is None else bool(fn(code, start, end))
 
 
 # --------------------------------------------------------------------------
@@ -150,7 +172,11 @@ def reaction(
     usual = view.usual(code)
     vol = counted_volume(after)  # never the 10:00 bar (intraday.VOLUME_FROM)
     vol_mult = None
-    if usual is not None:
+    if usual is None:
+        # 26 Sep 2026 (review C2): no baseline is missing data, not "volume unknown" - the
+        # look waits for it (reaction_looks) instead of being closed as quiet.
+        out["volume_why"] = NO_USUAL
+    else:
         m1, m0 = minute_of_session(last_ts), minute_of_session(after.index.min()) - 1
         if 0 <= m1 < len(usual):
             base_vol = float(usual.iloc[m1]) - (float(usual.iloc[m0]) if m0 >= 0 else 0.0)
@@ -197,6 +223,9 @@ def wakes(r: dict, pb) -> tuple[bool, str]:
         return True, f"moved {r['move_vs_index_pct']:+.2f}% against the ASX 200"
     if vol is not None and vol >= vm:
         return True, f"traded {vol:.1f}x its usual volume over the same minutes"
+    if r.get("volume_why"):
+        # 26 Sep 2026 (review C2): not quiet - the volume test could not be made.
+        return False, f"{r['move_vs_index_pct']:+.2f}% against the index; {r['volume_why']}"
     v = "unknown" if vol is None else f"{vol:.1f}x"
     return False, (
         f"quiet: {r['move_vs_index_pct']:+.2f}% against the index (< {mv}%), volume {v} (< {vm}x)"
@@ -257,7 +286,9 @@ def news_reaches_market(release: datetime, day: date) -> datetime:
 @dataclass
 class LookReady:
     ticker: str
-    status: str  # ready | wait | halted | missed
+    # ready | wait | no_trade | missed. "no_trade" was "halted" until 26 Sep 2026 (review
+    # C3): no bars in the 10 minutes after the news cannot tell a halt from a thin stock.
+    status: str
     why: str
     ref: datetime | None = None
     base: float | None = None
@@ -277,19 +308,37 @@ def look_status(view: MarketView, item: dict, now: datetime, pb) -> LookReady:
     bars = continuous(view.bars(code, now))
     since = bars[bars.index >= t0]
     if not len(since):
-        if data_time >= t0 + timedelta(minutes=halt_min):
-            return LookReady(
-                code,
-                "halted",
-                f"no trade in the {halt_min} minutes after the news reached the "
-                f"market at {t0:%H:%M} (halted, paused or not trading)",
-            )
+        halt_end = t0 + timedelta(minutes=halt_min)
+        if data_time >= halt_end:
+            # 26 Sep 2026 (review C3): "no bars" is only "no trade" if the feed watched the
+            # stock then. On 25 Sep MOT, LKE and MRE were recorded "halted" at 10:31 though
+            # MOT and LKE traded from 10:14 and 10:11: IBKR had not been asked for them yet.
+            # Unwatched, the look waits; if the window closes first it is missed, no data.
+            if _covered(view, code, t0, halt_end):
+                return LookReady(
+                    code,
+                    "no_trade",
+                    f"no trade in the {halt_min} minutes after the news reached the market "
+                    f"at {t0:%H:%M} (thin, halted or no data)",
+                )
+            if data_time >= t0 + timedelta(minutes=before):
+                return LookReady(
+                    code,
+                    "missed",
+                    f"no data: the feed never showed it watched {code} in the {halt_min} "
+                    f"minutes after the news reached the market at {t0:%H:%M}, and the "
+                    f"{before}-minute window has closed",
+                )
+            return LookReady(code, "wait", f"no bars since the news at {t0:%H:%M}: {NO_BARS}")
         return LookReady(code, "wait", "no trade yet since the news")
     ref = since.index.min().to_pydatetime()
     newest = since.index.max().to_pydatetime()
     if newest < ref + timedelta(minutes=after - 1):
         if data_time >= ref + timedelta(minutes=before):
-            return LookReady(code, "missed", "the stock traded too thinly to show 10 minutes")
+            thin = "the stock traded too thinly to show 10 minutes"
+            if not _covered(view, code, ref, ref + timedelta(minutes=before)):
+                thin += " (or the feed did not watch it throughout: no data)"
+            return LookReady(code, "missed", thin)
         return LookReady(code, "wait", "fewer than 10 minutes of trading visible")
     if newest >= ref + timedelta(minutes=before):
         return LookReady(
@@ -349,56 +398,146 @@ def v2_bot_signal(
     view: MarketView, code: str, now: datetime, params: dict, shortable: bool
 ) -> tuple[BotSignal | None, str]:
     """The v2 rule at 10:30, on bars final by `now`. (None, why) when it does not fire."""
+    sig, why, _inputs = v2_bot_measure(view, code, now, params, shortable)
+    return sig, why
+
+
+def _history_of(view):
+    fn = getattr(view, "_history", None)
+    return None if fn is None else fn()
+
+
+def _sessions_held(view, code: str, n: int) -> list[str]:
+    """The prior sessions the view's history holds continuous bars for (those the usual
+    volume is the mean of)."""
+    try:
+        h = _history_of(view)
+        if h is None:
+            return []
+        out = []
+        for d in prior_sessions(view.day, n):
+            df = h.cached(code, d)
+            if df is not None and len(continuous(df)):
+                out.append(d.isoformat())
+        return out
+    except Exception:  # noqa: BLE001 - a record of the inputs must never stop the rule
+        return []
+
+
+def _prev_close_session(view, code: str) -> str | None:
+    """The session the previous close came from (intraday.previous_close's own search)."""
+    try:
+        h = _history_of(view)
+        for d in prior_sessions(view.day, 3) if h is not None else []:
+            df = h.cached(code, d)
+            if df is None or not len(df):
+                continue
+            traded = df if code.startswith("^") else df[df["volume"] > 0]
+            if len(traded[traded["close"] > 0]):
+                return d.isoformat()
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def v2_bot_measure(
+    view: MarketView, code: str, now: datetime, params: dict, shortable: bool
+) -> tuple[BotSignal | None, str, dict]:
+    """The v2 rule at 10:30, on bars final by `now`: (signal or None, why, inputs).
+
+    26 Sep 2026 (review C1/C11): `inputs` holds every number the measure used - previous
+    closes, the last prices, today's and the usual volume, the sessions behind the usual
+    volume, the feed - so a decision can be reproduced from its record. A reason in
+    DATA_WAITS is missing data: the caller waits for it instead of recording "no signal"."""
     at = time_cls.fromisoformat(str(params.get("measure_at", "10:30")))
     day = view.day
     end = datetime.combine(day, at, tzinfo=SYD)  # bars 10:00 .. end-1min
     last_bar = end - timedelta(minutes=1)
+    open_ = datetime.combine(day, OPEN, tzinfo=SYD)
+    inputs: dict = {"data": view.label}
     idx = view.bars(view.index, now)
     if not len(idx) or idx.index.max() < last_bar:
-        return None, "the feed has not reached 10:30 yet"
+        return None, NOT_REACHED, inputs
     bars = continuous(view.bars(code, now))
-    window = bars[(bars.index >= datetime.combine(day, OPEN, tzinfo=SYD)) & (bars.index < end)]
+    window = bars[(bars.index >= open_) & (bars.index < end)]
     if not len(window):
-        return None, "no trade 10:00-10:30"
+        # 26 Sep 2026 (review C1): only a verdict if the feed watched the stock then.
+        if _covered(view, code, open_, last_bar):
+            return None, "no trade 10:00-10:30", inputs
+        return None, NO_BARS, inputs
     prev, iprev = view.prev_close(code), view.prev_close(view.index)
+    inputs.update(
+        previous_close=prev,
+        previous_close_session=_prev_close_session(view, code),
+        index_previous_close=iprev,
+    )
     if prev is None or iprev is None:
-        return None, NO_PREV_CLOSE
+        return None, NO_PREV_CLOSE, inputs
     usual = view.usual(code)
     if usual is None:
-        return None, "no usual-volume baseline (too few prior sessions cached)"
+        return None, NO_USUAL, inputs
     m = minute_of_session(last_bar)
     base_vol = float(usual.iloc[m]) if 0 <= m < len(usual) else 0.0
-    if base_vol <= 0:
-        return None, "usual first-30-minute volume is zero"
-    vol_mult = counted_volume(window) / base_vol  # 10:01-10:29 (intraday.VOLUME_FROM)
+    vol_today = counted_volume(window)  # 10:01-10:29 (intraday.VOLUME_FROM)
     last = float(window["close"].iloc[-1])
     idx_last = _close_at(idx, last_bar)
+    inputs.update(
+        last=last,
+        last_bar=f"{window.index.max():%H:%M}",
+        index_last=idx_last,
+        volume_1001_1029=vol_today,
+        usual_volume_1001_1029=base_vol,
+        usual_sessions=_sessions_held(view, code, int(getattr(view, "sessions", 5))),
+    )
+    if base_vol <= 0:
+        return None, "usual first-30-minute volume is zero", inputs
+    vol_mult = vol_today / base_vol
     if idx_last is None:
-        return None, "no index bar at 10:29"
+        return None, NO_INDEX_BAR, inputs
     move = ((last / prev - 1) - (idx_last / iprev - 1)) * 100
     need_move = float(params.get("move_vs_index_pct", 3.0))
     need_vol = float(params.get("volume_multiple", 3.0))
     base = f"{move:+.2f}% vs the ASX 200 at 10:30 on {vol_mult:.1f}x usual first-30-minute volume"
     if vol_mult < need_vol:
-        return None, base + f": volume below {need_vol}x"
+        return None, base + f": volume below {need_vol}x", inputs
     if move >= need_move:
-        return BotSignal(code, "buy", move, vol_mult, last, float(window["low"].min()), base), base
+        sig = BotSignal(code, "buy", move, vol_mult, last, float(window["low"].min()), base)
+        return sig, base, inputs
     if move <= -need_move:
         if not shortable:
-            return None, base + ": would be a short, but not an ASX 200 member"
-        return BotSignal(
-            code, "short", move, vol_mult, last, float(window["high"].max()), base
-        ), base
-    return None, base + f": move inside +/-{need_move}%"
+            return None, base + ": would be a short, but not an ASX 200 member", inputs
+        sig = BotSignal(code, "short", move, vol_mult, last, float(window["high"].max()), base)
+        return sig, base, inputs
+    return None, base + f": move inside +/-{need_move}%", inputs
+
+
+def last_visible(view: MarketView, code: str, now: datetime) -> tuple[float | None, str | None]:
+    """The last price a decision at `now` may see: the newest final bar's close, and its
+    minute."""
+    b = continuous(view.bars(code, now))
+    if not len(b):
+        return None, None
+    return float(b["close"].iloc[-1]), f"{b.index.max():%H:%M}"
 
 
 def bot_order_terms(
-    sig: BotSignal, params: dict, size_aud: float, turnover: float | None, share: float | None
+    sig: BotSignal,
+    params: dict,
+    size_aud: float,
+    turnover: float | None,
+    share: float | None,
+    last: float | None = None,
 ) -> tuple[int, float, float]:
-    """(qty, limit, stop) for a v2 bot signal: $5,000 or less, capped by the size rule."""
+    """(qty, limit, stop) for a v2 bot signal: $5,000 or less, capped by the size rule.
+
+    The limit is entry_limit_slack_pct through `last`, the last visible price when the order
+    is placed. 26 Sep 2026 (review C6): it was always the 10:29 bar's close, however late
+    the decision; the frozen rule says "the last visible price". Without `last`, the 10:29
+    close (as before)."""
     slack = float(params.get("entry_limit_slack_pct", 2.0)) / 100.0
     buy = sig.side == "buy"
-    limit = round_to_tick(sig.last * (1 + slack if buy else 1 - slack), up=buy)
+    px = sig.last if last is None else float(last)
+    limit = round_to_tick(px * (1 + slack if buy else 1 - slack), up=buy)
     value = float(size_aud)
     if turnover and share:
         value = min(value, turnover * share)

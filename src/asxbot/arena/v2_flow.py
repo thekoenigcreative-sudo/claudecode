@@ -25,8 +25,8 @@ from asxbot.arena.levels import Playbook
 from asxbot.arena.liquid import size_rule
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
 from asxbot.arena.reaction_v2 import (
-    NO_PREV_CLOSE,
     bot_order_terms,
+    last_visible,
     load_bot_state,
     load_queue,
     look_status,
@@ -35,7 +35,8 @@ from asxbot.arena.reaction_v2 import (
     save_bot_state,
     save_queue,
     v2_bot_candidates,
-    v2_bot_signal,
+    v2_bot_measure,
+    waits_for_data,
     wakes,
 )
 from asxbot.live.scanner import round_to_tick
@@ -57,6 +58,20 @@ def _pause_note(what: str, why: str, now: datetime) -> None:
 # --------------------------------------------------------------------------
 # the decider's v2 packet
 # --------------------------------------------------------------------------
+def _bar_age_line(rx: dict, now: datetime) -> str:
+    """Which prices the reaction is on, and how old its newest bar is at `now`."""
+    label = rx.get("data_label") or DELAYED
+    as_of = rx.get("as_of_bar")
+    try:
+        start = datetime.combine(now.astimezone(SYD).date(), time_cls.fromisoformat(str(as_of)),
+                                 tzinfo=SYD)  # fmt: skip
+    except (TypeError, ValueError):
+        return f"The prices are {label}."
+    age = max(0, round((now - start - timedelta(minutes=1)).total_seconds() / 60))
+    return (f"Its newest bar is the {as_of} minute, which ended {age} minute"
+            f"{'' if age == 1 else 's'} before this decision; the prices are {label}.")  # fmt: skip
+
+
 def decider_packet_v2(
     arena,
     pb: Playbook,
@@ -100,6 +115,8 @@ def decider_packet_v2(
         for o in acct.orders.values()
         if o.status == "pending_fill"
     ]
+    # 26 Sep 2026 (review G5): the heading below named "Sonnet 5" whatever model the reader
+    # call reported; it names the agent only (the model is in each reader record).
     summary_block = "\n\n---\n\n".join(summaries) if summaries else "(no reader summary)"
     news_lines = "\n".join(
         f"  {n['released']} Sydney  {n['headline']}  ({n.get('link', '')})" for n in news
@@ -113,13 +130,16 @@ def decider_packet_v2(
             "for 10 minutes (the reaction look), whatever you decide now."
         )
     else:
+        # 26 Sep 2026 (review G5), a factual correction: this said "The bars are DELAYED
+        # (~20 minutes on the free feed)" whatever the feed was. On 25 Sep the bars were live
+        # IBKR and the same packet said so a few lines lower. It now says which prices they
+        # are and how old the newest bar is.
         when = (
             "REACTION LOOK - your one look at this stock today. The market has traded this "
             "news; the reaction below is measured from 1-minute bars (move against the ASX "
             "200, volume against the stock's usual volume over the same minutes of the day). "
-            f"Its newest bar is {ctx['reaction'].get('as_of_bar', '?')}. The bars are DELAYED "
-            "(~20 minutes on the free feed): your order fills at the first bar after it is "
-            "recorded, so the price you get is later than the last price you see."
+            f"{_bar_age_line(ctx['reaction'], now)} Your order fills at the first bar after "
+            "it is recorded, so the price you get is later than the last price you see."
         )
     return f"""You are trader-decider, announcements playbook VERSION 2: trade the reaction.
 
@@ -135,7 +155,7 @@ YOU ARE DECIDING AT: {now:%Y-%m-%d %H:%M} Sydney
 THE NEWS ({code}, price sensitive)
 {news_lines}
 
-READER'S SUMMARY (trader-reader, Sonnet 5)
+READER'S SUMMARY (trader-reader)
 BEGIN READER SUMMARY
 {summary_block}
 END READER SUMMARY
@@ -283,13 +303,33 @@ def place_decision(
         if alert:
             alert.refused("agent", code, str(d.get("side")), d.get("qty", "?"), why)
         return {"refused": why}
+    # 26 Sep 2026 (review G7), three fixes in how the block is read, no rule changed:
+    #  * the order is for the stock the decider was asked about, or none: the ticker was
+    #    taken from the block, so the decider (or text injected into it) could trade a
+    #    stock that never passed the v2 screen or its one-look rule;
+    #  * the side is normalised BEFORE the prices are rounded ("BUY" rounded the limit down
+    #    and the stop up, the wrong way for a long);
+    #  * the target is read inside the try: a target like "about 1.2" raised after the
+    #    decision was recorded as a trade, and no order and no reason were recorded.
+    asked = code.strip().upper()
+    named = str(d.get("ticker") or asked).strip().upper()
+    if named != asked:
+        why = f"the decision names {named}, not {asked}, the stock it was asked about"
+        if alert:
+            alert.refused("agent", asked, str(d.get("side")), d.get("qty", "?"), why)
+        return {"refused": why}
     try:
-        side = str(d.get("side", "buy"))
+        side = str(d.get("side", "buy")).strip().lower()
         qty = int(d["qty"])
         limit = round_to_tick(float(d["limit"]), up=side == "buy")
         stop = round_to_tick(float(d["stop"]), up=side != "buy")
+        raw_target = d.get("target")
+        if raw_target is None or str(raw_target).strip().lower() in ("", "null", "none"):
+            target = None
+        else:
+            target = float(raw_target)
     except (KeyError, TypeError, ValueError) as e:
-        return {"refused": f"the decision block was not usable: {e}"}
+        return {"refused": f"the decision block was not usable: {e!r}"}
     reason = (
         f"[v2 {stage}] {d.get('why', '')} [confidence {d.get('confidence_pct')}%, "
         f"expected {d.get('expected_move_rest_of_day_pct')}% gross, {net}% net]"
@@ -300,12 +340,12 @@ def place_decision(
             arena.broker,
             acct,
             pb,
-            ticker=str(d.get("ticker", code)),
+            ticker=asked,
             side=side,
             qty=qty,
             limit=limit,
             stop=stop,
-            target=float(d["target"]) if d.get("target") not in (None, "") else None,
+            target=target,
             reason=reason,
             model=model,
             placed_by="agent",
@@ -334,7 +374,112 @@ def place_decision(
 # --------------------------------------------------------------------------
 # the reaction look
 # --------------------------------------------------------------------------
-_NO_PREV_WARNED: set[tuple[date, str]] = set()
+# 26 Sep 2026 (review, agent unavailable): a look whose decider call failed is queued again,
+# and tried no sooner than this after the failure, until its window closes.
+AGENT_RETRY = timedelta(minutes=2)
+# 26 Sep 2026 (review C13): a look still "looking" this long after it started was cut off by
+# a crash or a restart (the watcher runs one look at a time; the decider's limit is 240 s).
+LOOKING_STALE = timedelta(minutes=10)
+_WAIT_WARNED: set[tuple[date, str, str]] = set()
+
+
+def _when(text) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(str(text))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=SYD)
+
+
+def _after_cutoff(pb: Playbook, t: datetime) -> bool:
+    """Past the playbook's last entry time (arena_place_order refuses an entry then)."""
+    cut = pb.last_entry_time
+    return cut is not None and t.astimezone(SYD).time() > cut
+
+
+def _close(item: dict, status: str, why: str, exposed: bool = False) -> None:
+    """Record a final status for a look that was not made. A failed agent call or missing
+    data that kept it waiting until then is named first: that, not the window, is why."""
+    if exposed:
+        held = "the agent held it or had an entry working through the window; "
+        item.update(status="held", why=held + why)
+        return
+    lead = ""
+    if item.get("agent_failed"):
+        lead = f"agent unavailable ({item['agent_failed'].get('kind', 'error')}); "
+    elif item.get("waiting"):
+        lead = f"no data ({item['waiting']}); "
+    item.update(status=status, why=lead + why)
+
+
+def _prepare(view: MarketView, codes: list[str]) -> None:
+    """Queue the prior sessions of these stocks on a feed that keeps its own (IBKR), so the
+    previous close and usual volume are in hand when they are needed (review C1)."""
+    fn = getattr(view, "prepare", None)
+    if fn is None or not codes:
+        return
+    try:
+        fn(list(codes))
+    except Exception as e:  # noqa: BLE001 - asking early must never stop the looks
+        log.warning("could not queue prior sessions for %d stock(s): %s", len(codes), e)
+
+
+def _reaction_decision(data_dir, code: str, day: date, since: datetime | None) -> dict | None:
+    """The decider's reaction-look answer on `code` recorded on `day` (at or after `since`)."""
+    for r in reversed(EventLog(data_dir).read("arena_decisions")):
+        if r.get("ticker") != code or r.get("v2") != "reaction" or r.get("stage") != "decider":
+            continue
+        t = _when(r.get("ts"))
+        if t is None or t.astimezone(SYD).date() != day:
+            continue
+        if since is None or t >= since - timedelta(minutes=1):
+            return r
+    return None
+
+
+def _recover_interrupted(arena, pb: Playbook, view: MarketView, q: dict, now: datetime) -> None:
+    """26 Sep 2026 (review C13): a crash or restart in the middle of a look left it "looking"
+    for good, with no verdict. One still "looking" LOOKING_STALE after it started was cut
+    off: if the decider had answered, the look was made ("looked"); if not, it is queued
+    again while its window is open, and recorded as missed once it has closed."""
+    changed = False
+    for code, item in q.items():
+        if code.startswith("_") or not isinstance(item, dict) or item.get("status") != "looking":
+            continue
+        since = _when(item.get("looking_since"))
+        if since is not None and now - since < LOOKING_STALE:
+            continue
+        started = f"{since.astimezone(SYD):%H:%M}" if since else "an unrecorded time"
+        cut = f"the look started at {started} was cut off (crash or restart)"
+        rec = _reaction_decision(arena.cfg.data_dir, code, view.day, since)
+        if rec is not None:
+            d = rec.get("decision") or {}
+            item.update(status="looked", why=cut + " after the decider answered",
+                        outcome={"decision": str(d.get("action", "pass")).lower(),
+                                 "why": str(d.get("why", "")), "recovered": cut})  # fmt: skip
+        else:
+            st = look_status(view, item, now, pb)
+            if st.status in ("ready", "wait"):
+                item.update(status="queued", why=cut + "; it is looked at again")
+            else:
+                item.update(status="missed", why=f"{cut} and its window has closed: {st.why}")
+        item.pop("looking_since", None)
+        EventLog(arena.cfg.data_dir).append("v2_reaction", {"ticker": code, **_brief(item)})
+        log.warning("reaction look on %s: %s", code, item["why"])
+        changed = True
+    if changed:
+        save_queue(arena.cfg.data_dir, view.day, q)
+
+
+def _data_gap(r: dict, woke: bool) -> str | None:
+    """Missing data that stops the reaction being judged, or None. A reaction that is not
+    available at all (no previous close, no index bar) is never "quiet"; nor is one with no
+    usual volume, unless the move alone wakes the decider (the rule is move OR volume)."""
+    if not r.get("available"):
+        return str(r.get("why") or "no reaction data")
+    if not woke and r.get("volume_why"):
+        return str(r["volume_why"])
+    return None
 
 
 def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None = None) -> list:
@@ -350,15 +495,36 @@ def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None =
     q = load_queue(cfg.data_dir, day)
     if not q:
         return []
+    _recover_interrupted(arena, pb, view, q, now)
+    queued = [
+        c
+        for c, v in q.items()
+        if not c.startswith("_") and isinstance(v, dict) and v.get("status") == "queued"
+    ]
+    if not queued:
+        return []
+    acct = arena.account(pb, "agent")
+    if _after_cutoff(pb, now):
+        # 26 Sep 2026 (review C15): no entry may be made after the last entry time, so no
+        # look is made either - no reader or decider call for an order code would refuse.
+        # Recorded whatever the feed is doing, so nothing is left queued at the close.
+        for code in queued:
+            _close(q[code], "missed", f"after the entry cut-off ({pb.last_entry_time:%H:%M})",
+                   _has_exposure(acct, code))  # fmt: skip
+            ev.append("v2_reaction", {"ticker": code, **_brief(q[code])})
+        save_queue(cfg.data_dir, day, q)
+        return []
+    # 26 Sep 2026 (review C1): a stock with news during the session had its prior sessions
+    # first asked for by its own look, which then found no previous close. Asked for as soon
+    # as it is queued (a no-op for those already held, on Yahoo and in the replay).
+    _prepare(view, queued)
     ok, why = entries_allowed(view, now)
     if not ok:
         _pause_note("v2 reaction looks", why, now)
         return []  # the looks wait; a window that closes meanwhile is recorded as missed
-    acct = arena.account(pb, "agent")
     due = []
-    for code, item in q.items():
-        if code.startswith("_") or item.get("status") != "queued":
-            continue
+    for code in queued:
+        item = q[code]
         st = look_status(view, item, now, pb)
         if st.status == "wait":
             continue
@@ -366,25 +532,29 @@ def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None =
         # feed shows the auction, ~10:22): no look this cycle, but no verdict either - if
         # the order expires or the position is stopped out, the look still comes.
         exposed = _has_exposure(acct, code)
-        if st.status in ("halted", "missed"):
-            held = "the agent held it or had an entry working through the window; "
-            item.update(status="held" if exposed else st.status,
-                        why=(held if exposed else "") + st.why)  # fmt: skip
+        if st.status in ("no_trade", "missed"):
+            _close(item, st.status, st.why, exposed)
             ev.append("v2_reaction", {"ticker": code, **_brief(item)})
             continue
         if exposed:
             continue
-        r = reaction(view, code, now, st.ref, st.base)
-        if r.get("why") == NO_PREV_CLOSE:
-            # The feed has no previous close yet: a data failure, not a quiet stock. Looked
-            # at again next cycle, until its window closes ("missed"). On 25 Sep 2026 six
-            # looks were closed as quiet this way at 10:16 (LEARNINGS #25).
-            if (day, code) not in _NO_PREV_WARNED:
-                _NO_PREV_WARNED.add((day, code))
-                log.warning("reaction look on %s waits: %s (%s)", code, NO_PREV_CLOSE,
-                            r.get("data_label"))  # fmt: skip
+        failed = _when((item.get("agent_failed") or {}).get("at"))
+        if failed is not None and now - failed < AGENT_RETRY:
             continue
+        r = reaction(view, code, now, st.ref, st.base)
         ok, why = wakes(r, pb)
+        gap = _data_gap(r, ok)
+        if gap:
+            # Missing data, not a quiet stock: looked at again next cycle, until its window
+            # closes ("missed", naming the data). On 25 Sep 2026 six looks were closed as
+            # quiet at 10:16 with no previous close (LEARNINGS #25); 26 Sep 2026 (review
+            # C2): the same for no usual volume, which was closed as "quiet, volume unknown".
+            item["waiting"] = gap
+            if (day, code, gap) not in _WAIT_WARNED:
+                _WAIT_WARNED.add((day, code, gap))
+                log.warning("reaction look on %s waits: %s (%s)", code, gap, r.get("data_label"))
+            continue
+        item.pop("waiting", None)
         item["reaction"] = {k: v for k, v in r.items() if k != "bars"}
         if not ok:
             item.update(status="quiet", why=why)
@@ -397,23 +567,54 @@ def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None =
     out = []
     for _score, code, _st, _r, why in sorted(due, key=lambda x: -x[0]):
         item = q[code]
-        fresh = look_status(view, item, arena.broker.clock(), pb)
-        if fresh.status != "ready":
-            item.update(
-                status=fresh.status if fresh.status != "wait" else "missed",
-                why=f"by the time its turn came: {fresh.why}",
-            )
+        t = arena.broker.clock()
+        if _after_cutoff(pb, t):
+            _close(item, "missed", f"after the entry cut-off ({pb.last_entry_time:%H:%M}), "
+                                   "by the time its turn came")  # fmt: skip
             save_queue(cfg.data_dir, day, q)
             ev.append("v2_reaction", {"ticker": code, **_brief(item)})
             continue
-        item["status"] = "looking"
+        fresh = look_status(view, item, t, pb)
+        if fresh.status == "wait":
+            # 26 Sep 2026 (review C10): "wait" is not a verdict. It was recorded as a final
+            # "missed ... by the time its turn came"; it stays queued for the next cycle.
+            continue
+        if fresh.status != "ready":
+            _close(item, fresh.status, f"by the time its turn came: {fresh.why}")
+            save_queue(cfg.data_dir, day, q)
+            ev.append("v2_reaction", {"ticker": code, **_brief(item)})
+            continue
+        # 26 Sep 2026 (review C10): the feed was checked once before a run of looks that can
+        # take minutes each; it is checked again, for this stock, before each one.
+        ok, pause_why = entries_allowed(view, t, [code])
+        if not ok:
+            _pause_note("v2 reaction looks", pause_why, t)
+            continue
+        item.update(status="looking", looking_since=t.isoformat(timespec="seconds"))
         save_queue(cfg.data_dir, day, q)
         try:
             res = look(arena, pb, view, code, item, fresh, why)
         except Exception as e:  # noqa: BLE001
             log.exception("reaction look on %s failed: %s", code, e)
             res = {"error": str(e)}
-        item.update(status="looked", outcome=res)
+            # Not "looked": a failure in code is not a look. Final, so a fault after the
+            # decider answered cannot ask it again every cycle.
+            item.update(status="failed", why=f"the look failed in code: {e!r}")
+        item.pop("looking_since", None)
+        if "agent_unavailable" in res:
+            # 26 Sep 2026 (review, agent unavailable): a decider call that failed (usage
+            # limit, timeout, error) is not a look and not a pass. Queued again, retried
+            # after AGENT_RETRY, until its window closes: then "missed: agent unavailable".
+            item.update(status="queued", why=f"the decider was unavailable: {res.get('error')}",
+                        agent_failed={"kind": res["agent_unavailable"],
+                                      "at": arena.broker.clock().isoformat(timespec="seconds"),
+                                      "why": res.get("error")})  # fmt: skip
+        elif item.get("status") == "looking":
+            for k in ("agent_failed", "why"):
+                item.pop(k, None)
+            item.update(status="looked", outcome=res)
+        else:
+            item["outcome"] = res
         save_queue(cfg.data_dir, day, q)
         ev.append("v2_reaction", {"ticker": code, **_brief(item)})
         out.append({"ticker": code, **res})
@@ -513,11 +714,14 @@ def look(arena, pb: Playbook, view: MarketView, code: str, item: dict, st, why: 
             timeout_s=240,
         )
     except AgentCallFailed as e:
+        # 26 Sep 2026 (review, agent unavailable): the caller keeps the look queued.
+        kind = str(getattr(e, "kind", "error"))
         ev.append(
             "arena_decisions",
-            {"ticker": code, "outcome": "decider_failed", "why": str(e), "v2": "reaction"},
-        )
-        return {"error": f"decider failed: {e}"}
+            {"ticker": code, "outcome": "decider_failed", "kind": kind, "why": str(e),
+             "v2": "reaction"},
+        )  # fmt: skip
+        return {"agent_unavailable": kind, "error": f"decider failed: {e}"}
     d = parse_decision(reply.text)
     ev.append(
         "arena_decisions",
@@ -563,26 +767,43 @@ def _from_other_day(cfg, day: date, ids: str):
 # --------------------------------------------------------------------------
 # the v2 rule bot's day
 # --------------------------------------------------------------------------
-def v2_bot_cycle(
-    arena, pb: Playbook, view: MarketView, now: datetime | None = None, ann=None
-) -> list[dict]:
-    """Once a day, when the 10:29 bar is final: the rule, as frozen, on every stock with
-    price-sensitive news since the previous close. Recorded in data/arena/v2bot/<day>.json."""
-    from asxbot.arena.watch import previous_session, seen_announcements
+_BOT_PREPARED: dict = {}
 
-    now = (now or arena.broker.clock()).astimezone(SYD)
-    cfg = arena.cfg
-    day = view.day
-    params = pb.yardstick()
-    state = load_bot_state(cfg.data_dir, day)
-    if state.get("status") in ("done", "missed"):
-        return []
-    measure = time_cls.fromisoformat(str(params.get("measure_at", "10:30")))
-    if now.time() < measure:
-        return []
-    latest = time_cls.fromisoformat(str(params.get("latest_decision_time", "11:15")))
-    data_time = view.data_time(now)
-    if now.time() > latest:
+
+def _prepare_bot(
+    arena, pb: Playbook, view: MarketView, now: datetime, ann, prev: date, measure: time_cls
+) -> None:
+    """26 Sep 2026 (review C1): on IBKR a stock's prior sessions were first asked for by the
+    rule itself at 10:30 - most v2 names are outside the day trader's pre-fetched universe -
+    and came back too late (25 Sep, 10:39). Before the measure, at most once a minute, they
+    are queued for the index and every stock with price-sensitive news since the last close,
+    so they are in hand at 10:30. Nothing to do in the replay or on Yahoo (the minute cache
+    is the history there)."""
+    from asxbot.arena.watch import seen_announcements
+
+    if getattr(view, "replay", False):
+        return
+    key = (view.day, str(arena.cfg.data_dir))
+    last = _BOT_PREPARED.get(key)
+    if last is not None and timedelta(0) <= now - last < timedelta(seconds=60):
+        return
+    _BOT_PREPARED[key] = now
+    try:
+        if ann is None:
+            ann = seen_announcements(arena.cfg, pb, prev - timedelta(days=1), view.day)
+        codes = v2_bot_candidates(ann, view.day, prev, arena.universe, measure)
+    except Exception as e:  # noqa: BLE001 - asking early must never stop the rule
+        log.warning("v2 rule bot: could not list the news stocks to prepare: %s", e)
+        return
+    _prepare(view, [view.index, *codes])
+
+
+def _bot_deadline(state: dict, latest: time_cls, now: datetime, data_time) -> None:
+    """latest_decision_time has passed. Never measured: the day is missed (as before).
+    Measured: every candidate still waiting for its data is recorded "missed: no data" -
+    not "no signal" - and nothing is traded late."""
+    pending = state.pop("pending", None) or {}
+    if state.get("measured_at") is None:
         state.update(
             status="missed",
             why=(
@@ -592,8 +813,62 @@ def v2_bot_cycle(
                 + "; nothing is traded late"
             ),
         )
+        return
+    cands = list(state.get("candidates") or [])
+    for code, why in sorted(pending.items()):
+        cands.append({"ticker": code, "missed": "no data",
+                      "why": f"missed: no data by {latest:%H:%M} ({why}); nothing is traded "
+                             "late"})  # fmt: skip
+    state["candidates"] = cands
+    if not pending or any("signal" in c for c in cands):
+        state.pop("why", None)
+        state["status"] = "done"
+    else:
+        state.update(
+            status="missed",
+            why=f"no data for any candidate by {latest:%H:%M}: "
+            + "; ".join(f"{c} ({w})" for c, w in sorted(pending.items()))
+            + "; nothing is traded late",
+        )
+
+
+def v2_bot_cycle(
+    arena, pb: Playbook, view: MarketView, now: datetime | None = None, ann=None
+) -> list[dict]:
+    """Once a day, when the 10:29 bar is final: the rule, as frozen, on every stock with
+    price-sensitive news since the previous close. Recorded in data/arena/v2bot/<day>.json.
+
+    26 Sep 2026 (review C1): a candidate whose own data is missing (no previous close, no
+    usual volume, no bars from a feed that was not watching it) is not "no signal": it waits,
+    and is decided in the cycle its data arrives, until latest_decision_time; then it is
+    recorded "missed: no data". Until now one such stock was closed "no signal" and the day
+    "done" for good - 25 Sep 10:39, one stock at a time. The measure is the same 10:30 one
+    whenever it is made (bars to 10:29); the lag is recorded."""
+    from asxbot.arena.reaction_v2 import NO_PREV_CLOSE, tick_pct
+    from asxbot.arena.watch import previous_session, seen_announcements
+    from asxbot.live.quotes import median_turnover_20d
+
+    now = (now or arena.broker.clock()).astimezone(SYD)
+    cfg = arena.cfg
+    day = view.day
+    params = pb.yardstick()
+    state = load_bot_state(cfg.data_dir, day)
+    if state.get("status") in ("done", "missed"):
+        return []
+    measure = time_cls.fromisoformat(str(params.get("measure_at", "10:30")))
+    prev = previous_session(day)
+    if now.time() < measure:
+        _prepare_bot(arena, pb, view, now, ann, prev, measure)
+        return []
+    latest = time_cls.fromisoformat(str(params.get("latest_decision_time", "11:15")))
+    data_time = view.data_time(now)
+    if now.time() > latest:
+        _bot_deadline(state, latest, now, data_time)
         save_bot_state(cfg.data_dir, day, state)
-        log.warning("v2 rule bot missed %s: %s", day, state["why"])
+        if state.get("measured_at") is not None:
+            EventLog(cfg.data_dir).append("v2_bot", {"day": day.isoformat(), **state})
+        log.warning("v2 rule bot %s at %s: %s", state["status"], f"{latest:%H:%M}",
+                    state.get("why") or "candidates without data recorded as missed")  # fmt: skip
         return []
     ok, why = entries_allowed(view, now)
     if not ok:
@@ -603,7 +878,8 @@ def v2_bot_cycle(
         state.update(status="waiting", why=f"paused: {why}")
         save_bot_state(cfg.data_dir, day, state)
         return []
-    last_bar = datetime.combine(day, measure, tzinfo=SYD) - timedelta(minutes=1)
+    measure_at = datetime.combine(day, measure, tzinfo=SYD)
+    last_bar = measure_at - timedelta(minutes=1)
     if data_time is None or data_time < last_bar:
         state.update(status="waiting", why="the feed has not reached 10:29")
         save_bot_state(cfg.data_dir, day, state)
@@ -616,40 +892,55 @@ def v2_bot_cycle(
         state.update(status="waiting", why=f"{NO_PREV_CLOSE} for the index ({view.label})")
         save_bot_state(cfg.data_dir, day, state)
         return []
-    prev = previous_session(day)
     if ann is None:
         ann = seen_announcements(cfg, pb, prev - timedelta(days=1), day)
     codes = v2_bot_candidates(ann, day, prev, arena.universe, measure)
     rule = size_rule(pb)
     daily = arena.daily_lookup()
-    from asxbot.arena.reaction_v2 import tick_pct
-
-    signals, seen = [], []
+    size = float(params.get("size_aud", 5000))
+    max_tick = float((pb.raw.get("screen") or {}).get("max_tick_pct", 3.0))
+    lag = round((now - measure_at).total_seconds() / 60, 1)
+    seen = list(state.get("candidates") or [])
+    decided = {c.get("ticker") for c in seen}
+    pending: dict[str, str] = {}
+    signals, new = [], 0
     for code in codes:
-        d = daily(code)
-        from asxbot.live.quotes import median_turnover_20d
-
-        turnover = median_turnover_20d(d)
-        size = float(params.get("size_aud", 5000))
+        if code in decided:
+            continue
+        turnover = median_turnover_20d(daily(code))
         if turnover is None or (rule and size > rule.max_order(turnover) + 1e-6):
             seen.append({"ticker": code, "screened": f"turnover {turnover}"})
+            new += 1
             continue
-        sig, why = v2_bot_signal(view, code, now, params, code in arena.short_universe)
-        max_tick = float((pb.raw.get("screen") or {}).get("max_tick_pct", 3.0))
+        sig, why, inputs = v2_bot_measure(view, code, now, params, code in arena.short_universe)
+        if sig is None and waits_for_data(why):
+            pending[code] = why
+            continue
+        new += 1
         if sig is not None and tick_pct(sig.last) > max_tick:
-            seen.append({"ticker": code, "screened": f"tick {tick_pct(sig.last):.2f}%"})
+            seen.append({"ticker": code, "screened": f"tick {tick_pct(sig.last):.2f}%",
+                         "inputs": inputs})  # fmt: skip
             continue
-        seen.append({"ticker": code, "signal": sig is not None, "why": why})
+        # 26 Sep 2026 (review C11): the inputs of the measure, so it can be reproduced.
+        seen.append({"ticker": code, "signal": sig is not None, "why": why,
+                     "decided_at": now.isoformat(timespec="seconds"), "lag_min": lag,
+                     "inputs": inputs})  # fmt: skip
         if sig is not None:
             signals.append((sig, turnover))
     signals.sort(key=lambda x: -x[0].volume_multiple)
     acct = arena.account(pb, "bot")
     alert = notify.get(arena)
-    orders = []
+    orders = list(state.get("orders") or [])
+    placed = []
     for sig, turnover in signals:
+        # 26 Sep 2026 (review C6): the limit is through the last price visible now, as the
+        # rule says - not the 10:29 close whatever the time of the decision.
+        px, px_bar = last_visible(view, sig.ticker, now)
         qty, limit, stop = bot_order_terms(
-            sig, params, float(params.get("size_aud", 5000)), turnover, rule.share if rule else None
+            sig, params, size, turnover, rule.share if rule else None, last=px
         )
+        terms = {"limit_from": {"price": sig.last if px is None else px, "bar": px_bar},
+                 "decision_lag_min": lag}  # fmt: skip
         try:
             o = arena_place_order(
                 cfg,
@@ -670,40 +961,56 @@ def v2_bot_cycle(
                 now=now,
                 good_till=good_till(pb, now),
             )
-            orders.append(
-                {
-                    "ticker": o.ticker,
-                    "order_id": o.order_id,
-                    "side": o.side,
-                    "qty": o.qty,
-                    "limit": o.limit,
-                    "stop": o.stop,
-                }
-            )
+            rec = {
+                "ticker": o.ticker,
+                "order_id": o.order_id,
+                "side": o.side,
+                "qty": o.qty,
+                "limit": o.limit,
+                "stop": o.stop,
+                **terms,
+            }
             if alert:
                 alert.decided(o)
         except ArenaOrderRefused as e:
-            orders.append({"ticker": sig.ticker, "refused": str(e)})
+            rec = {"ticker": sig.ticker, "refused": str(e), **terms}
             if alert:
                 alert.refused("bot", sig.ticker, sig.side, qty, str(e))
+        orders.append(rec)
+        placed.append(rec)
+    first = state.get("measured_at") is None
     state.pop("why", None)  # a "waiting" reason from an earlier cycle is not the outcome
     state.update(
-        status="done",
-        decided_at=arena.broker.clock().isoformat(timespec="seconds"),
         feed_at=data_time.isoformat(timespec="minutes"),
         data=view.label,  # which prices the rule was measured on (IBKR live or Yahoo)
         candidates=seen,
         orders=orders,
     )
+    if first:
+        state.update(measured_at=now.isoformat(timespec="seconds"), measure_lag_min=lag)
+    if pending:
+        state.update(
+            status="waiting",
+            pending=pending,
+            why=f"{len(pending)} candidate(s) waiting for their data: "
+            + "; ".join(f"{c} ({w})" for c, w in sorted(pending.items())),
+        )
+    else:
+        state.pop("pending", None)
+        state.update(status="done", decided_at=arena.broker.clock().isoformat(timespec="seconds"))
     save_bot_state(cfg.data_dir, day, state)
-    EventLog(cfg.data_dir).append("v2_bot", {"day": day.isoformat(), **state})
-    log.info(
-        "v2 rule bot: %d candidates, %d signals, %d orders",
-        len(codes),
-        len(signals),
-        sum(1 for o in orders if "order_id" in o),
-    )
-    return orders
+    if first or new or state["status"] == "done":
+        EventLog(cfg.data_dir).append("v2_bot", {"day": day.isoformat(), **state})
+        log.info(
+            "v2 rule bot: %d candidates, %d decided now, %d signals, %d orders, %d waiting "
+            "for data",
+            len(codes),
+            new,
+            len(signals),
+            sum(1 for o in placed if "order_id" in o),
+            len(pending),
+        )
+    return placed
 
 
 # --------------------------------------------------------------------------
@@ -854,6 +1161,29 @@ def pre_open_decider(
 # --------------------------------------------------------------------------
 # the queue's safety net
 # --------------------------------------------------------------------------
+_SCREENED: dict = {}
+
+
+def _arrival_verdicts(data_dir, ids: set[str]) -> dict[str, dict]:
+    """The latest v2 screen record for each of these announcement ids (arena_screened),
+    whether it was made on arrival (watch._handle_v2) or here. Read again only when the log
+    has changed."""
+    p = EventLog(data_dir).path("arena_screened")
+    try:
+        st = p.stat()
+    except OSError:
+        return {}
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    if _SCREENED.get("key") != key:
+        latest: dict[str, dict] = {}
+        for r in EventLog(data_dir).read("arena_screened"):
+            if r.get("v2") and r.get("ids_id") is not None:
+                latest[str(r["ids_id"])] = r
+        _SCREENED.clear()
+        _SCREENED.update(key=key, latest=latest)
+    return {i: _SCREENED["latest"][i] for i in ids if i in _SCREENED["latest"]}
+
+
 def seed_queue(
     arena, pb: Playbook, day: date, now: datetime, quotes=None, feed_down: bool = False
 ) -> list[str]:
@@ -887,16 +1217,30 @@ def seed_queue(
     ]
     q = load_queue(cfg.data_dir, day)
     seeded = set(q.get("_seeded", []))
+    before = set(seeded)
     queued_ids = {i for k, v in q.items() if k != "_seeded" for i in v.get("ids", [])}
+    todo = [
+        r for r in df.itertuples()
+        if not (str(r.ids_id) in seeded or str(r.ids_id) in queued_ids
+                or is_test_id(str(r.ids_id)) or str(r.code).upper() not in arena.universe)
+    ]  # fmt: skip
+    if not todo:
+        return []
+    arrival = _arrival_verdicts(cfg.data_dir, {str(r.ids_id) for r in todo})
     added = []
     qp = quotes or arena.quote_provider()
     size = pb.level.max_position_aud or 5000.0
-    for r in df.itertuples():
+    for r in todo:
         ids = str(r.ids_id)
         code = str(r.code).upper()
-        if ids in seeded or ids in queued_ids or is_test_id(ids) or code not in arena.universe:
-            continue
         seeded.add(ids)
+        v = arrival.get(ids)
+        if v is not None and not v.get("ok") and v.get("test") != "deferred":
+            # 26 Sep 2026 (review C8): screened out on arrival - that is its verdict. It
+            # was screened again here with a fresh quote (35 at 10:52 on 25 Sep, and some
+            # verdicts changed: NXN no_quote -> tick). Only a "deferred" one (no quote while
+            # the feed was down) is screened again.
+            continue
         a = Announcement(code, r.released_at.to_pydatetime(), str(r.headline), True, ids,
                          str(r.pdf_url))  # fmt: skip
         quote = qp.quote(code)
@@ -917,9 +1261,10 @@ def seed_queue(
             continue
         enqueue(cfg.data_dir, day, a, verdict.why)
         added.append(code)
-    q = load_queue(cfg.data_dir, day)
-    q["_seeded"] = sorted(seeded)
-    save_queue(cfg.data_dir, day, q)
+    if seeded != before:
+        q = load_queue(cfg.data_dir, day)
+        q["_seeded"] = sorted(seeded)
+        save_queue(cfg.data_dir, day, q)
     if added:
         log.info("v2: %d stock(s) with news since the last close added to today's reaction "
                  "looks: %s", len(added), ", ".join(sorted(set(added))))  # fmt: skip

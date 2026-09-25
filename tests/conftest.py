@@ -56,7 +56,7 @@ def foreman_home(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture(autouse=True)
 def ibkr_state_isolated(tmp_path, monkeypatch):
-    """No test reads or writes the real IB Gateway state (%LOCALAPPDATA%\asx-bot\ibgateway:
+    """No test reads or writes the real IB Gateway state (%LOCALAPPDATA%/asx-bot/ibgateway:
     the supervisor's and the connection doctor's files), runs the supervisor's task, probes
     the network or looks at the real Gateway (26 Sep 2026: a test that built the real feed
     wrote the live doctor.json). Tests that need these pass their own fakes."""
