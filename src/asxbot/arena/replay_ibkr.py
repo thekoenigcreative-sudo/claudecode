@@ -6,14 +6,19 @@ sweep) - one scratch book per day on a simulated clock, and a scorecard per play
 REPLAY, NOT LIVE, NOT A VERDICT ON THE AGENT. What is different from the arena:
   * the agent is never asked (a model may know what happened, and CLAUDE.md forbids AI
     classification of past announcements): rule bots only;
-  * every decision sees the bars a live IBKR feed would have held at that minute (delay 0),
-    with every stock watched every minute - the live rotation watches the quiet ones every
-    few minutes, so live catches at most what this catches;
+  * every decision sees the bars a live IBKR feed would have held at that minute: the
+    clock steps to 20 s past each minute, when the live feed has closed the minute before
+    (26 Sep 2026; it was 2 minutes behind), with every stock watched every minute - the live
+    rotation streams ~50 and polls the rest every few minutes, so live catches at most what
+    this catches;
   * each day starts a fresh $20,000 book, so a day's sizing never depends on the day before;
     the report chains the daily results into one curve;
   * the ASX 300 list and the ASX 200 short list are today's, applied to every past day
     (survivorship: the stocks that went on to be big), and the daily prices behind the
-    turnover screens are cut off at the day being replayed;
+    turnover screens are cut off at the day being replayed. v2 screens news in the arena's
+    whole universe (the ASX 300 and the small-cap list), as live; but the announcement
+    archive holds the ASX 300's only, so small caps' news is in the replay only for the
+    live collector's days (from 22 Sep 2026) - v2 is understated before then;
   * announcements come from the ASX archive (data/announcements/history), with the live
     collector's files for the days it ran; the opening auction is not modelled (no daily
     open is fetched for past days), so nothing fills in the auction - neither playbook
@@ -65,6 +70,8 @@ def history_root() -> Path:
 class HistoryBars(MinuteBars):
     """The IBKR history cache, read-only: <root>/<code>/<day>.parquet (the caret kept for the
     index). No request, no write, no opening auction."""
+
+    source_label = "IBKR history minute"  # what the broker records as each fill's feed
 
     def __init__(self, root: Path, price_field: str = "close"):
         self.root = Path(root)
@@ -236,7 +243,8 @@ def scratch_arena(cfg: Config, scratch: Path, clock: Clock, day: date, universe:
 # one day
 # --------------------------------------------------------------------------
 def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: pd.DataFrame,
-               hist: HistoryBars | None = None, keep: Path | None = None) -> dict:  # fmt: skip
+               hist: HistoryBars | None = None, keep: Path | None = None,
+               universe: set[str] | None = None) -> dict:  # fmt: skip
     """Both rule bots through one session. Returns the day's record (books, trades, gaps)."""
     from asxbot.arena.levels import load_playbook
 
@@ -270,8 +278,8 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
             if len(part):
                 write_parquet_atomic(part.reset_index(drop=True), live / f"{d.isoformat()}.parquet")
         clock = Clock(datetime.combine(day, time_cls(9, 50), tzinfo=SYD))
-        arena = scratch_arena(cfg, scratch, clock, day, set(codes), shorts, hist)
-        view = MarketView(hist, day, ReplayFeed(hist, 0), index, 5, 3)
+        arena = scratch_arena(cfg, scratch, clock, day, set(universe or codes), shorts, hist)
+        view = MarketView(hist, day, ReplayFeed(hist, None), index, 5, 3)
         st = daytrader.load_state(arena.cfg.data_dir, day)
         st["universe"] = dt_codes
         daytrader.save_state(arena.cfg.data_dir, day, st)
@@ -285,7 +293,7 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
             b = continuous(view.bars(t, clock.t))
             return None if not len(b) else float(b["close"].iloc[-1])
 
-        t = datetime.combine(day, time_cls(10, 0), tzinfo=SYD)
+        t = datetime.combine(day, time_cls(10, 0, 20), tzinfo=SYD)
         end = datetime.combine(day, time_cls(16, 30), tzinfo=SYD)
         books = [(v2pb, "bot"), (dtpb, "bot")]
         while t <= end:
@@ -301,6 +309,8 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
         for pb, kind in books:
             arena.broker.work(arena.account(pb, kind), clock.t)
         out["v2"] = _book(arena, v2pb, day, hist)
+        sens = day_ann["price_sensitive"].fillna(False).astype(bool) if len(day_ann) else []
+        out["v2"]["news_candidates"] = int(sum(sens)) if len(day_ann) else 0
         out["v2"]["state"] = {k: v for k, v in load_bot_state(arena.cfg.data_dir, day).items()
                               if k in ("status", "why", "decided_at")}  # fmt: skip
         out["v2"]["candidates"] = len(load_bot_state(arena.cfg.data_dir, day).get("candidates", []))
@@ -368,11 +378,17 @@ def _book(arena, pb, day: date, hist: HistoryBars) -> dict:
             "reason": o.reason[:120],
         })  # fmt: skip
     equity = acct.equity(prices)
+    open_left = {t: p.qty for t, p in acct.positions.items() if p.qty}
     return {
         "start": acct.starting_cash, "equity": round(equity, 2),
         "pnl": round(equity - acct.starting_cash, 2), "fees": round(acct.fees_paid, 2),
         "realised": round(acct.realised_pnl, 2),
-        "open_positions": {t: p.qty for t, p in acct.positions.items()},
+        # Positions still open when the day's work is done (19:00): the flat-by-close rule
+        # could not be met - an exit the bars' volume could not absorb (the 22 Sep plumbing
+        # replay left AVM and AON mostly unsold). An engine issue: counted and flagged.
+        "open_positions": open_left,
+        "stuck_at_close": [{"ticker": tk, "qty": q, "value": round(abs(q) * float(
+            prices.get(tk) or 0.0), 2)} for tk, q in open_left.items()],  # fmt: skip
         "orders": len(acct.orders), "trades": trades,
     }  # fmt: skip
 
@@ -404,6 +420,7 @@ def scorecard(days: list[dict], key: str) -> dict:
     up = [p for _, p, m in daily if m is not None and m > 0]
     down = [p for _, p, m in daily if m is not None and m <= 0]
     worst_day = min((p for _, p, _ in daily), default=0.0)
+    stuck = [(d["day"], s) for d in played for s in (d[key].get("stuck_at_close") or [])]
     return {
         "days": len(daily), "trades": len(trades), "wins": len(wins),
         "win_rate_pct": round(len(wins) / len(trades) * 100, 1) if trades else None,
@@ -418,8 +435,43 @@ def scorecard(days: list[dict], key: str) -> dict:
         "up_days": {"n": len(up), "pnl": round(sum(up), 2)},
         "down_days": {"n": len(down), "pnl": round(sum(down), 2)},
         "avg_trade": round(total / len(trades), 2) if trades else None,
+        "stuck_at_close": len(stuck),
+        "stuck_examples": [f"{d} {s['ticker']} {s['qty']} (${s['value']:,.0f})"
+                           for d, s in stuck[:10]],  # fmt: skip
         "curve": curve,
     }
+
+
+def verdict(s: dict) -> tuple[str, list[str]]:
+    """A plain verdict for one playbook's scorecard: promising / unclear / not working.
+    Fixed before any result was read (26 Sep 2026): at least 30 trades to say anything;
+    losing after costs is "not working"; winning needs more green days than red, a top-3
+    share under 60% and a worst drawdown under 25% (the ladder's own bar, ARENA.md) to be
+    "promising"; anything else is "unclear". A replay earns a hypothesis, never a promotion."""
+    why = []
+    if s["trades"] < 30:
+        why.append(f"only {s['trades']} trades (fewer than 30)")
+        if s["trades"] and s["pnl_after_fees"] <= 0:
+            why.append("and those lost after costs")
+        return "unclear", why
+    if s["pnl_after_fees"] <= 0:
+        why.append(f"loses after costs ({s['pnl_after_fees']:+,.0f} over {s['days']} days)")
+        return "not working", why
+    good = True
+    if s["green_days"] <= s["red_days"]:
+        good = False
+        why.append(f"{s['green_days']} green days against {s['red_days']} red")
+    if s["top3_share_pct"] is not None and s["top3_share_pct"] > 60:
+        good = False
+        why.append(f"{s['top3_share_pct']:.0f}% of the profit is three trades")
+    if s["max_drawdown_pct"] >= 25:
+        good = False
+        why.append(f"worst drawdown {s['max_drawdown_pct']:.1f}%")
+    if good:
+        why.append(f"makes {s['pnl_after_fees']:+,.0f} after costs on {s['trades']} trades, "
+                   f"{s['green_days']} green / {s['red_days']} red days")  # fmt: skip
+        return "promising", why
+    return "unclear", why
 
 
 def render(results: list[dict], first: date, last: date, n_codes: int, meta: dict) -> str:
@@ -456,6 +508,22 @@ def render(results: list[dict], first: date, last: date, n_codes: int, meta: dic
             f"{s['up_days']['n']} days {s['up_days']['pnl']:+,.2f} | "
             f"{s['down_days']['n']} days {s['down_days']['pnl']:+,.2f} |"
         )
+    lines += ["", "## Verdict per playbook (rules fixed before the run: `verdict`)", ""]
+    for name, s in (("announcements v2 (10:30 rule bot)", v2), ("day trader v1 (rule bot)", dt)):
+        word, why = verdict(s)
+        lines.append(f"- **{name}: {word}** - {'; '.join(why)}.")
+    stuck_lines = []
+    for name, s in (("v2", v2), ("day trader", dt)):
+        if s["stuck_at_close"]:
+            stuck_lines.append(
+                f"- {name}: {s['stuck_at_close']} position(s) still open after the close - the "
+                f"bars' volume could not absorb the flat-by-close exit (20% of each bar): "
+                f"{', '.join(s['stuck_examples'])}. An ENGINE issue: the entry screen admits "
+                "a size the exit liquidity cannot take by 15:50; a rule question for Rick "
+                "(recommend, not changed)."
+            )  # fmt: skip
+    if stuck_lines:
+        lines += ["", "## Stuck at the close", "", *stuck_lines]
     lines += ["", "## What it means, and what it does not", ""]
     for name, s in (("v2", v2), ("day trader", dt)):
         if s["trades"] and s["top3_share_pct"] is not None and s["top3_share_pct"] > 60:
@@ -472,6 +540,8 @@ def render(results: list[dict], first: date, last: date, n_codes: int, meta: dic
         "- Every stock is watched every minute here; live, the rotation streams the moving "
         "stocks and polls the quiet ones every few minutes, so live catches at most this.",
         "- Survivorship: today's ASX 300 and ASX 200 lists on every past day.",
+        "- v2's news: the announcement archive holds the ASX 300 only; small caps' news is in "
+        "the replay only from 22 Sep (the live collector), so v2 is understated before that.",
         "- The opening auction is not modelled for past days (no order is placed before the "
         "open by either playbook).",
     ]
@@ -508,13 +578,14 @@ def render(results: list[dict], first: date, last: date, n_codes: int, meta: dic
 # running it
 # --------------------------------------------------------------------------
 def run_days(cfg: Config, days: list[date], codes: list[str], shorts: set[str],
-             ann: pd.DataFrame, progress=None) -> list[dict]:  # fmt: skip
+             ann: pd.DataFrame, progress=None,
+             universe: set[str] | None = None) -> list[dict]:  # fmt: skip
     hist = HistoryBars(history_root(), str((cfg.get("arena.fill") or {}).get("minute_price",
                                                                             "close")))  # fmt: skip
     out = []
     for i, day in enumerate(days):
         try:
-            r = replay_day(cfg, day, codes, shorts, ann, hist)
+            r = replay_day(cfg, day, codes, shorts, ann, hist, universe=universe)
         except Exception as e:  # noqa: BLE001
             log.exception("replay of %s failed: %s", day, e)
             r = {"day": day.isoformat(), "gaps": [f"replay failed: {type(e).__name__}: {e}"]}
@@ -529,10 +600,10 @@ def run(cfg: Config, first: date, last: date, workers: int = 1, out_dir: Path | 
     """Replay every session in [first, last]; write reports/replay_ibkr_<stamp>.md and .json.
     With workers > 1 the days are split across child processes (`asxbot arena replay-ibkr
     --worker`), each writing its slice to a JSON file the parent gathers."""
-    from asxbot.data.universe import asx200_codes, build_universes
+    from asxbot.data.universe import asx200_codes
 
-    a, _ = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
-    codes = [c.upper() for c in (codes or a.codes)]
+    a_codes, universe = arena_universe(cfg)
+    codes = [c.upper() for c in (codes or a_codes)]
     shorts = asx200_codes(cfg.data_dir, cfg.get("collector.user_agent"))
     days = sessions(first, last)
     ann = announcements(cfg, first - timedelta(days=5), last)
@@ -547,7 +618,7 @@ def run(cfg: Config, first: date, last: date, workers: int = 1, out_dir: Path | 
                      (r.get("v2") or {}).get("pnl"), (r.get("daytrader") or {}).get("pnl"),
                      f" GAP {r['gaps']}" if r.get("gaps") else "")  # fmt: skip
 
-        results = run_days(cfg, days, codes, shorts, ann, progress)
+        results = run_days(cfg, days, codes, shorts, ann, progress, universe=universe)
     played = [r for r in results if not r.get("gaps")]
     meta = {"avg_dt_universe": (sum(r.get("dt_universe", 0) for r in played) / len(played))
             if played else 0}  # fmt: skip
@@ -595,13 +666,24 @@ def _run_parallel(cfg: Config, days: list[date], workers: int, parts: Path,
     return results
 
 
+def arena_universe(cfg: Config) -> tuple[list[str], set[str]]:
+    """(the ASX 300 codes, the arena's whole universe): the live arena watches news in the
+    ASX 300 and the small-cap list (runtime.build_arena), so the replay's v2 does too."""
+    from asxbot.data.universe import build_universes
+
+    a, b = build_universes(cfg.data_dir, cfg.get("collector.user_agent"))
+    return [c.upper() for c in a.codes], {c.upper() for c in (*a.codes, *b.codes)}
+
+
 def worker_main(cfg: Config, days: list[date], out: Path, codes: list[str]) -> int:
     from asxbot.data.universe import asx200_codes
 
     shorts = asx200_codes(cfg.data_dir, cfg.get("collector.user_agent"))
+    _, universe = arena_universe(cfg)
     ann = announcements(cfg, min(days) - timedelta(days=5), max(days))
     results = run_days(cfg, days, codes, shorts, ann,
-                       lambda i, n, r: print(f"{r['day']} {i}/{n}", flush=True))  # fmt: skip
+                       lambda i, n, r: print(f"{r['day']} {i}/{n}", flush=True),
+                       universe=universe)  # fmt: skip
     write_text_atomic(json.dumps(results, default=str), out)
     return 0
 

@@ -165,3 +165,18 @@ def test_announcements_come_from_the_archive_and_the_live_files(cfg):
     got = RI.announcements(cfg, date(2026, 9, 20), date(2026, 9, 22))
     assert sorted(got["ids_id"]) == ["A1", "A2"]
     assert RI.announcements(cfg, date(2026, 1, 1), date(2026, 1, 2)).empty
+
+
+def test_the_verdict_rules_fixed_before_the_run():
+    from asxbot.arena.replay_ibkr import verdict
+
+    base = {"trades": 60, "pnl_after_fees": 900.0, "days": 100, "green_days": 50,
+            "red_days": 40, "top3_share_pct": 35.0, "max_drawdown_pct": 8.0}  # fmt: skip
+    assert verdict(base)[0] == "promising"
+    assert verdict({**base, "pnl_after_fees": -10.0})[0] == "not working"
+    assert verdict({**base, "trades": 12})[0] == "unclear"
+    assert verdict({**base, "top3_share_pct": 80.0})[0] == "unclear"
+    assert verdict({**base, "green_days": 30, "red_days": 60})[0] == "unclear"
+    assert verdict({**base, "max_drawdown_pct": 30.0})[0] == "unclear"
+    word, why = verdict({**base, "trades": 10, "pnl_after_fees": -50.0})
+    assert word == "unclear" and "lost after costs" in " ".join(why)
