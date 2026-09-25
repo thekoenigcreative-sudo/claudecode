@@ -964,3 +964,21 @@ def test_the_report_labels_every_kind_of_decision_by_its_prices(cfg):
     assert used == {F.FALLBACK_LABEL: 3, F.LIVE_LABEL: 1, R.NOT_RECORDED: 1, no_prices: 2}
     line = R.data_line(SimpleNamespace(data_basis="x"), used)
     assert "3 on delayed data (Yahoo)" in line and "2 on no usable prices" in line
+
+
+def test_the_status_is_written_from_inside_a_long_cycle_too(tmp_path, monkeypatch):
+    t0 = datetime(2026, 9, 25, 10, 52, tzinfo=SYD)
+    gw, fake = gateway(bars={})
+    gw.connect()
+    feed, _ = _failover(tmp_path, gw, t0)
+    clock = iter([t0 + timedelta(minutes=m) for m in (3, 6, 12)])
+
+    class Now(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(clock)
+
+    monkeypatch.setattr(F, "datetime", Now)
+    for _ in range(3):  # the day trader's scan, asking for one stock's history at a time
+        feed.ensure_history("BHP", DAY, 3)
+    assert F.read_status(tmp_path / "data")["at"] == "2026-09-25T11:04:00+10:00"

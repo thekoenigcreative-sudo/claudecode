@@ -586,6 +586,11 @@ bot with no previous close waits (until its window closes) instead of recording 
 Each pre-open look records its quote's source, and the evening report counts pre-open looks
 and "no usable prices" separately. 15 tests, all failing on the old code.
 
+Found after the 10:52 restart: a cycle can spend many minutes inside the feed (the day
+trader's first scan after a restart in hours fetched ~280 stocks' prior sessions one by one,
+10:54 to past 11:00), and the status, written once a cycle, went quiet for as long. The feed
+now also writes it (at most every 5 minutes) whenever history is asked for.
+
 - A timeout is not an answer. Keep what arrived, ask again for the rest.
 - "Tried" is not "done". Mark a thing done when it is in hand.
 - A data failure recorded as a verdict ("quiet", "no signal") is the worst kind: it looks

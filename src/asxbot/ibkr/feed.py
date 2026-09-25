@@ -340,15 +340,22 @@ class FailoverFeed(IntradayFeed):
     def history_source(self):
         return self.active.history_source()
 
+    # A cycle can spend many minutes inside the feed (after a restart in hours the day
+    # trader's first scan fetches ~280 stocks' prior sessions one by one: 25 Sep 2026,
+    # 10:54-11:10). The status is written from here too, so it never waits for the cycle.
     def ensure_history(self, code: str, day: date, sessions: int) -> bool:
+        self.write_status(datetime.now(SYD))
         return self.active.ensure_history(code, day, sessions)
 
     def prepare(self, codes: list[str], day: date, sessions: int) -> int:
+        self.write_status(datetime.now(SYD))
         return self.primary.prepare(codes, day, sessions) if self.using_primary else 0
 
     # -- status for the self-check and the report ----------------------------
     def write_status(self, now: datetime, force: bool = False) -> None:
-        if not force and self._written is not None and now - self._written < STATUS_EVERY:
+        if not force and self._written is not None and (
+            timedelta(0) <= now - self._written < STATUS_EVERY
+        ):
             return
         self._written = now
         body = {
