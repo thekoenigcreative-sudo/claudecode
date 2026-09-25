@@ -122,6 +122,37 @@ class MinuteBars:
             )
         self.price_field = price_field
         self._warned: set = set()  # (code, day) whose missing auction has been logged
+        # The live overlay (2026-09-25): when set, today's bars come from IBKR's stream
+        # first (`live.bars_today(code, day)`: completed minutes only), so fills, stops,
+        # targets and trailing work in real time instead of ~20 minutes later on Yahoo's
+        # bars. Yahoo's bars fill in behind them only when the live feed is down
+        # (`live.live_ok()` False), so exits keep working from the best bars available.
+        self.live = None
+        self._live_days: set = set()  # (code, day) whose bars came from the live overlay
+
+    def set_live(self, source) -> None:
+        self.live = source
+
+    def _live_fetch(self, code: str, day: date, force: bool) -> pd.DataFrame | None:
+        """Today's bars with the live overlay in front: None when the overlay has nothing
+        for this stock-day, so the caller falls through to the cache and Yahoo."""
+        live = self.live.bars_today(code, day)
+        if live is None or not len(live):
+            return None
+        cached = self.cached(code, day)
+        parts = [cached[cached.index < live.index.min()], live] if (
+            cached is not None and len(cached)) else [live]  # fmt: skip
+        df = pd.concat(parts).sort_index()
+        if not self.live.live_ok():
+            # The stream has stopped: Yahoo's delayed bars behind the last live minute are
+            # the best available for stops and marks.
+            yahoo = self._yahoo_fetch(code, day)
+            if yahoo is not None and len(yahoo):
+                later = yahoo[yahoo.index > live.index.max()]
+                if len(later):
+                    df = pd.concat([df, later]).sort_index()
+        self._live_days.add((code, day))
+        return df[~df.index.duplicated(keep="last")]
 
     # -- storage ------------------------------------------------------------
     def _path(self, code: str, day: date) -> Path:
@@ -142,6 +173,13 @@ class MinuteBars:
         cached = self.cached(code, day)
         if not force and cached is not None and _day_is_complete(cached, day):
             return cached
+        if self.live is not None and day == datetime.now(SYD).date():
+            live = self._live_fetch(code, day, force)
+            if live is not None:
+                return live
+        return self._yahoo_fetch(code, day, cached)
+
+    def _yahoo_fetch(self, code: str, day: date, cached=None) -> pd.DataFrame | None:
         if day > date.today() or day.weekday() >= 5:
             return cached  # the future, and weekends, are never worth a request
         if (date.today() - day).days > MINUTE_HISTORY_DAYS:
@@ -430,6 +468,9 @@ class MinuteBars:
                     intraday = df.index.max() < closed and now < closed + timedelta(
                         minutes=int(feed_delay_minutes)
                     )
+                    if (code, day) in self._live_days:
+                        # Live bars are completed minutes: nothing is still forming.
+                        intraday = False
                     if intraday:
                         newest = df.index.max()
                         usable &= df.index < newest - timedelta(minutes=int(settle_minutes))

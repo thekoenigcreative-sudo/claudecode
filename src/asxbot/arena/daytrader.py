@@ -32,7 +32,7 @@ import pandas as pd
 from asxbot.arena import notify
 from asxbot.arena.agents import DECIDER, AgentCallFailed, call_agent
 from asxbot.arena.broker import OPENING_SIDES
-from asxbot.arena.intraday import MarketView, continuous, rvol_at, vwap
+from asxbot.arena.intraday import MarketView, continuous, entries_allowed, rvol_at, vwap
 from asxbot.arena.levels import Playbook
 from asxbot.arena.liquid import SizeRule, liquid_universe, size_rule
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
@@ -530,6 +530,7 @@ def scan(
     top = int(scan_conf.get("top_n", 10))
     df = pd.DataFrame(rows)
     summary: dict = {"stocks": len(rows)}
+    summary["interest"] = {r["ticker"]: interest_score(r) for r in rows}
     if len(df):
         df = df.dropna(subset=["move_vs_index"])
         summary["up"] = _top(df.sort_values("move_vs_index", ascending=False), top)
@@ -540,6 +541,27 @@ def scan(
         summary["resumed"] = sorted(df.loc[df["resumed"], "ticker"].tolist())
         summary["news"] = sorted(df.loc[df["news"], "ticker"].tolist())
     return found, summary
+
+
+def interest_score(row: dict) -> float:
+    """How likely a stock is to trigger a setup in the next minutes, from what the scan
+    just saw: its move against the index (in 1% units), its relative volume (in 1.5x
+    units), a new day high or low (near the edge of any range), a halt resumption, news.
+    Ranks tier 2 of the streaming rotation (ibkr/feed.py); nothing else reads it."""
+    mv = row.get("move_vs_index")
+    rv = row.get("rvol")
+    score = 0.0
+    if mv is not None and mv == mv:
+        score += abs(float(mv)) / 1.0
+    if rv is not None and rv == rv:
+        score += float(rv) / 1.5
+    if row.get("new_high") or row.get("new_low"):
+        score += 1.5
+    if row.get("resumed"):
+        score += 2.0
+    if row.get("news"):
+        score += 1.0
+    return round(score, 3)
 
 
 def _top(df: pd.DataFrame, n: int) -> list:
@@ -863,12 +885,29 @@ def cycle(
         return []
     if data_time.time() > _t(scan_conf.get("end", "15:45")):
         return []  # the scan's window is over in market time: no more requests today
+    ok, why = entries_allowed(view, now)
+    if not ok:
+        # Rick, 25 Sep: no entry on anything but fresh IBKR prices. Nothing is scanned while
+        # the feed is down or stale, so nothing can trigger; when it is back, a trigger that
+        # happened meanwhile is older than max_signal_age_bars and is skipped as stale.
+        # Exits keep working in the broker from the best bars held.
+        if _DAY.get("paused") != why:
+            _DAY["paused"] = why
+            log.error("day trader paused: live feed down (%s); no scan and no entries until "
+                      "it is back; exits keep working", why)  # fmt: skip
+            ev.append("daytrader_scan", {"at": now.isoformat(timespec="seconds"), "paused": why})
+        return []
+    if _DAY.pop("paused", None):
+        log.warning("day trader resumed: the live feed is back")
     if refresh and not view.replay:
         _DAY["news"] = news_today(cfg.data_dir, day) if now.minute % 5 == 0 else _DAY["news"]
         view.prepare([view.index, *codes])  # IBKR: prior sessions still missing, if any
         refreshed = view.feed.refresh(codes, now)
         view.mark_fetched(refreshed, now)
     found, summary = scan(view, pb, codes, now, state, set(arena.short_universe), _DAY["news"])
+    interest = summary.pop("interest", {}) if summary else {}
+    if interest and hasattr(view.feed, "note_interest"):
+        view.feed.note_interest(interest)  # who streams next cycle (ibkr/feed.py rotation)
     if summary:
         ev.append(
             "daytrader_scan",
@@ -937,9 +976,54 @@ def _prepare_history(arena, pb: Playbook, view: MarketView) -> None:
         _PRE.clear()
         _PRE.update(day=view.day, codes=[view.index, *codes])
     view.prepare(_PRE["codes"])
+    now = arena.broker.clock().astimezone(SYD)
+    if now.time() >= HISTORY_DEADLINE and _PRE.get("reported") != view.day:
+        _PRE["reported"] = view.day
+        history_deadline_report(arena, view, _PRE["codes"], now)
 
 
+HISTORY_DEADLINE = time_cls(9, 55)
 _PRE: dict = {}
+
+
+def history_deadline_report(arena, view: MarketView, codes: list[str], now: datetime) -> dict:
+    """09:55: which stocks have their prior sessions from IBKR and which do not. The ones
+    without are named, logged, told to Rick in one line, and left OUT of today's scan
+    universe rather than stalling it (Rick's brief, 25 Sep). A stock IBKR could not serve
+    keeps being asked for by the v2 looks on demand (ensure_history); the day trader does
+    not wait for it."""
+    status_fn = getattr(view.feed, "history_status", None)
+    if status_fn is None:
+        return {}
+    st = status_fn(codes, view.day, view.sessions)
+    missing = sorted(set(st.get("missing", [])) | set(st.get("given_up", [])))
+    universe = [c for c in codes if c != view.index and c not in missing]
+    state = load_state(arena.cfg.data_dir, view.day)
+    state["history"] = {
+        "at": now.isoformat(timespec="seconds"), "complete": len(st.get("complete", [])),
+        "missing": missing, "given_up": sorted(st.get("given_up", [])),
+    }  # fmt: skip
+    state["universe"] = universe
+    save_state(arena.cfg.data_dir, view.day, state)
+    EventLog(arena.cfg.data_dir).append("ibkr_history", {"day": view.day.isoformat(),
+                                                          **state["history"]})  # fmt: skip
+    if missing:
+        log.warning(
+            "IBKR history incomplete at %s: %d of %d stocks have no prior sessions and are "
+            "out of today's day-trader scan: %s", now.strftime("%H:%M"), len(missing),
+            len(codes) - 1, ", ".join(missing[:40]) + (" ..." if len(missing) > 40 else ""),
+        )  # fmt: skip
+        alert = notify.get(arena)
+        if alert:
+            alert.send(
+                f"IBKR history at {now:%H:%M}: {len(missing)} of {len(codes) - 1} stocks have no "
+                f"prior sessions and are out of today's day-trader scan: "
+                + ", ".join(missing[:25]) + (" ..." if len(missing) > 25 else "")
+            )
+    else:
+        log.info("IBKR history complete at %s for all %d stocks and the index",
+                 now.strftime("%H:%M"), len(codes) - 1)  # fmt: skip
+    return state["history"]
 
 
 def _bot_take(arena, pb, s: Setup, now: datetime, day: date) -> dict:

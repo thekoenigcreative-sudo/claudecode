@@ -111,6 +111,18 @@ class GatewaySettings:
     quote_wait_s: float = 3.0
     generic_ticks: str = "225"
     probe_code: str = "BHP"
+    # The persistent connection (ibkr/live.py, 2026-09-25): the heartbeat, what counts as
+    # stale, the streaming rotation and the paced history queue.
+    heartbeat_s: float = 30.0
+    heartbeat_timeout_s: float = 10.0
+    heartbeat_misses: int = 2
+    max_data_age_s: float = 60.0
+    stream_reserve_lines: int = 6
+    min_dwell_s: float = 120.0
+    poll_per_cycle: int = 30
+    history_concurrency: int = 4
+    history_min_interval_s: float = 0.25
+    reconnect_backoff_max_s: float = 60.0
 
     def __post_init__(self) -> None:
         if int(self.client_id) == 0:

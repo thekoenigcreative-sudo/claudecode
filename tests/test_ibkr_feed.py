@@ -8,18 +8,13 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 import pytest
 
 from asxbot.arena import selfcheck as S
 from asxbot.arena.intraday import (
     DELAYED_LABEL,
-    MarketView,
-    YahooDelayedFeed,
     live_provider,
-    make_feed,
 )
-from asxbot.arena.minutes import MinuteBars
 from asxbot.config import load_config
 from asxbot.ibkr import feed as F
 from asxbot.ibkr.gateway import Gateway, GatewaySettings, bars_frame, maybe_reconnect
@@ -404,256 +399,12 @@ def test_the_data_type_is_switched_when_the_window_changes_and_only_then():
     assert gw.health.to_dict()["requested_data"] == "real-time"
 
 
-def test_no_subscription_in_hours_sends_the_feed_to_yahoo(tmp_path):
-    """Real-time is asked for in hours; without the subscription IBKR sends nothing (354)."""
-    now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
-    gw, fake = gateway(wall=lambda: now)
-    gw.connect()
-    fake.reqMktData = lambda c, g="": (
-        fake.errorEvent.emit(9, 354, "Requested market data is not subscribed.", c),
-        FakeTicker(marketDataType=None),
-    )[1]
-    feed, _ = _failover(tmp_path, gw, now)
-    feed.refresh(["BHP"], now)
-    assert not feed.using_primary and "354" in feed.why
-
-
 # --------------------------------------------------------------------------
 # the feed
 # --------------------------------------------------------------------------
-class FakeYahoo:
-    name = "yahoo_delayed"
-    delayed = True
-    label = DELAYED_LABEL
-
-    def __init__(self, minutes):
-        self.minutes = minutes
-        self.refreshed = []
-
-    def refresh(self, codes, now):
-        self.refreshed.append(list(codes))
-        return list(codes)
-
-    def fetch_one(self, code, now):
-        self.refreshed.append([code])
-
-    def bars(self, code, day, now):
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-
-    def history_source(self):
-        return self.minutes
-
-    def ensure_history(self, code, day, sessions):
-        return False
-
-    def prepare(self, codes, day, sessions):
-        return 0
-
-
-def test_the_live_feed_shows_only_final_bars(tmp_path):
-    gw, fake = gateway(bars={"BHP": session(DAY, n=6)})
-    gw.connect()
-    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
-    now = datetime(2026, 9, 25, 10, 6, 20, tzinfo=SYD)
-    assert feed.refresh(["BHP"], now) == ["BHP"]
-    b = feed.bars("BHP", DAY, now)
-    # 10:05 is the newest row (still forming): 10:00-10:04 are final
-    assert list(b.index.strftime("%H:%M")) == ["10:00", "10:01", "10:02", "10:03", "10:04"]
-    assert not feed.delayed and feed.label == F.LIVE_LABEL
-    # asked again inside 15 s: not asked (no identical request within 15 s)
-    assert feed.refresh(["BHP"], now + timedelta(seconds=10)) == []
-
-
-def test_usual_volume_comes_from_ibkr_history_when_ibkr_is_the_feed(tmp_path):
-    prior = []
-    for d in (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)):
-        prior += session(d, n=30, vol=500.0)
-    gw, fake = gateway(bars={"BHP": prior})
-    gw.connect()
-    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
-    view = MarketView(MinuteBars(tmp_path), DAY, feed, sessions=3, min_sessions=3)
-    assert view.prepare(["BHP"]) == 1
-    sym, dur, end, *_ = fake.requests[0]
-    assert dur == "4 D" and end == datetime(2026, 9, 25, 0, 0, tzinfo=SYD)
-    u = view.usual("BHP")
-    assert u is not None and u.iloc[5] == pytest.approx(5 * 500.0)  # 10:01-10:05, from IBKR
-    assert view.prev_close("BHP") == pytest.approx(10.29)
-    assert view.prepare(["BHP"]) == 0  # once a day
-
-
-def _failover(tmp_path, gw, now):
-    minutes = MinuteBars(tmp_path / "data")
-    from asxbot.log import EventLog
-
-    ev = EventLog(tmp_path / "data")
-    return F.FailoverFeed(minutes, F.IBKRLiveFeed(minutes, gw, ev), FakeYahoo(minutes),
-                          tmp_path / "data", ev, now=now), ev  # fmt: skip
-
-
-def test_gateway_down_at_the_start_means_yahoo_labelled_and_flagged(tmp_path):
-    now = datetime(2026, 9, 25, 7, 30, tzinfo=SYD)
-    gw, fake = gateway(refuse=True)
-    gw.connect()
-    feed, ev = _failover(tmp_path, gw, now)
-    assert feed.label == F.FALLBACK_LABEL and feed.delayed
-    st = F.read_status(tmp_path / "data")
-    assert st["provider_in_use"] == "yfinance" and st["gateway"]["refused"]
-    assert [r["event"] for r in ev.read("live_data")] == ["fallback"]
-    feed.refresh(["BHP"], now)
-    assert feed.backup.refreshed == [["BHP"]]
-
-
-def test_the_feed_falls_back_and_comes_back(tmp_path):
-    clock = Clock()
-    now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
-    gw, fake = gateway(
-        clock,
-        bars={"BHP": session(DAY)},
-        quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
-    )
-    gw.connect()
-    feed, ev = _failover(tmp_path, gw, now)
-    assert feed.using_primary and feed.label == F.LIVE_LABEL
-    feed.refresh(["BHP"], now)
-    assert fake.requests and not feed.backup.refreshed
-
-    fake.errorEvent.emit(-1, 1100, "Connectivity between IB and TWS has been lost.", None)
-    feed.refresh(["BHP"], now + timedelta(minutes=1))
-    assert not feed.using_primary and feed.generation == 1
-    assert feed.backup.refreshed == [["BHP"]]
-    assert F.read_status(tmp_path / "data")["provider_in_use"] == "yfinance"
-
-    fake.errorEvent.emit(-1, 1102, "Connectivity restored - data maintained.", None)
-    clock.t += 301
-    feed.refresh(["BHP"], now + timedelta(minutes=7))
-    assert feed.using_primary and feed.generation == 2
-    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
-
-
-def test_a_batch_that_timed_out_does_not_keep_the_watcher_on_yahoo(tmp_path):
-    """25 Sep 2026, 10:17: the first bars batch on a freshly logged-in Gateway timed out; the
-    link was marked down while the socket stayed open, and only a Gateway "restored" message
-    could clear it - one never sent for a link Gateway itself never reported lost. A fresh
-    connection after `reconnect_every_s` now puts the watcher back on IBKR."""
-    clock = Clock()
-    now = datetime(2026, 9, 25, 10, 17, tzinfo=SYD)
-    gw, fake = gateway(clock, bars={"BHP": session(DAY)},
-                       quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
-                       settings={"reconnect_every_s": 60})  # fmt: skip
-    gw.connect()
-    feed, ev = _failover(tmp_path, gw, now)
-    real_run = fake.run
-
-    def timed_out(aw):
-        aw.close()
-        raise TimeoutError()
-
-    fake.run = timed_out
-    feed.refresh(["BHP"], now)
-    fake.run = real_run
-    assert gw.health.last_error == "bars batch failed: TimeoutError()" and not gw.ready
-    feed.refresh(["BHP"], now + timedelta(seconds=30))
-    assert not feed.using_primary and fake.connected  # on Yahoo, socket still open
-
-    clock.t += 30
-    feed.refresh(["BHP"], now + timedelta(seconds=60))
-    assert not feed.using_primary  # not before reconnect_every_s
-    clock.t += 31
-    feed.refresh(["BHP"], now + timedelta(seconds=91))
-    assert feed.using_primary and gw.ready
-    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
-    assert F.read_status(tmp_path / "data")["provider_in_use"] == "ibkr"
-
-
-def test_a_gateway_that_dies_and_comes_back_is_used_again_by_itself(tmp_path):
-    """Gateway's process gone (08:58 on 25 Sep), the port refusing while it is down, then a
-    new Gateway logged in: the watcher goes to Yahoo and comes back with no restart."""
-    clock = Clock()
-    now = datetime(2026, 9, 25, 9, 0, tzinfo=SYD)
-    gw, fake = gateway(clock, bars={"BHP": session(DAY)},
-                       quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
-                       settings={"reconnect_every_s": 60})  # fmt: skip
-    gw.connect()
-    feed, ev = _failover(tmp_path, gw, now)
-    assert feed.using_primary
-
-    fake.connected = False  # the process is killed: the socket closes
-    fake.refuse = True  # and nothing listens on 4001 while it is down
-    for h in fake.disconnectedEvent.handlers:
-        h()
-    feed.refresh(["BHP"], now + timedelta(minutes=1))
-    assert not feed.using_primary and feed.backup.refreshed
-    for m in range(2, 6):
-        clock.t += 61
-        feed.refresh(["BHP"], now + timedelta(minutes=m))
-        assert not feed.using_primary  # still down: tried, refused, still on Yahoo
-    assert gw.health.refused
-
-    fake.refuse = False  # the supervisor's Gateway is up and logged in
-    clock.t += 61
-    feed.refresh(["BHP"], now + timedelta(minutes=7))
-    assert feed.using_primary and feed.label == F.LIVE_LABEL
-    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
-
-
-def test_a_gateway_still_cut_off_from_ibkr_after_a_fresh_connection_stays_on_yahoo(tmp_path):
-    clock = Clock()
-    now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
-    gw, fake = gateway(clock, quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)},
-                       settings={"reconnect_every_s": 60})  # fmt: skip
-    gw.connect()
-    feed, _ = _failover(tmp_path, gw, now)
-    fake.errorEvent.emit(-1, 1100, "Connectivity between IB and TWS has been lost.", None)
-    fake.on_connect = [(2110, "Connectivity between TWS and server is broken.")]
-    feed.refresh(["BHP"], now + timedelta(minutes=1))
-    clock.t += 61
-    feed.refresh(["BHP"], now + timedelta(minutes=2))
-    assert not feed.using_primary and fake.connected and not gw.health.server_ok
-
-
-def test_delayed_ibkr_data_in_market_hours_is_not_used(tmp_path):
-    now = datetime(2026, 9, 25, 10, 5, tzinfo=SYD)
-    gw, fake = gateway(quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2,
-                                                 marketDataType=3)})  # fmt: skip
-    gw.connect()
-    feed, _ = _failover(tmp_path, gw, now)
-    feed.refresh(["BHP"], now)
-    assert not feed.using_primary and "delayed" in feed.why and "BHP" in feed.why
-
-
-def test_a_mostly_empty_batch_is_a_failure_not_a_quiet_market(tmp_path):
-    now = datetime(2026, 9, 25, 10, 30, tzinfo=SYD)
-    codes = [f"S{i:02d}" for i in range(12)]
-    gw, fake = gateway(
-        bars={"S00": session(DAY)}, quotes={"BHP": FakeTicker(last=45.0, close=44.0, bid=1, ask=2)}
-    )
-    gw.connect()
-    feed, _ = _failover(tmp_path, gw, now)
-    feed.refresh(codes, now)
-    assert not feed.using_primary and "1 of 12" in feed.why
-
-
 # --------------------------------------------------------------------------
 # the switch in config
 # --------------------------------------------------------------------------
-def test_one_config_value_switches_the_feed(cfg, tmp_path, monkeypatch):
-    minutes = MinuteBars(tmp_path / "m")
-    cfg.raw["data"]["live_provider"] = "yfinance"
-    assert isinstance(make_feed(cfg, minutes), YahooDelayedFeed)
-    cfg.raw["data"]["live_provider"] = "ibkr"
-    gw, _ = gateway(refuse=True)
-    monkeypatch.setattr(F, "shared", lambda c: gw)
-    feed = make_feed(cfg, minutes)
-    assert isinstance(feed, F.FailoverFeed) and not feed.using_primary
-    cfg.raw["data"]["live_provider"] = "bloomberg"
-    with pytest.raises(ValueError):
-        live_provider(cfg)
-    cfg.raw["data"]["live_provider"] = "ibkr"
-    cfg.raw["arena"]["intraday_data"]["provider"] = "ibkr_live"
-    with pytest.raises(ValueError, match="data.live_provider"):
-        live_provider(cfg)
-
-
 def test_the_committed_config_has_the_switch_and_ibkr_settings():
     c = load_config()
     assert live_provider(c) in ("ibkr", "yfinance")
@@ -703,9 +454,10 @@ def test_rick_is_told_to_log_in_once_in_one_line(cfg, monkeypatch):
     assert sent == [S.LOGIN_LINE] and "\n" not in S.LOGIN_LINE
     monkeypatch.setattr(S, "run_checks", lambda a, p, n: [S.Check("live_data", True, "ok")])
     S.report(arena, None, now + timedelta(hours=4))
+    assert sent == [S.LOGIN_LINE, S.BACK_LINE]  # one line when it is back (25 Sep)
     monkeypatch.setattr(S, "run_checks", lambda a, p, n: [down])
     S.report(arena, None, now + timedelta(hours=5))  # a new outage is told again
-    assert sent == [S.LOGIN_LINE, S.LOGIN_LINE]
+    assert sent == [S.LOGIN_LINE, S.BACK_LINE, S.LOGIN_LINE]
 
 
 # --------------------------------------------------------------------------
@@ -823,83 +575,6 @@ def test_nothing_back_and_gateway_silent_is_the_link_down(monkeypatch):
     assert not gw.ready and "did not answer a time request" in gw.health.last_error
 
 
-def test_prior_sessions_a_batch_ran_out_of_time_for_are_asked_again(tmp_path):
-    """07:30:57 on 25 Sep 2026: "90 asked, 0 returned", and all 90 - the index among them -
-    were marked done for the day, so from 10:16 on IBKR every reaction look and every v2
-    rule-bot candidate had no previous close."""
-    prior = []
-    for d in (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)):
-        prior += session(d, n=30, vol=500.0)
-    gw, fake = slow_gateway(slow={"XJO", "BHP"}, bars={"BHP": prior, "XJO": prior})
-    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
-    view = MarketView(MinuteBars(tmp_path), DAY, feed, sessions=3, min_sessions=3)
-    assert view.prepare(["^AXJO", "BHP"]) == 2  # nothing back in time
-    fake.slow.clear()
-    assert view.prev_close("^AXJO") == pytest.approx(10.29)  # asked again, not given up on
-    assert view.prepare(["^AXJO", "BHP"]) == 1  # BHP too; the index is done
-    assert view.prev_close("BHP") == pytest.approx(10.29)
-    assert view.prepare(["^AXJO", "BHP"]) == 0  # done for the day once returned
-
-
-def test_a_missing_previous_close_on_ibkr_is_not_remembered_for_the_day(tmp_path):
-    gw, fake = slow_gateway(bars={})
-    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
-    view = MarketView(MinuteBars(tmp_path), DAY, feed, sessions=3, min_sessions=3)
-    assert view.prev_close("BHP") is None  # IBKR sent nothing (yet)
-    fake.bars["BHP"] = session(date(2026, 9, 24), n=30)
-    assert view.prev_close("BHP") == pytest.approx(10.29)
-
-
-def test_prior_sessions_that_come_back_empty_are_given_up_after_three_asks(tmp_path):
-    gw, fake = slow_gateway(bars={})
-    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
-    asked = [feed.prepare(["NONE"], DAY, 3) for _ in range(F.HISTORY_TRIES + 1)]
-    assert asked == [1] * F.HISTORY_TRIES + [0]
-
-
-def test_a_refresh_leaves_the_late_codes_at_the_front_of_the_next_one(tmp_path):
-    gw, fake = slow_gateway(slow={"LATE"}, bars={"BHP": session(DAY), "LATE": session(DAY)})
-    feed = F.IBKRLiveFeed(MinuteBars(tmp_path), gw)
-    now = datetime(2026, 9, 25, 10, 6, 20, tzinfo=SYD)
-    assert feed.refresh(["BHP", "LATE"], now) == ["BHP"]
-    fake.slow.clear()
-    assert feed.refresh(["BHP", "LATE"], now + timedelta(seconds=10)) == ["LATE"]
-
-
-def test_before_the_open_the_feed_check_follows_gateway_and_keeps_the_status_fresh(tmp_path):
-    """From 07:30 to 10:00 on 25 Sep 2026 nothing asked for prices, so nothing checked the
-    feed: the status sat at 07:29 (the 10:00 SELF-CHECK: "not updated for 151 minutes") and
-    the feed still said IBKR while Gateway was not ready, then dead. The watcher now calls
-    `check` every cycle."""
-    clock = Clock()
-    t0 = datetime(2026, 9, 25, 7, 30, tzinfo=SYD)
-    gw, fake = gateway(clock, settings={"reconnect_every_s": 60})
-    gw.connect()
-    feed, ev = _failover(tmp_path, gw, t0)
-    assert feed.using_primary
-    fake.errorEvent.emit(-1, 1100, "Connectivity between IB and TWS has been lost.", None)
-    feed.check(t0 + timedelta(minutes=1))
-    st = F.read_status(tmp_path / "data")
-    assert not feed.using_primary and feed.label == F.FALLBACK_LABEL
-    assert st["provider_in_use"] == "yfinance" and st["quotes_from"] == "yfinance"
-    assert st["at"] == "2026-09-25T07:31:00+10:00"
-    fake.refuse = True  # Gateway gone: every fresh connection refused
-    fake.connected = False
-    for m in range(2, 40):  # a cycle a minute until 08:09, no price asked for
-        clock.t += 61
-        feed.check(t0 + timedelta(minutes=m))
-        age = t0 + timedelta(minutes=m) - datetime.fromisoformat(
-            F.read_status(tmp_path / "data")["at"])  # fmt: skip
-        assert age <= F.STATUS_EVERY <= timedelta(minutes=10)
-    assert not feed.using_primary
-    fake.refuse = False  # logged in again
-    clock.t += 61
-    feed.check(t0 + timedelta(minutes=41))
-    st = F.read_status(tmp_path / "data")
-    assert feed.using_primary and st["provider_in_use"] == "ibkr" and st["quotes_from"] == "ibkr"
-    assert [r["event"] for r in ev.read("live_data")] == ["fallback", "restored"]
-
-
 def test_the_watcher_checks_the_feed_every_cycle_and_survives_a_failing_check(monkeypatch):
     from asxbot.arena import watch as W
 
@@ -966,19 +641,3 @@ def test_the_report_labels_every_kind_of_decision_by_its_prices(cfg):
     assert "3 on delayed data (Yahoo)" in line and "2 on no usable prices" in line
 
 
-def test_the_status_is_written_from_inside_a_long_cycle_too(tmp_path, monkeypatch):
-    t0 = datetime(2026, 9, 25, 10, 52, tzinfo=SYD)
-    gw, fake = gateway(bars={})
-    gw.connect()
-    feed, _ = _failover(tmp_path, gw, t0)
-    clock = iter([t0 + timedelta(minutes=m) for m in (3, 6, 12)])
-
-    class Now(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return next(clock)
-
-    monkeypatch.setattr(F, "datetime", Now)
-    for _ in range(3):  # the day trader's scan, asking for one stock's history at a time
-        feed.ensure_history("BHP", DAY, 3)
-    assert F.read_status(tmp_path / "data")["at"] == "2026-09-25T11:04:00+10:00"

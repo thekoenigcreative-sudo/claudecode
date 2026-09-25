@@ -55,6 +55,26 @@ ibkr:
   quote_wait_s: 3
   generic_ticks: "225"        # 225 = the auction's indicative price, volume and imbalance
   probe_code: BHP             # quoted every 10 min in market hours to confirm real-time
+  # The persistent connection (src/asxbot/ibkr/live.py), added 2026-09-25 after Rick's
+  # "no drop-outs" brief: plumbing, not trading rules. One connection for the watcher's
+  # lifetime; a heartbeat (reqCurrentTime) every heartbeat_s, `heartbeat_misses` misses in
+  # a row and it reconnects with backoff up to reconnect_backoff_max_s; streaming 5-second
+  # bars aggregated to minutes, rotated inside the account's line limit (error 101 sets it
+  # when IBKR says so) less stream_reserve_lines for quotes, each slot held min_dwell_s;
+  # stocks without a line polled poll_per_cycle a cycle by small paced history requests
+  # (history_concurrency in flight, history_min_interval_s apart). max_data_age_s: in market
+  # hours, an index or streamed stock with no bar for longer than this pauses NEW entries
+  # (exits keep working). docs/ibkr_live_data.md.
+  heartbeat_s: 30
+  heartbeat_timeout_s: 10
+  heartbeat_misses: 2
+  max_data_age_s: 60
+  stream_reserve_lines: 6
+  min_dwell_s: 120
+  poll_per_cycle: 30
+  history_concurrency: 4
+  history_min_interval_s: 0.25
+  reconnect_backoff_max_s: 60
 
 universe:
   frozen_on: "2026-09-22"

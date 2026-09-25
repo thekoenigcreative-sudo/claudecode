@@ -1,0 +1,101 @@
+{
+  "at": "2026-09-25T18:57:23+10:00",
+  "steps": [
+    {
+      "step": "connect",
+      "ok": true,
+      "detail": "ready=True health=ok link up"
+    },
+    {
+      "step": "heartbeat",
+      "ok": true,
+      "detail": "last answer 2.0s ago"
+    },
+    {
+      "step": "subscribe",
+      "ok": true,
+      "detail": "streaming ['BHP', 'CBA', '^AXJO']; ib_async registry {'BHP': 2, 'CBA': 5, 'XJO': 8}"
+    },
+    {
+      "step": "history burst",
+      "ok": true,
+      "detail": "14 answered of 12 in the queue, pacing hits 0, given up []"
+    },
+    {
+      "step": "unknown code excluded",
+      "ok": true,
+      "detail": "unknown=['ZZZZ'] given_up=[]"
+    },
+    {
+      "step": "socket drop -> reconnect",
+      "ok": true,
+      "detail": "reconnects 1, ready True, subscriptions re-requested {'BHP': 1, 'CBA': 2, 'XJO': 3} (before {'BHP': 2, 'CBA': 5, 'XJO': 8}), catch-up bars for BHP held"
+    },
+    {
+      "step": "frozen quote",
+      "ok": true,
+      "detail": "{'code': 'BHP', 'bid': None, 'bid_size': None, 'ask': None, 'ask_size': None, 'last': 60.72, 'last_size': 706.0, 'open': 60.45, 'prev_close': 61.02, 'volume': 6622324.0, 'halted': 0.0, 'auction_price': None, 'auction_volume': None, 'market_data_type': 2, 'time': '2026-09-25 08:57:34.056229+00:00'}"
+    }
+  ],
+  "status": {
+    "connected": true,
+    "server_ok": true,
+    "refused": false,
+    "market_data_type": 2,
+    "market_data": "frozen",
+    "requested_data_type": 2,
+    "requested_data": "frozen",
+    "last_request_error": "",
+    "permission_denied": false,
+    "last_error": "",
+    "last_ok_at": "2026-09-25T18:57:34+10:00",
+    "pacing_hits": 0,
+    "farms_broken": [],
+    "timeouts_in_row": 0,
+    "ready": true,
+    "heartbeat_age_s": 2.5,
+    "last_data_age_s": 0.0,
+    "connected_since": "2026-09-25T18:57:31+10:00",
+    "reconnects": 1,
+    "connect_failures": 0,
+    "streaming": 3,
+    "streaming_codes": [
+      "BHP",
+      "CBA",
+      "^AXJO"
+    ],
+    "quote_streams": 0,
+    "line_limit": 100,
+    "line_limit_from_ibkr": false,
+    "history_queued": 0,
+    "history_answered": 18,
+    "requests_made": 18,
+    "given_up": [],
+    "unknown_codes": [
+      "ZZZZ"
+    ],
+    "volume_scale": 1.0,
+    "recent": [
+      [
+        "2026-09-25T18:57:23+10:00",
+        "connected"
+      ],
+      [
+        "2026-09-25T18:57:30+10:00",
+        "connection lost"
+      ],
+      [
+        "2026-09-25T18:57:30+10:00",
+        "reconnecting"
+      ],
+      [
+        "2026-09-25T18:57:31+10:00",
+        "connected"
+      ],
+      [
+        "2026-09-25T18:57:31+10:00",
+        "resubscribed 3 (connected)"
+      ]
+    ]
+  }
+}

@@ -20,7 +20,7 @@ from asxbot.arena import notify
 from asxbot.arena.accounts import Account
 from asxbot.arena.agents import DECIDER, READER, AgentCallFailed, call_agent, parse_decision
 from asxbot.arena.broker import OPENING_SIDES
-from asxbot.arena.intraday import MarketView
+from asxbot.arena.intraday import MarketView, entries_allowed
 from asxbot.arena.levels import Playbook
 from asxbot.arena.liquid import size_rule
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
@@ -44,6 +44,14 @@ from asxbot.log import EventLog, get_logger
 log = get_logger("asxbot.arena.v2")
 DELAYED = "delayed data - rehearsal until IBKR live prices"
 SYD = ZoneInfo("Australia/Sydney")
+_PAUSE_SAID: dict[str, str] = {}
+
+
+def _pause_note(what: str, why: str, now: datetime) -> None:
+    """Say once, per reason, that a playbook is paused on the feed (not every cycle)."""
+    if _PAUSE_SAID.get(what) != why:
+        _PAUSE_SAID[what] = why
+        log.error("%s paused: live feed down (%s); no entries until it is back", what, why)
 
 
 # --------------------------------------------------------------------------
@@ -342,6 +350,10 @@ def reaction_looks(arena, pb: Playbook, view: MarketView, now: datetime | None =
     q = load_queue(cfg.data_dir, day)
     if not q:
         return []
+    ok, why = entries_allowed(view, now)
+    if not ok:
+        _pause_note("v2 reaction looks", why, now)
+        return []  # the looks wait; a window that closes meanwhile is recorded as missed
     acct = arena.account(pb, "agent")
     due = []
     for code, item in q.items():
@@ -582,6 +594,14 @@ def v2_bot_cycle(
         )
         save_bot_state(cfg.data_dir, day, state)
         log.warning("v2 rule bot missed %s: %s", day, state["why"])
+        return []
+    ok, why = entries_allowed(view, now)
+    if not ok:
+        # Rick, 25 Sep: no entry decision on anything but live IBKR prices. The rule waits
+        # for the feed, until its own deadline records the day as missed with this reason.
+        _pause_note("v2 rule bot", why, now)
+        state.update(status="waiting", why=f"paused: {why}")
+        save_bot_state(cfg.data_dir, day, state)
         return []
     last_bar = datetime.combine(day, measure, tzinfo=SYD) - timedelta(minutes=1)
     if data_time is None or data_time < last_bar:
@@ -833,7 +853,9 @@ def pre_open_decider(
 # --------------------------------------------------------------------------
 # the queue's safety net
 # --------------------------------------------------------------------------
-def seed_queue(arena, pb: Playbook, day: date, now: datetime, quotes=None) -> list[str]:
+def seed_queue(
+    arena, pb: Playbook, day: date, now: datetime, quotes=None, feed_down: bool = False
+) -> list[str]:
     """Queue, through the v2 screen, every price-sensitive announcement in the universe
     released since the previous session's close that is not queued yet - so the agent's
     reaction looks cover the same news the v2 rule bot reads straight from the collector's
@@ -876,7 +898,13 @@ def seed_queue(arena, pb: Playbook, day: date, now: datetime, quotes=None) -> li
         seeded.add(ids)
         a = Announcement(code, r.released_at.to_pydatetime(), str(r.headline), True, ids,
                          str(r.pdf_url))  # fmt: skip
-        verdict = screen_v2(a, qp.quote(code), arena.daily_lookup()(code), pb, size)
+        quote = qp.quote(code)
+        if quote is None and feed_down:
+            # No quote and the live feed is down: not a verdict. Tried again next cycle
+            # (the id is not marked seeded), as watch._handle_v2 defers on arrival.
+            seeded.discard(ids)
+            continue
+        verdict = screen_v2(a, quote, arena.daily_lookup()(code), pb, size)
         EventLog(cfg.data_dir).append(
             "arena_screened",
             {"ticker": code, "ids_id": ids, "headline": a.headline, "ok": verdict.ok,

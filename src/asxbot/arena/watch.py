@@ -804,6 +804,21 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
     seen_at = arena.broker.clock()
     size = pb.level.max_position_aud or 5000.0
     quote = q_provider.quote(a.code)
+    if quote is None:
+        ok, feed_why = _entries_allowed(arena, now)
+        if not ok:
+            # A data failure is not a verdict (LEARNINGS #25): with the live feed down there
+            # is no quote to screen on. The announcement is left unqueued and unseeded, so
+            # v2_flow.seed_queue screens it again each cycle until the feed is back.
+            why = (f"no quote while the live feed is down ({feed_why}); screened again when "
+                   "it is back")  # fmt: skip
+            log.warning("v2: %s deferred: %s", a.code, why)
+            record(
+                "arena_screened",
+                {"ticker": a.code, "ids_id": a.ids_id, "headline": a.headline, "ok": False,
+                 "test": "deferred", "why": why, "v2": True},
+            )  # fmt: skip
+            return {**out, "deferred": why}
     verdict = screen_v2(a, quote, arena.daily_lookup()(a.code), pb, size)
     out["screen"] = {"ok": verdict.ok, "why": verdict.why, "test": verdict.test}
     record(
@@ -879,6 +894,18 @@ def _handle_v2(arena, pb, a, now, quotes, text, test, record, out, alert, run_ag
     if not (worthy and pb.raw.get("pre_open_look", True)):
         log.info("v2: no pre-open look for %s (%s); the reaction look follows", a.code, why)
         return out
+    ok, feed_why = _entries_allowed(arena, now, [a.code])
+    if not ok:
+        # Rick, 25 Sep: never an entry decision on anything but live IBKR prices. The look
+        # is skipped, not made on Yahoo; the reaction look follows once the feed is back.
+        log.warning("v2: no pre-open look for %s - paused: %s; the reaction look follows",
+                    a.code, feed_why)  # fmt: skip
+        record(
+            "arena_decisions",
+            {"stage": "decider", "ticker": a.code, "ids_id": a.ids_id, "outcome": "paused",
+             "why": feed_why, "v2": "pre_open", "data": "paused: live feed down"},
+        )  # fmt: skip
+        return {**out, "paused": feed_why}
     out["decider"] = v2_flow.pre_open_decider(arena, pb, a, ctx, reader.text, now, seen_at)
     return out
 
@@ -896,6 +923,10 @@ def day_view(arena: Arena, now: datetime):
         cfg = arena.cfg
         conf = cfg.get("arena.intraday_data") or {}
         feed = make_feed(cfg, arena.broker.minutes)
+        if hasattr(feed, "bars_today"):
+            # Fills, stops, targets and trailing work from the live bars as they complete
+            # (minutes.py), not from Yahoo's ~20-minute-late copy of them.
+            arena.broker.minutes.set_live(feed)
         _VIEW.update(
             day=day, feed=feed,
             view=MarketView(
@@ -1137,11 +1168,52 @@ def _work_all(arena: Arena, pbs) -> None:
 
 def _feed_check(arena: Arena, now: datetime) -> None:
     try:
-        feed = day_view(arena, now).feed
+        view = day_view(arena, now)
+        feed = view.feed
+        if hasattr(feed, "pin"):
+            try:
+                feed.pin(pinned_codes(arena, getattr(view, "day", now.astimezone(SYD).date())))
+            except Exception as e:  # noqa: BLE001 - pinning is an optimisation, never a stop
+                log.warning("could not pin the tier-1 stocks: %s", e)
         if hasattr(feed, "check"):
             feed.check(now)
     except Exception as e:  # noqa: BLE001 - a feed check must never stop the watcher
         log.exception("the live-data feed check failed: %s", e)
+
+
+def pinned_codes(arena: Arena, day: date) -> set[str]:
+    """Tier 1 of the streaming rotation (ibkr/feed.py): every stock that must be at
+    1-minute cadence whatever else is - held or with an order working in any arena book,
+    queued for a v2 reaction look, or with price-sensitive news since the last close."""
+    from asxbot.arena.daytrader import news_today
+    from asxbot.arena.reaction_v2 import load_queue
+
+    codes: set[str] = set()
+    try:
+        for p in arena.playbooks():
+            for kind in ("agent", "bot"):
+                acct = arena.account(p, kind)
+                codes |= {t for t, pos in acct.positions.items() if pos.qty}
+                codes |= {o.ticker for o in acct.orders.values() if o.working}
+    except Exception as e:  # noqa: BLE001
+        log.warning("pinned codes: could not read the books: %s", e)
+    try:
+        codes |= {c for c in load_queue(arena.cfg.data_dir, day) if not c.startswith("_")}
+        codes |= news_today(arena.cfg.data_dir, day) & set(arena.universe)
+    except Exception as e:  # noqa: BLE001
+        log.warning("pinned codes: could not read today's news: %s", e)
+    return {str(c).upper() for c in codes}
+
+
+def _entries_allowed(arena: Arena, now: datetime, codes=()) -> tuple[bool, str]:
+    """May a NEW entry be decided now, on these stocks' prices (intraday.entries_allowed)?"""
+    from asxbot.arena.intraday import entries_allowed
+
+    try:
+        return entries_allowed(day_view(arena, now), now, codes)
+    except Exception as e:  # noqa: BLE001
+        log.exception("the feed could not be checked before an entry: %s", e)
+        return False, f"the feed could not be checked ({type(e).__name__})"
 
 
 def _intraday(arena: Arena, pb: Playbook, others) -> None:
@@ -1154,12 +1226,15 @@ def _intraday(arena: Arena, pb: Playbook, others) -> None:
         log.exception("could not build today's market view: %s", e)
         return
     if pb.version >= 2:
-        if _VIEW.get("seeded") != view.day:
-            _VIEW["seeded"] = view.day  # once a watcher-day, even if it fails
-            try:
-                v2_flow.seed_queue(arena, pb, view.day, datetime.now(SYD))
-            except Exception as e:  # noqa: BLE001
-                log.exception("seeding today's reaction looks failed: %s", e)
+        # Every cycle (from 2026-09-25; was once a watcher-day): an announcement deferred
+        # because the live feed was down when it arrived is screened again once it is back.
+        try:
+            from asxbot.arena.intraday import entries_allowed
+
+            feed_down = not entries_allowed(view, now)[0]
+            v2_flow.seed_queue(arena, pb, view.day, datetime.now(SYD), feed_down=feed_down)
+        except Exception as e:  # noqa: BLE001
+            log.exception("seeding today's reaction looks failed: %s", e)
         try:
             v2_flow.v2_bot_cycle(arena, pb, view, datetime.now(SYD))
         except Exception as e:  # noqa: BLE001

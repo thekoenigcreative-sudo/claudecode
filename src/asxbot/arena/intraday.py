@@ -358,6 +358,16 @@ def make_feed(cfg, minutes: MinuteBars, events=None) -> IntradayFeed:
     return build_failover(cfg, minutes, yahoo, events)
 
 
+def entries_allowed(view, now: datetime, codes=()) -> tuple[bool, str]:
+    """May a playbook make a NEW entry on this view's feed now? A feed with no opinion
+    (Yahoo only, the replay) says yes; the IBKR feed says no, and why, while it is down,
+    sending delayed data, or its bars are stale (ibkr/feed.py). Exits are never asked."""
+    fn = getattr(getattr(view, "feed", None), "entries_allowed", None)
+    if fn is None:
+        return True, ""
+    return fn(now, list(codes))
+
+
 # --------------------------------------------------------------------------
 # one day's market, as a decision may see it
 # --------------------------------------------------------------------------

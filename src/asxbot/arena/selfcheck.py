@@ -360,8 +360,8 @@ def check_live_data(cfg, now: datetime) -> Check:
         why = st.get("why") or gwh.get("last_error") or "IBKR unavailable"
         return Check(
             "live_data", False,
-            f"IBKR live prices unavailable ({why}); decisions are on Yahoo's delayed prices "
-            "until it is back",
+            f"IBKR live prices unavailable ({why}); NEW ENTRIES ARE PAUSED until it is back "
+            "(exits keep working from the last bars held and Yahoo's delayed bars)",
             facts=facts, items=[why],
         )  # fmt: skip
     if market_hours(now) and not fresh:
@@ -370,9 +370,72 @@ def check_live_data(cfg, now: datetime) -> Check:
             f"the live-data status has not been updated for {age:.0f} minutes in market hours",
             facts=facts, items=[f"stale since {st['at']}"],
         )  # fmt: skip
+    if fresh and st.get("entries") == "paused" and market_hours(now):
+        why = st.get("paused_why") or "stale data"
+        facts["paused"] = True
+        return Check(
+            "live_data", False,
+            f"entries paused on the live feed ({why}); exits keep working",
+            facts=facts, items=[why],
+        )  # fmt: skip
     kind = gwh.get("market_data") or "unknown"
+    extra = ""
+    if gwh.get("streaming") is not None:
+        extra = (f", {gwh.get('streaming')} streaming of {gwh.get('line_limit')} lines, "
+                 f"heartbeat {gwh.get('heartbeat_age_s')}s ago, {gwh.get('reconnects')} "
+                 "reconnect(s)")  # fmt: skip
     return Check("live_data", True, f"prices from {st.get('provider_in_use')} ({kind} at the "
-                 f"last quote, {st['at'][11:16]})", facts=facts)  # fmt: skip
+                 f"last quote, {st['at'][11:16]}{extra})", facts=facts)  # fmt: skip
+
+
+SUPERVISOR_STALE_MIN = 6
+BACK_LINE = "IB Gateway is back: the arena is on live IBKR prices again."
+
+
+def check_gateway_supervisor(now: datetime) -> Check:
+    """The IB Gateway supervisor (ibkr/supervisor.py, a task every 2 minutes) and what it
+    is waiting on. Fails when the task has not checked for a while in the hours it should,
+    or when Gateway is in an outage - and says when that outage needs Rick (the phone
+    approval, or a login on the PC), so the watcher can tell him once."""
+    from asxbot.ibkr.supervisor import SUPERVISOR_STATE, login_window, read_json
+
+    st = read_json(SUPERVISOR_STATE)
+    if not st:
+        return Check("gateway_supervisor", True, "no supervisor state yet")
+    try:
+        last = datetime.fromisoformat(str(st.get("last_check")))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=SYD)
+    except (TypeError, ValueError):
+        last = None
+    age = None if last is None else (now - last).total_seconds() / 60.0
+    outage = st.get("outage") or {}
+    result = str(st.get("last_result") or "")
+    facts = {"last_check": st.get("last_check"), "age_min": None if age is None else round(age, 1),
+             "outage": outage or None, "result": result[:200]}  # fmt: skip
+    if login_window(now) and (age is None or age > SUPERVISOR_STALE_MIN):
+        return Check(
+            "gateway_supervisor", False,
+            f"the IB Gateway supervisor task has not checked for "
+            f"{'ever' if age is None else f'{age:.0f} minutes'}: is the task 'ASXBot IB Gateway "
+            "Supervisor' running?",
+            facts=facts, items=["supervisor silent"],
+        )  # fmt: skip
+    if outage:
+        notice = str(outage.get("notice") or "")
+        needs = notice in ("phone", "manual", "waiting")
+        facts["login_needed"] = needs
+        what = {"phone": "your approval on the phone", "manual": "your login on the PC",
+                "waiting": "your login on the PC"}.get(notice, "nothing from you yet")  # fmt: skip
+        return Check(
+            "gateway_supervisor", False,
+            f"IB Gateway outage since {str(outage.get('since', ''))[11:16]}: {result[:120]}; "
+            f"it needs {what}",
+            facts=facts, items=[f"outage since {outage.get('since')}"],
+        )  # fmt: skip
+    return Check("gateway_supervisor", True,
+                 f"Gateway healthy per the supervisor ({str(st.get('last_check', ''))[11:16]})",
+                 facts=facts)  # fmt: skip
 
 
 LOGIN_LINE = (
@@ -573,6 +636,7 @@ def run_checks(arena, pb, now: datetime | None = None) -> list[Check]:
         ("short_universe", lambda: check_short_universe(cfg)),
         ("console_launcher", check_gui_launcher),
         ("live_data", lambda: check_live_data(cfg, now)),
+        ("gateway_supervisor", lambda: check_gateway_supervisor(now)),
     ]
     out = []
     for key, fn in runners:
@@ -613,8 +677,11 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
     alert = notify.get(arena)
 
     for c in checks:
-        if c.key == "live_data" and c.ok:
-            state.pop("_ibkr_login_told", None)  # the next outage is told again
+        if c.key in ("live_data", "gateway_supervisor") and c.ok and state.get("_ibkr_login_told"):
+            # One line when Gateway needed Rick, one when it is back (Rick's brief, 25 Sep).
+            state.pop("_ibkr_login_told", None)
+            if alert:
+                alert.send(BACK_LINE)
         if c.ok:
             if state.pop(c.key, None) is not None:
                 alerts.clear(c.key)
@@ -649,7 +716,9 @@ def report(arena, pb, now: datetime | None = None, force: bool = False) -> list[
         if c.facts.get("login_needed"):
             # One line, once an outage (Rick's brief, 24 Sep), not the hourly repeat.
             if alert and not state.get("_ibkr_login_told"):
-                alert.send(LOGIN_LINE)
+                alert.send(LOGIN_LINE if c.key == "live_data" else
+                           f"IB Gateway needs you: {c.detail.split(';')[-1].strip()}. The arena "
+                           "makes no new entries until it is back.")  # fmt: skip
                 state["_ibkr_login_told"] = now.isoformat(timespec="seconds")
         elif due and alert:
             body = notify.escape_text(c.detail)
