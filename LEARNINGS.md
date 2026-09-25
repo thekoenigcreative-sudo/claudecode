@@ -700,6 +700,50 @@ changes the frozen rule bot's record too: needs Rick's OK.
 
 ---
 
+## 29. The review found what a day's logs could not
+
+26 Sep, the night after day 1. Rick: "they all need a full review". Nine reviewers, each on
+one part, read the code against the briefs and proved each finding - by a snippet on made-up
+input, by the 25 Sep records, or by the installed library's source. Six fixers, each owning
+different files, fixed them with a test that fails on the old code; REVIEW.md lists all of
+it. What it found that no log had shown:
+
+- **A merge that throws away.** Today's bars were history kept only BEFORE the first streamed
+  minute: every answer after it - the catch-up after a reconnect, the polls of a stock rotated
+  out of streaming - was dropped. A hole stayed in the bars for the day; a stop inside it was
+  never seen; the scanner read the hole as a halt and fired a halt-resumption setup on a stock
+  that never stopped trading. Merging two sources is minute by minute, and a test must put a
+  hole in the middle, not only at the start.
+- **The library's rules are part of the design.** IBKR allows ~60 new real-time bar requests
+  in 10 minutes; the rotation asked for ~94 at once and all of them again on every reconnect,
+  and a refused stream kept its handle, so it counted as streaming and was never polled.
+  ib_async hands back the SAME Ticker object on a second request, old values and all: the
+  second quote of a stock was the first one. Read the library, not just its docs.
+- **A data failure recorded as a verdict - again (#25).** v2's rule bot turned one stock's
+  missing previous close into "no signal" and closed the day; a stock the feed was not
+  watching was "halted"; a missing usual volume was "quiet". Waiting is the answer to missing
+  data, and "missed: no data" the record when the window closes.
+- **Prompts that state facts go stale.** Every decider packet on day 1 said "delayed data ...
+  ~20 minutes behind" on IBKR bars 1.6 minutes old, and the decider reasoned from it. A fact
+  in a prompt is generated from the data it describes, or it is not in the prompt.
+- **An input nobody chose.** Every watcher call resumed one OpenClaw conversation per agent:
+  ~593k tokens of history per day-trader call (v1's rules, test pings, past reports with the
+  bot's P&L), ~879k for the reader, on the same Claude plan the builds exhausted at 22:41.
+  Nothing decided that history should be an input; nothing measured it.
+- **Scheduled tasks and daylight saving.** A trigger written with a UTC offset (+10:00, what
+  New-ScheduledTaskTrigger writes) fires at a fixed UTC time: from 5 Oct, day 7 of the test,
+  the 07:30 start would have been 08:30. Local times have no offset.
+- **A test that touched the real thing.** A test that built the real feed wrote the live
+  doctor.json; another build's test run in this working tree did the same at 00:32. State
+  paths are isolated for every test in conftest, not per test.
+- **Rick's words are not all instructions.** "dont switch the decider to sonnet" switched it;
+  "what happened today pls" answered about PLS. A strategy change needs a read-back, never a
+  word match, and a question mark or a negation is never an instruction.
+
+Standing rule 12 below.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not
@@ -721,3 +765,5 @@ changes the frozen rule bot's record too: needs Rick's OK.
 10. Nothing on yfinance data is a go or a no-go. Norgate first.
 11. A path is a view, not a place. Verify an artefact from the process that will read
     it, not the one that wrote it.
+12. Missing data waits; it never decides. A verdict ("quiet", "halted", "no signal",
+    "rejected") is recorded only on data that was actually seen.
