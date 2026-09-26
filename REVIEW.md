@@ -176,6 +176,51 @@ it mid-test is a bigger risk than leaving it.
    breakout.
 9. **H13**: the weekly filter-cost report still scores a 10-session horizon (v1's).
 10. **#49** (from 25 Sep): the uneconomic filter also changes the rule bot's record.
+11. **Stuck at the close** (the replay, below): 9 positions in 123 days (6 v2, 3 day trader)
+    were in stocks too thin to sell by 16:00 at 20% of each bar. Recommended: cap an entry
+    at what the stock's usual closing minutes can absorb. Not changed.
+
+## The replay (Rick's third ask) - 26 Sep afternoon
+
+**REPLAY, not live: the frozen rule bots only, no agent.** reports/replay_20260926.md (what
+to read) and reports/replay_ibkr_20260926_1319.md/.json (the engine's report, run from an
+export of 980b753 with 16 workers, 98 minutes).
+
+- **History**: IBKR 1-minute bars for the ASX 300 and the index, 26 Mar - 25 Sep (129
+  sessions): 38,229 stock-days held, 276 known empty, 324 missing (283 of 301 codes
+  complete; EF2, AXQ, FDC and LGF have bars only from later in the window), plus the live
+  collector's small-cap news stocks for 11 - 25 Sep (2,351 stock-days). The first five
+  sessions are the lookback only; 123 sessions replayed (7 Apr - 25 Sep), none with a gap.
+  The scheduled fetch finished at 12:52 (reports/ibkr_history_fetch_20260926_1252.json).
+- **Day trader v1: not working.** 490 trades, 30% winners, average -0.53R, -$10,197 after
+  $6,620 fees, 30 green days and 93 red, worst drawdown 51% of the $20,000 book; it lost on
+  up-market days (-$4,047) and down-market days (-$6,150), and every setup lost
+  (opening-range breakout -$6,298 on 330, gap-and-go -$2,806 on 119, VWAP reclaim -$1,007
+  on 40).
+- **Announcements v2 (10:30 rule): unclear.** 187 trades, 47% winners, average -0.04R,
+  +$527 after $2,475 fees, 48 green days, 46 red, 29 without a trade, worst drawdown 9.5%;
+  the best three trades made 212% of the profit. +$2,243 on up-market days, -$1,717 on down
+  days.
+- **Stuck at the close**: 9 positions (above, item 11) - an engine issue, recommended, not
+  changed. The day's P&L marks them at the last price.
+- **Not in it**: the agent's judgment; small-cap news before 22 Sep (the archive holds the
+  ASX 300 only); the survivorship of today's index lists; the opening auction for past days.
+  Every stock is watched every minute in the replay; live, quiet stocks are polled.
+- The verdict rules (`replay_ibkr.verdict`) were fixed before the run. Nothing in the frozen
+  test changed. Told to Rick on Telegram (trader) at 15:00.
+
+## Found after the review (26 Sep afternoon)
+
+- **The real-money path's "positions opened today" limit counted the UTC day.** The event
+  log stamps fills in UTC; `place_order` compared that date with the Sydney date. From 4 Oct
+  (daylight saving) a buy filled 10:00-11:00 Sydney is the previous day in UTC, so the
+  per-day limit would have let one more through (sim mode today; the arena books count
+  their own orders by Sydney time and were not affected). Found when the deploy's suite
+  failed on Saturday afternoon: the test had passed at 04:23 only because Saturday 04:23
+  Sydney is still Friday in UTC. **Fixed 17c430d**: a fill carries its Sydney day; the test
+  fails on the old code. No other event-log reader compares a UTC date.
+- **The history fetch wrote its report inside the release folder** (the scheduled task runs
+  a release): fixed 980b753, the report copied to reports/.
 
 ## Also open (not fixed, low)
 
@@ -195,19 +240,21 @@ MISMATCH - both said loudly by the live_data self-check.
 8628940 (the connection doctor and the live feed), 9fc46ec (day trader and v2), ac28761
 (watcher, books, reports, agents), 185f176 (the chat), 67a4a64 (docs, dead code, the agents'
 facts), 5a21ce3 (the replay), aa6bfd0 (streamed volume units), 7908470 (the watcher's day
-record), 410741a (a second history fetch from the oldest end). Deployed as release
-20260926-042321-7908470a1a: 1068 tests pass inside the export. The chat was restarted at
-03:49 on Saturday onto the 5a21ce3 release (the chat's code has not changed since); every
-other task picks up the newest release at its next start - the watcher at 07:30 Monday.
+record), 410741a (a second history fetch from the oldest end), 9e72fad (the news stocks'
+history), 980b753 (reports to ASXBOT_HOME), 3949ad5 (the replay's reports), 17c430d (the
+per-day limit's Sydney day). Deployed as release 20260926-150638-17c430d7f5: 1073 tests pass
+inside the export, 3 skipped. The chat was restarted at 03:49 on Saturday onto the 5a21ce3
+release (the chat's code has not changed since); every other task picks up the newest
+release at its next start - the history fetch at 17:30 today, the watcher at 07:30 Monday.
 
 ## Monday 07:30
 
-Deployable, checked dry on Saturday 26 Sep 03:51 from the deployed release
-(20260926-034550-5a21ce3789) against a scratch settings folder - no real books, no Telegram,
-no agent, no order: config (IBKR live, fresh agent sessions, live order expiry), the arena
-(1,825-stock universe, 200 shorts), both playbooks, the IBKR failover feed connected on the
-watcher's client id 41, the connection doctor ticking "healthy", entries allowed, a BHP quote
-(frozen, as out of hours), and all 13 self-checks ok. The supervisor and the pre-flight
+Deployable, checked dry on Saturday 26 Sep at 03:51 and again at 15:11 from the deployed
+release (now 20260926-150638-17c430d7f5) against a scratch settings folder - no real books,
+no Telegram, no agent, no order: config (IBKR live, fresh agent sessions, live order
+expiry), the arena (1,825-stock universe, 200 shorts), both playbooks, the IBKR failover
+feed connected on the watcher's client id 41, the connection doctor ticking "healthy",
+entries allowed, a BHP quote (frozen, as out of hours), and all 13 self-checks ok. The supervisor and the pre-flight
 tasks have run from the new release (releases.log); the chat was restarted onto it. The
 warm-up task fires at 07:30 local time (the daylight-saving fix), waits for Google Drive if
 it is not mounted, and starts `asxbot arena watch --until auto` from this release.
