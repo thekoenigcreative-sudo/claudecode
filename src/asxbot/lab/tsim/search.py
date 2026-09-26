@@ -269,6 +269,13 @@ def research_packet(cfg) -> str:
                  "at most "
                  f"{AI_IDEAS_PER_NIGHT} is screened a night) - prefer rules ideas, which are "
                  "nearly free, unless an AI idea is clearly better.")  # fmt: skip
+    rp = lab_dir(cfg) / "refused.jsonl"
+    if rp.exists():
+        refused = [json.loads(x) for x in rp.read_text(encoding="utf-8").splitlines()[-8:]]
+        lines.append(
+            "YOUR LAST REFUSED PROPOSALS (not tested - fix or change them): "
+            + json.dumps([{"spec": r["spec"], "why": r["why"]} for r in refused])
+        )
     lines.append("RECENT IDEAS (newest last):")
     for i in ideas[-40:]:
         r = i["results"].get("practice") or {}
@@ -292,7 +299,32 @@ def propose(cfg, ask=None) -> list[dict]:
         idea = register(cfg, spec, str(x.get("reason", "")), "opus")
         if idea:
             out.append(idea)
+        else:
+            _refused(cfg, spec)
     return out
+
+
+def _refused(cfg, spec: dict) -> None:
+    """A proposal register() refused (an exact repeat, an unknown family or parameter, an
+    addendum over 600 characters): kept so the proposer is told, instead of silently lost."""
+    from asxbot.lab.tsim.rules import FAMILIES, param_space
+
+    why = "an exact repeat of an idea already tried"
+    if spec.get("kind") == "rules":
+        fam = spec.get("family")
+        if fam not in FAMILIES:
+            why = f"unknown family {fam!r}"
+        else:
+            bad = [k for k in (spec.get("params") or {}) if k not in param_space()[fam]]
+            if bad:
+                why = f"unknown parameters for {fam}: {bad}"
+    elif spec.get("kind") == "ai" and len(str(spec.get("addendum", ""))) > 600:
+        why = "addendum over 600 characters"
+    p = lab_dir(cfg) / "refused.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": datetime.now().isoformat(timespec="seconds"), "spec": spec,
+                            "why": why}) + "\n")  # fmt: skip
 
 
 # --------------------------------------------------------------------------- the tick
