@@ -99,6 +99,11 @@ learns its way to a profit.
 **Opus high vs xhigh** (same 10 days, same code): high -$407, xhigh **-$980**, with 2.6x the
 thinking time and 1.8x the cost. **Decisions stay on high.**
 
+**B: the AI choosing among A's stocks in play** (same 10 days as the high/xhigh test): **-$349**
+(11 trades, 18% winners). Yardstick A (rules) on the same days: **-$99**. The free AI trader:
+-$407. **B did not beat A** - on these days the AI's reading of in-play stocks cost money compared
+with taking the breakouts mechanically.
+
 ### 5. The team vs the single agent (the same 10 days)
 
 | | Single agent | Team |
