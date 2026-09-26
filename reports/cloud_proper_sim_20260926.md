@@ -164,6 +164,15 @@ build. The bar rises with every idea tried (practice t >= 1.2 by now).
 - **Samples are small**: 10 AI days is a first reading. WINNER.md needs 40+ trades on the sealed
   block and 10+ shadow days.
 
+## Tests
+
+The whole suite passes on Linux except one test that was already failing before this build and
+fails only at certain hours: `tests/test_ibkr_feed.py::test_the_report_labels_every_kind_of_decision_by_its_prices`
+stamps its events with `date.today()` (the machine's date) while the report reads the Sydney day -
+between 00:00 Sydney and 00:00 UTC they differ (LEARNINGS #29's kind of bug). Left for the PC build:
+it is in the live report's code, which is frozen during the 10-day test. Four Windows-only tests are
+skipped on Linux (they still run on Windows).
+
 ## What happens next
 
 - **On your PC**: bring the branch home, deploy, and the nightly lab tick runs the simulator:
