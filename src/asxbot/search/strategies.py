@@ -678,6 +678,138 @@ def rotation(ctx: Ctx, days: list[date], P: dict) -> list:
     return _hold_book(ctx, dayset, signals, P, tag="rotation")
 
 
+INDEX_DEFAULTS = {
+    "etf": "STW",  # the SPDR ASX 200 fund: the index in one liquid, tight-spread line
+    "signal": "late",  # late: index move prev close -> `at`; first30: its move 10:00 -> 10:30
+    "at": "15:30",
+    "threshold": 0.005,  # the index's move that triggers (in its own direction)
+    "direction": "with",  # with (momentum) | against (reversal)
+    "size": 10000.0,
+    "stop_pct": 0.01,
+    "shorts": False,  # the fund is not in the dated ASX 200 list, so long only in practice
+}
+
+
+def index_timing(ctx: Ctx, days: list[date], P: dict) -> list:
+    """Added 26 Sep (wave 5): the index's intraday momentum or reversal (Gao, Han, Li & Zhou
+    2018: the first and penultimate half-hours predict the last), traded in the ASX 200 fund
+    from the signal to the closing auction. One trade a day at most."""
+    P = {**INDEX_DEFAULTS, **P}
+    ai = minute_index(time.fromisoformat(P["at"])) if P["signal"] == "late" else minute_index(
+        time(10, 30))  # fmt: skip
+    out = []
+    for d in days:
+        rows, p = ctx.rows(d), ctx.m.panel(d)
+        ig = ctx.m.index_close_grid(d)
+        if rows is None or p is None or ig is None or P["etf"] not in rows.index:
+            out.append(None)
+            continue
+        ix = ctx.m.index.loc[pd.Timestamp(d)]
+        ok = np.where(np.isfinite(ig[CONT_START: ai + 1]))[0]
+        if not len(ok):
+            out.append([])
+            continue
+        now = float(ig[CONT_START + ok[-1]])
+        base = ix["prev_close"] if P["signal"] == "late" else ix["open"]
+        if not np.isfinite(base):
+            out.append([])
+            continue
+        move = now / float(base) - 1
+        sign = (1 if move > 0 else -1) * (1 if P["direction"] == "with" else -1)
+        if abs(move) < P["threshold"] or (sign < 0 and not P["shorts"]):
+            out.append([])
+            continue
+        row = rows.loc[P["etf"]]
+        i = p.row[P["etf"]]
+        cs = p.c[i, : ai + 1]
+        okc = np.where(np.isfinite(cs))[0]
+        if not len(okc):
+            out.append([])
+            continue
+        px = float(cs[okc[-1]])
+        qty = int(P["size"] / px)
+        fill = sim.work_fill(p, i, ai + sim.LATENCY, qty, ai + sim.LATENCY + 5, px * 1.005)
+        if fill is None:
+            out.append([])
+            continue
+        stop = fill.px * (1 - P["stop_pct"])
+        t = _mk(P["etf"], "buy", d, fill, stop, ctx.costs, row, move=round(move, 4))
+        sim.manage_and_exit(p, i, t, ctx.costs, row["adv_turnover"], row["vol20"], stop=stop,
+                            next_open=_f(row.get("next_open")))  # fmt: skip
+        out.append([t])
+    return out
+
+
+VWAP_FADE_DEFAULTS = {
+    "min_adv": 50e6,  # the most liquid names only (about 28 codes in the data)
+    "dev": 0.015,  # the price this far under the day's VWAP ...
+    "vs_index": 0.01,  # ... and down at least this much against the index since the open
+    "window": ["11:00", "15:00"],
+    "stop_pct": 0.01,  # under the entry
+    "max_value": 10000.0,
+    "top_k": 3,  # at most this many a day, first come first served
+    "no_news": True,
+}
+
+
+def vwap_fade(ctx: Ctx, days: list[date], P: dict) -> list:
+    """Added 26 Sep (wave 5): liquidity-provision mean reversion in large caps - a big name
+    stretched well below its VWAP without news tends to come back towards it. Target: the
+    VWAP at the signal; stop 1% under the entry; flat in the closing auction."""
+    P = {**VWAP_FADE_DEFAULTS, **P}
+    w0, w1 = (minute_index(time.fromisoformat(x)) for x in P["window"])
+    out = []
+    for d in days:
+        rows, p = ctx.rows(d), ctx.m.panel(d)
+        ig = ctx.m.index_close_grid(d)
+        if rows is None or p is None or ig is None:
+            out.append(None)
+            continue
+        r = rows[rows["adv_turnover"] >= P["min_adv"]]
+        if P["no_news"]:
+            prev = ctx.prev_session(d)
+            since = (prev + pd.Timedelta(hours=16)) if prev is not None else pd.Timestamp(d)
+            nc = set(ctx.news(since, pd.Timestamp(d) + pd.Timedelta(hours=16), False)["code"])
+            r = r[~r.index.isin(nc)]
+        iopen = ctx.m.index.at[pd.Timestamp(d), "open"]
+        book, taken = [], set()
+        for code, row in r.iterrows():
+            i = p.row.get(code)
+            if i is None:
+                continue
+            v = np.where(p.v[i] > 0, p.v[i], 0.0).astype(float)
+            typ = np.where(p.v[i] > 0, (p.h[i] + p.lo[i] + p.c[i]) / 3.0, 0.0).astype(float)
+            cv, cpv = np.cumsum(v[CONT_START:]), np.cumsum((typ * v)[CONT_START:])
+            first_open = row["first_open"]
+            if not np.isfinite(first_open):
+                continue
+            for k in range(w0, w1 + 1):
+                c = float(p.c[i, k])
+                if not (p.v[i, k] > 0) or cv[k - CONT_START] <= 0 or not np.isfinite(ig[k]):
+                    continue
+                vw = cpv[k - CONT_START] / cv[k - CONT_START]
+                rel = (c / first_open - 1) - (float(ig[k]) / float(iopen) - 1)
+                if c <= vw * (1 - P["dev"]) and rel <= -P["vs_index"]:
+                    qty = int(min(P["max_value"], 0.05 * row["adv_turnover"]) / c)
+                    fill = sim.work_fill(p, i, k + sim.LATENCY, qty, k + sim.LATENCY + 5,
+                                         c * 1.005)  # fmt: skip
+                    if fill is None:
+                        break
+                    stop = fill.px * (1 - P["stop_pct"])
+                    t = _mk(code, "buy", d, fill, stop, ctx.costs, row, at=k)
+                    R = fill.px - stop
+                    tgt_r = max((vw - fill.px) / R, 0.1) if R > 0 else None
+                    sim.manage_and_exit(p, i, t, ctx.costs, row["adv_turnover"], row["vol20"],
+                                        stop=stop, target_r=tgt_r,
+                                        next_open=_f(row.get("next_open")))  # fmt: skip
+                    book.append((k, t))
+                    taken.add(code)
+                    break
+        book.sort(key=lambda x: x[0])
+        out.append([t for _, t in book[: int(P["top_k"])]])
+    return out
+
+
 DAY2_DEFAULTS = {
     **ORB_DEFAULTS,
     "react_min": 0.05,  # yesterday's news reaction against the index, at 16:00
@@ -737,6 +869,8 @@ FAMILIES = {
     "breakout20": (breakout20, BREAKOUT_DEFAULTS, "multiday"),
     "day2_orb": (day2_orb, DAY2_DEFAULTS, "intraday"),
     "rotation": (rotation, ROTATION_DEFAULTS, "multiday"),
+    "index_timing": (index_timing, INDEX_DEFAULTS, "intraday"),
+    "vwap_fade": (vwap_fade, VWAP_FADE_DEFAULTS, "intraday"),
 }
 
 __all__ = ["Ctx", "FAMILIES", "START_CASH"]

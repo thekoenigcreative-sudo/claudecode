@@ -236,6 +236,33 @@ IDEAS: list[dict] = [
     {"id": "W05", "family": "rotation", "wave": 4, "parent": "W01",
      "params": {"side": "winners", "lookback": 5, "every": 5, "regime": "index_ma"},
      "reason": "Weekly winners only while the index is above its 20-session average."},
+    # ---------------- wave 5: widen to the cheapest things to trade (26 Sep, after wave 4 on
+    # the practice split): the index in one fund, and large caps at $10,000 -------------------
+    {"id": "X01", "family": "index_timing", "wave": 5, "parent": None, "params": {},
+     "reason": "Intraday index momentum (Gao et al. 2018): after a 0.5%+ index rise by 15:30, "
+               "the last half-hour tends to follow; in STW the round trip is ~0.3%."},
+    {"id": "X02", "family": "index_timing", "wave": 5, "parent": "X01",
+     "params": {"signal": "first30", "threshold": 0.003},
+     "reason": "The first half-hour's direction (0.3%+) held to the close in the index fund."},
+    {"id": "X03", "family": "index_timing", "wave": 5, "parent": "X01",
+     "params": {"direction": "against", "threshold": 0.008},
+     "reason": "The opposite: after a 0.8%+ index FALL by 15:30, buy the fund for the "
+               "late-day bounce (end-of-day rebalancing flows)."},
+    {"id": "V01", "family": "vwap_fade", "wave": 5, "parent": None, "params": {},
+     "reason": "Large caps stretched 1.5% under VWAP and 1% under the index without news are "
+               "usually liquidity trades, not information: buy for the move back to VWAP."},
+    {"id": "V02", "family": "vwap_fade", "wave": 5, "parent": "V01",
+     "params": {"dev": 0.025, "vs_index": 0.02},
+     "reason": "Only bigger stretches (2.5% under VWAP, 2% under the index)."},
+    {"id": "B20", "family": "drift", "wave": 5, "parent": "B02",
+     "params": {"buckets": ["results"], "hold": 5, "per_position": 10000.0,
+                "max_positions": 2},
+     "reason": "B02 (results, a week) moved +2.2% raw a trade: two $10,000 slots halve the "
+               "brokerage per dollar."},
+    {"id": "K05", "family": "breakout20", "wave": 5, "parent": "K01",
+     "params": {"per_position": 6600.0, "max_positions": 3, "min_turnover": 10e6},
+     "reason": "Breakouts in $10m+ names at a third of the book each: cheaper to trade, and "
+               "a different slice of the momentum question K01 failed on the check set."},
 ]
 
 
