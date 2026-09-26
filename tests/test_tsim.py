@@ -362,3 +362,24 @@ def test_the_sealed_block_is_run_once_per_finalist_and_rotates_when_worn(tmp_pat
     d = S.current(cfg)
     assert d["sealed"][0] > "2026-09-25" and ["2026-08-17", "2026-09-25"] in d["check"]
     assert d["uses"] == []
+
+
+def test_only_the_ai_is_disguised_and_rules_orders_are_not_refused(tmp_path, monkeypatch):
+    """26 Sep: a rules yardstick on pre-cutoff days was disguised and every order refused as an
+    unknown code - 66 days of zero trades that looked like 'no setups'."""
+    from asxbot.arena.replay_ibkr import sessions
+    from asxbot.lab.tsim import run as R
+    from asxbot.lab.tsim.report import score
+    from asxbot.lab.tsim.synthetic import make_history
+
+    monkeypatch.setenv("ASXBOT_LAB_LOCAL", str(tmp_path / "lab"))
+    days = sessions(date(2026, 4, 1), date(2026, 5, 15))  # before the knowledge cutoff
+    codes = [f"{a}{b}X" for a in "ABS" for b in "ABCD"]
+    ann = make_history(tmp_path / "h", days, codes)
+    inp = R.prepare_inputs(None, days, history=tmp_path / "h", workers=1, ann=ann)
+    out = R.run("t_orb_pre", {"kind": "rules", "family": "orb"}, days[15:], inp, resume=False)
+    assert out["spec"]["disguised"] is False
+    s = score(out)
+    refused = [r["error"] for d in out["days"] for r in d["rejected"]]
+    assert not [e for e in refused if "unknown code" in e] and s["n_trades_all"] > 0
+    assert not refused  # entries sized in one call leave room for each other

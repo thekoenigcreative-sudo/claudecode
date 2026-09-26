@@ -144,7 +144,9 @@ def run(
         leverage = float(conf["leverage"])
     rdir = tsim_local() / "runs" / run_id
     rdir.mkdir(parents=True, exist_ok=True)
-    disguise = needs_disguise(days) if disguise is None else disguise
+    if disguise is None:
+        # only a model can remember a past day; plain-code traders see the market as it was
+        disguise = trader_spec.get("kind") == "ai" and needs_disguise(days)
     spec = {"run_id": run_id, "trader": trader_spec, "days": [d.isoformat() for d in days],
             "disguised": disguise, "start_cash": start_cash, "leverage": leverage,
             "news_coverage": {d.isoformat(): inputs.news_coverage.get(d.isoformat(), "unknown")

@@ -113,6 +113,7 @@ class RuleTrader(Trader):
         room = acct.equity(v.m.last) * acct.leverage - acct.gross(v.m.last) - sum(
             o.remaining * (o.limit or o.stop or v.m.last(o.code) or 0)
             for o in acct.working() if not o.reduce_only)  # fmt: skip
+        room -= getattr(self, "_reserved", 0.0)  # entries already sized in this same call
         qty = min(qty, math.floor(max(0.0, room) * 0.98 / ref))
         cap = self.p["close_volume_cap"]
         if cap and v.m.summaries is not None:
@@ -137,6 +138,7 @@ class RuleTrader(Trader):
         qty = self.size(v, plan)
         if not self.economic(v, plan, qty):
             return None
+        self._reserved = getattr(self, "_reserved", 0.0) + qty * (plan.entry or v.m.last(plan.code))
         self.taken.add(plan.code)
         attach = {"stop": plan.stop, "tif": "day"}
         if self.p["exit"] == "trail" and self.p["trail_pct"]:
@@ -175,6 +177,7 @@ class RuleTrader(Trader):
         return v.m.now.time() >= time(int(hh), int(mm))
 
     def wake(self, v, reasons, ctx):
+        self._reserved = 0.0
         slot = ctx.get("slot", 0)
         acts = self.flatten_at_close(v, slot)
         if not acts:
@@ -403,6 +406,7 @@ class Drift(RuleTrader):
         self.state = {"keep_queue": [], "keep_held": {}}
 
     def pre_open(self, v, ctx):
+        self._reserved = 0.0
         acts = []
         held = self.state["keep_held"]
         # exits due today: sessions counted in `held`
