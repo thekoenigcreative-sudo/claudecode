@@ -145,7 +145,20 @@ replaced by the newest 30 trading days after 3 finalists have used it; the old b
 check set. Survivors shadow-trade new days; after 10+ days and 15+ trades in profit, the idea is
 written to `data/lab/tsim/winner_pending.json` for the one question to Rick. A rules idea that
 reaches the finalist stage is handed to the AI trader as an optional idea (AI spend where it
-pays). The log: `reports/tsim_research_log.md`.
+pays). The log: `reports/tsim_research_log.md` (`reports/research_log.md` is the separate
+rules-only search's, `src/asxbot/search`; each search keeps its own count).
+
+A run stops only between whole days (27 Sep, bringing it home):
+- **The tick's end.** `search.tick` sets `run.STOP_AT`; a run raises `OutOfTime` before a day
+  that would start after it. One AI idea is 10 days of 4-6 minutes each; without this a tick
+  started at 06:20 traded on into the watcher's hours.
+- **The budget.** The traders catch `UsageStop` and go silent for the day, so a run used to go
+  on scoring days the AI never traded, and an idea could fail because the budget ran out.
+  `llm.ask` now records every stop, and `run.run` refuses to record a day that hit one.
+Either way the idea keeps its stage and its run resumes from `state.json` next tick (answers
+already given are cached). A finalist whose sealed run was cut short resumes the same run as
+the same one look; a second look is still refused. A tick with an AI idea waiting for budget
+stops instead of rewriting the idea until its time is up.
 
 ## 7. Fidelity (`fidelity.py`)
 
@@ -163,7 +176,12 @@ reach asx.com.au).
 
 ## Running it on Rick's PC
 
-Nothing to schedule: the Foreman's `asxbot lab tick` now gives tsim the first half of each tick.
+Nothing to schedule: the Foreman's `asxbot lab tick` now gives tsim the first half of each tick
+(while Rick has the lab paused - "pause the lab" / "resume the lab" - no tick starts).
+`data/lab/tsim/ideas.jsonl` was seeded on the PC (27 Sep) from the cloud's committed research
+log, so the count carries on at N = 15 (I0003 needs a build and is not counted). The cloud's
+three queued AI ideas (I0014-I0016) reached the PC as their first 120 characters only: they are
+counted and marked "not run". The cloud's runs, caches and the AI's journals stayed in the VM.
 By hand (outside market hours): `asxbot lab sim fidelity`, `asxbot lab sim yardsticks`,
 `asxbot lab sim e-question`, `asxbot lab sim run --trader ai --from ... --to ...`,
 `asxbot lab sim tick`, `asxbot lab sim log`, `asxbot lab sim scoreboard`.

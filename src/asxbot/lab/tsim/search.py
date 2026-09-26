@@ -354,7 +354,12 @@ def _best_yard_on(yard: dict, days: list[date], cfg, inputs_for) -> float:
 def sealed_run(cfg, idea: dict, inputs_for) -> dict:
     """A finalist's ONE run on the sealed block."""
     sp = S.current(cfg)
-    F = S.use_seal(cfg, idea["id"])
+    if idea["id"] in sp["uses"] and "sealed" not in idea["results"]:
+        # its one run was cut short (the tick's end or the budget): the same run resumes from
+        # its last whole day; it is still one look (27 Sep)
+        F = sp["uses"].index(idea["id"]) + 1
+    else:
+        F = S.use_seal(cfg, idea["id"])
     days = S.days(cfg, "sealed", allow_sealed=True)
     s = evaluate(cfg, idea["spec"], days, f"{idea['id']}_sealed", inputs_for(days))
     from asxbot.lab.winner import t_required
@@ -403,31 +408,47 @@ def tick(cfg, max_minutes: float = 50.0, propose_ok: bool = True, ask=None) -> s
     did = []
     S.rotate_if_worn(cfg)
     yard = ensure_yardsticks(cfg, inputs_for)
-    while wall.monotonic() - t0 < max_minutes * 60:
-        ideas = load_ideas(cfg)
-        todo = [i for i in ideas if i["stage"] in ("queued", "check")]
-        fin = [i for i in ideas if i["stage"] == "finalist"]
-        if fin:
-            i = sealed_run(cfg, fin[0], inputs_for)
-            did.append(f"{i['id']} sealed: {i['verdict']}")
-            continue
-        if not todo:
-            if not propose_ok:
-                break
+    R.STOP_AT = t0 + max_minutes * 60  # a run stops between days at the tick's end
+    try:
+        while wall.monotonic() - t0 < max_minutes * 60:
             try:
-                new = propose(cfg, ask)
-            except llm.UsageStop as e:
-                did.append(f"stopped: {e}")
+                if not _tick_one(cfg, did, inputs_for, yard, propose_ok, ask):
+                    break
+            except (llm.UsageStop, R.OutOfTime) as e:
+                # the idea keeps its stage and its run resumes from its last whole day
+                did.append(f"paused: {str(e)[:160]}")
                 break
-            if not new:
-                did.append("the proposer gave nothing new")
-                break
-            did.append("proposed " + ", ".join(i["id"] for i in new))
-            continue
-        i = step(cfg, todo[0], inputs_for, yard)
-        did.append(f"{i['id']} -> {i['stage']} ({i['why'][:80]})")
+    finally:
+        R.STOP_AT = None
     write_log(cfg)
     return "; ".join(did) or "nothing to do"
+
+
+def _tick_one(cfg, did: list, inputs_for, yard: dict, propose_ok: bool, ask) -> bool:
+    """One move of the search; False when there is nothing more to do this tick."""
+    ideas = load_ideas(cfg)
+    todo = [i for i in ideas if i["stage"] in ("queued", "check")]
+    fin = [i for i in ideas if i["stage"] == "finalist"]
+    if fin:
+        i = sealed_run(cfg, fin[0], inputs_for)
+        did.append(f"{i['id']} sealed: {i['verdict']}")
+        return True
+    if not todo:
+        if not propose_ok:
+            return False
+        try:
+            new = propose(cfg, ask)
+        except llm.UsageStop as e:
+            did.append(f"stopped: {e}")
+            return False
+        if not new:
+            did.append("the proposer gave nothing new")
+            return False
+        did.append("proposed " + ", ".join(i["id"] for i in new))
+        return True
+    i = step(cfg, todo[0], inputs_for, yard)
+    did.append(f"{i['id']} -> {i['stage']} ({i['why'][:80]})")
+    return not i["why"].startswith("waiting for budget")
 
 
 # --------------------------------------------------------------------------- the log

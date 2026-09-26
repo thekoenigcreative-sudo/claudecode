@@ -3,6 +3,7 @@ costs, continuity, the AI's thinking time on the clock."""
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timedelta
 
 import numpy as np
@@ -474,3 +475,103 @@ def test_a_sampled_run_closes_everything_before_a_gap(tmp_path, monkeypatch):
     assert marks[1]["positions"] == 0 and marks[2]["positions"] == 0
     s = score(out)
     assert abs(s["gap_pnl"]) < 0.01  # nothing earned or lost across the gaps
+
+
+def test_an_old_prn_folder_next_to_prn_underscore_is_one_code(tmp_path):
+    # Rick's PC has both (LEARNINGS #30): listing both folders read PRN_'s bars twice a day
+    for name in ("PRN", "PRN_", "BHP", "^AXJO"):
+        (tmp_path / name).mkdir()
+    assert History(tmp_path).codes() == ["BHP", "PRN", "^AXJO"]
+
+
+def _span(tmp_path, monkeypatch):
+    from asxbot.arena.replay_ibkr import sessions
+    from asxbot.lab.tsim import run as R
+    from asxbot.lab.tsim.synthetic import make_history
+
+    monkeypatch.setenv("ASXBOT_LAB_LOCAL", str(tmp_path / "lab"))
+    days = sessions(date(2026, 7, 1), date(2026, 8, 5))
+    codes = [f"{a}{b}X" for a in "ABS" for b in "ABCD"]
+    ann = make_history(tmp_path / "h", days, codes)
+    return R, days, R.prepare_inputs(None, days, history=tmp_path / "h", workers=1, ann=ann)
+
+
+def test_a_day_the_budget_stopped_is_not_recorded_and_the_run_resumes(tmp_path, monkeypatch):
+    """27 Sep: the traders catch UsageStop and go silent, so a run went on scoring days the AI
+    never traded (an idea could fail because the budget ran out)."""
+    R, days, inp = _span(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def spent_after_some(prompt, **kw):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise llm._stop("the lab's 15% of this week's usage is spent")
+        return {"text": '{"orders": [], "journal": "ok"}', "seconds": 1.0, "usage": {}}
+
+    span = days[15:19]
+    with pytest.raises(llm.UsageStop):
+        R.run("t_budget", {"kind": "ai"}, span, inp, ask=spent_after_some)
+    st = json.loads((tmp_path / "lab" / "tsim" / "runs" / "t_budget" / "state.json").read_text())
+    assert 0 < len(st["done"]) < len(span)  # the stopped day and after: not recorded
+
+    def fine(prompt, **kw):
+        return {"text": '{"orders": [], "journal": "ok"}', "seconds": 1.0, "usage": {}}
+
+    out = R.run("t_budget", {"kind": "ai"}, span, inp, ask=fine)
+    assert [r["day"] for r in out["days"]] == [d.isoformat() for d in span]
+
+
+def test_a_run_stops_between_days_at_the_ticks_end(tmp_path, monkeypatch):
+    import time
+
+    R, days, inp = _span(tmp_path, monkeypatch)
+    monkeypatch.setattr(R, "STOP_AT", time.monotonic() - 1)
+    with pytest.raises(R.OutOfTime):
+        R.run("t_late", {"kind": "rules", "family": "orb"}, days[15:18], inp)
+    monkeypatch.setattr(R, "STOP_AT", None)
+    assert len(R.run("t_late", {"kind": "rules", "family": "orb"}, days[15:18], inp)["days"]) == 3
+
+
+def test_a_sealed_run_cut_short_resumes_as_the_same_one_look(tmp_path, monkeypatch):
+    from asxbot.lab.tsim import run as R
+    from asxbot.lab.tsim import search
+    from asxbot.lab.tsim import splits as S
+
+    cfg = _Cfg(tmp_path)
+    spec = {"kind": "rules", "family": "orb", "params": {"window": 10}}
+    idea = search.register(cfg, spec, "r", "t")
+    idea = search.update(cfg, idea, stage="finalist")
+    monkeypatch.setattr(search, "old_rules_daily", lambda root: {})
+    runs = []
+
+    def evaluate(cfg, spec, days, run_id, inputs=None):
+        runs.append(run_id)
+        if len(runs) == 1:
+            raise R.OutOfTime("stopped")
+        return {"net": -1.0, "trades": 1, "without_best3": -1, "best3_share_of_gross_profit": 1,
+                "up_days": {"n": 0, "pnl": 0}, "down_days": {"n": 0, "pnl": 0},
+                "max_drawdown_pct": 0, "worst_day": 0, "green_days": 0, "red_days": 1,
+                "t_stat": 0.0}  # fmt: skip
+
+    monkeypatch.setattr(search, "evaluate", evaluate)
+    with pytest.raises(R.OutOfTime):
+        search.sealed_run(cfg, idea, lambda days: None)
+    done = search.sealed_run(cfg, search.load_ideas(cfg)[0], lambda days: None)
+    assert done["results"]["sealed"]["F"] == 1 and S.current(cfg)["uses"] == [idea["id"]]
+    assert runs[0] == runs[1] and done["stage"] == "retired"
+    with pytest.raises(S.Sealed):  # a second look is still refused
+        search.sealed_run(cfg, done, lambda days: None)
+
+
+def test_a_tick_waiting_for_budget_does_not_spin(tmp_path, monkeypatch):
+    from asxbot.lab.tsim import search
+
+    monkeypatch.setenv("ASXBOT_LAB_LOCAL", str(tmp_path / "lab"))
+    (tmp_path / "reports").mkdir()
+    cfg = _Cfg(tmp_path)
+    search.register(cfg, {"kind": "ai", "addendum": "x"}, "r", "t")
+    monkeypatch.setattr(search, "ensure_yardsticks", lambda cfg, f: {})
+    monkeypatch.setattr(search.S, "rotate_if_worn", lambda cfg: False)
+    monkeypatch.setattr(llm, "budget_ok", lambda cfg=None: (False, "spent"))
+    out = search.tick(cfg, max_minutes=0.05, propose_ok=False)
+    assert out.count("waiting for budget") == 1

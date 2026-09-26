@@ -161,11 +161,13 @@ class History:
     def codes(self) -> list[str]:
         if not self.root.exists():
             return []
-        out = []
+        # a set: an old PRN folder from before the PRN_ naming is still on Rick's PC next to
+        # PRN_ (LEARNINGS #30); listing both read PRN_'s bars twice a day
+        out = set()
         for p in self.root.iterdir():
             if p.is_dir():
                 name = p.name[:-1] if p.name.endswith("_") and len(p.name) == 4 else p.name
-                out.append(name.upper())
+                out.add(name.upper())
         return sorted(out)
 
     def days(self, code: str) -> list[date]:

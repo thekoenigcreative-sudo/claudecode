@@ -789,6 +789,24 @@ day at 10:00 silently loses every auction. The 16:10 bar is the closing auction.
 
 ---
 
+## 33. A budget stop is not a quiet day (27 Sep, bringing the simulator home)
+
+The simulator's AI traders catch the lab's budget stop and go silent for the rest of the day, and
+the run carried on: the day was recorded as traded, then every later day too, each stopping at
+its first call. An AI idea whose 10 days straddled the moment the lab's weekly share ran out was
+scored on silent days and failed on too few trades, a verdict the budget made rather than the
+idea. Nothing flagged it: the day's note said "(budget stop)" and the score counted it anyway.
+The cloud session's share tripped mid-afternoon on 26 Sep; whether any of its AI verdicts
+(I0009, I0010, I0012, I0013) were made that way can't be checked from the PC (the runs stayed in the VM).
+Fixed: a day that hit a stop is not recorded, and the run resumes when there is budget
+(docs/tsim.md section 6). The same pass bounded runs by the tick's end: one AI idea is
+40-60 minutes, and nothing stopped it between days.
+
+- **A guard that degrades the work must also void the result.** Stopping the calls was right;
+  scoring what was left as if it were the thing being tested was not.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not

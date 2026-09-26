@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import date
@@ -33,6 +34,16 @@ from asxbot.lab.tsim.tools import TraderView
 
 CUTOFF = date(2026, 7, 1)  # the models' knowledge cutoff (lab/splits.CUTOFF)
 START_CASH = 20_000.0
+
+
+class OutOfTime(Exception):
+    """The caller's deadline came before the next day: the run stops between days and resumes
+    from state.json next time."""
+
+
+# When a run must stop (time.monotonic()); set by the search's tick (27 Sep: one AI idea is
+# 10 days of 4-6 minutes each, and a tick started at 06:20 must not trade into 06:45).
+STOP_AT: float | None = None
 
 
 def tsim_local() -> Path:
@@ -214,6 +225,8 @@ def run(
         if d.isoformat() in done:
             results.append(store.read_json(rdir / "days" / f"{d.isoformat()}.json"))
             continue
+        if STOP_AT is not None and time.monotonic() > STOP_AT:
+            raise OutOfTime(f"{run_id}: stopped before {d} ({len(done)} of {len(days)} days done)")
         m = Market(d, hist, inputs.codes, _ann_window(ann, d), summ, shortable)
         view = TraderView(m, sb, anon, journal, reader=_reader(cfg, d, disguise))
         if cfg is not None:
@@ -224,7 +237,13 @@ def run(
             trader.bind_alerts(book, anon)
         gap = gap_after(d, days)
         trader.gap_after = gap
+        from asxbot.lab.tsim import llm
+
+        llm.clear_stop()
         r = run_day(m, sb, trader, book, view, nights=nights_until_next(d, days))
+        if llm.stopped():  # the AI went silent part-way: the day is not a day it traded
+            raise llm.UsageStop(f"{run_id} {d}: {llm.stopped()} (the day is not recorded; it runs "
+                                "again when there is budget)")  # fmt: skip
         if gap:
             before = r.equity_close
             r.notes.append(flatten_for_gap(sb, m))

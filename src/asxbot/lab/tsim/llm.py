@@ -79,6 +79,28 @@ def cache_file(k: str) -> Path:
     return store.lab_local() / "tsim" / "llm_cache" / k[:2] / f"{k}.json"
 
 
+# The last budget stop in this process (27 Sep): the traders catch UsageStop and carry on
+# silent, so without this a run went on scoring days the AI never traded and an idea could
+# fail because the budget ran out. run.run clears it before a day and refuses to record a day
+# that hit one.
+_STOPPED: str | None = None
+
+
+def clear_stop() -> None:
+    global _STOPPED
+    _STOPPED = None
+
+
+def stopped() -> str | None:
+    return _STOPPED
+
+
+def _stop(why: str) -> UsageStop:
+    global _STOPPED
+    _STOPPED = why
+    return UsageStop(why)
+
+
 def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_s: int = 300,
         use_cache: bool = True) -> dict:  # fmt: skip
     """{'text', 'seconds', 'usage': {input, cache_write, cache_read, output, cost_usd},
@@ -90,7 +112,7 @@ def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_
         return {**d, "cached": True}
     ok, why = budget_ok(cfg)
     if not ok:
-        raise UsageStop(why)
+        raise _stop(why)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
         f.write(system)
         sysfile = f.name
@@ -125,7 +147,7 @@ def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_
             info = ev.get("rate_limit_info") or {}
             util = ((info.get("unifiedWindows") or {}).get("seven_day") or {}).get("utilization")
             if info.get("status") == "rejected":
-                raise UsageStop("Claude refused the call: plan limit reached")
+                raise _stop("Claude refused the call: plan limit reached")
         elif ev.get("type") == "result":
             text = ev.get("result") or ""
             u = ev.get("usage") or {}
@@ -142,7 +164,7 @@ def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_
     _account(util, usage)
     low = (text + (r.stderr or "")).lower()
     if "hit your" in low and "limit" in low:
-        raise UsageStop(text[:200] or "plan limit reached")
+        raise _stop(text[:200] or "plan limit reached")
     out = {"text": text, "seconds": round(api_s or wall, 1), "usage": usage, "model": model,
            "effort": effort, "at": datetime.now().isoformat(timespec="seconds")}  # fmt: skip
     if err or r.returncode != 0:
