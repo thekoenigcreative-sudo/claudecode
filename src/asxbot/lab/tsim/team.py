@@ -129,7 +129,8 @@ ROLE: RESEARCHER, after the close. Read the day - what the specialists proposed,
 vetoed or skipped, the fills and results - and (1) write lessons for tomorrow's team (short,
 specific, testable), (2) propose NEW strategy ideas to test in the lab, in the lab's rules
 families where possible. Reply: {"lessons": ["..."], "ideas": [{"kind": "rules", "family":
-"orb|gap_fade|vwap_rev|hod_mom|drift", "params": {...}, "reason": "..."} or {"kind": "ai",
+"orb|gap_fade|vwap_rev|hod_mom|drift|close_strength|pullback|index_revert", "params":
+{...}, "reason": "..."} or {"kind": "ai",
 "addendum": "<= 600 characters", "reason": "..."} or {"kind": "new_family", "describe":
 "...", "reason": "..."}]}. At most 3 ideas; widen rather than tweak."""
 )

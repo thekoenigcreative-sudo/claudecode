@@ -100,7 +100,7 @@ def save_idea(cfg, idea: dict) -> None:
 
 
 def fingerprint(spec: dict) -> str:
-    keep = {k: spec.get(k) for k in ("kind", "family", "params", "addendum")}
+    keep = {k: spec.get(k) for k in ("kind", "family", "params", "addendum", "describe")}
     return hashlib.sha1(json.dumps(keep, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -138,7 +138,7 @@ def update(cfg, idea: dict, **kw) -> dict:
 
 # --------------------------------------------------------------------------- bars
 def n_tried(cfg) -> int:
-    return sum(1 for i in load_ideas(cfg) if i["stage"] != "needs_build")
+    return sum(1 for i in load_ideas(cfg) if i["stage"] not in ("needs_build", "built"))
 
 
 def practice_bar(n: int) -> float:
@@ -248,7 +248,13 @@ def research_packet(cfg) -> str:
         "FAMILY NOTES: orb = stocks in play opening-range breakout; gap_fade = fade a no-news "
         "opening gap; vwap_rev = buy a stretch below VWAP; hod_mom = new high of day on heavy "
         "volume; drift = hold days after a price-sensitive announcement (headline types: "
-        "results, guidance, acquisition, contract, exploration, clinical, ...).",
+        "results, guidance, acquisition, contract, exploration, clinical, ...); close_strength = "
+        "buy strong closers in the closing auction, sell in the next opening auction (or fade "
+        "them); pullback = first pullback to VWAP in a strong stock; index_revert = fade a "
+        "liquid stock's no-news divergence from the index (direction revert|follow); "
+        "close_strength pick strong|weak; index_momentum = the market's move to 10:30 predicts "
+        "its last half hour (a basket of the largest stocks); sympathy = a leader's news move "
+        "spills to its no-news peers in the same industry group.",
     ]
     yard = store.read_json(lab_dir(cfg) / "yardsticks.json", {}) or {}
     if yard:
@@ -260,6 +266,18 @@ def research_packet(cfg) -> str:
             "EXHAUSTED (5+ recent failures): "
             + ", ".join(exhausted)
             + " - widen the search: other families, holding periods, signals."
+        )
+    waiting_ai = sum(1 for i in ideas if i["stage"] == "queued" and i["spec"].get("kind") == "ai")
+    lines.append(f"AI-TRADER IDEAS WAITING: {waiting_ai} (each costs ~10 simulated AI days; "
+                 "at most "
+                 f"{AI_IDEAS_PER_NIGHT} is screened a night) - prefer rules ideas, which are "
+                 "nearly free, unless an AI idea is clearly better.")  # fmt: skip
+    rp = lab_dir(cfg) / "refused.jsonl"
+    if rp.exists():
+        refused = [json.loads(x) for x in rp.read_text(encoding="utf-8").splitlines()[-8:]]
+        lines.append(
+            "YOUR LAST REFUSED PROPOSALS (not tested - fix or change them): "
+            + json.dumps([{"spec": r["spec"], "why": r["why"]} for r in refused])
         )
     lines.append("RECENT IDEAS (newest last):")
     for i in ideas[-40:]:
@@ -284,7 +302,32 @@ def propose(cfg, ask=None) -> list[dict]:
         idea = register(cfg, spec, str(x.get("reason", "")), "opus")
         if idea:
             out.append(idea)
+        else:
+            _refused(cfg, spec)
     return out
+
+
+def _refused(cfg, spec: dict) -> None:
+    """A proposal register() refused (an exact repeat, an unknown family or parameter, an
+    addendum over 600 characters): kept so the proposer is told, instead of silently lost."""
+    from asxbot.lab.tsim.rules import FAMILIES, param_space
+
+    why = "an exact repeat of an idea already tried"
+    if spec.get("kind") == "rules":
+        fam = spec.get("family")
+        if fam not in FAMILIES:
+            why = f"unknown family {fam!r}"
+        else:
+            bad = [k for k in (spec.get("params") or {}) if k not in param_space()[fam]]
+            if bad:
+                why = f"unknown parameters for {fam}: {bad}"
+    elif spec.get("kind") == "ai" and len(str(spec.get("addendum", ""))) > 600:
+        why = "addendum over 600 characters"
+    p = lab_dir(cfg) / "refused.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": datetime.now().isoformat(timespec="seconds"), "spec": spec,
+                            "why": why}) + "\n")  # fmt: skip
 
 
 # --------------------------------------------------------------------------- the tick
@@ -390,6 +433,34 @@ def sealed_run(cfg, idea: dict, inputs_for) -> dict:
                   why="; ".join(fails) or "passed the sealed block")  # fmt: skip
 
 
+AI_IDEAS_PER_NIGHT = 1
+
+
+def _order(cfg, todo: list[dict]) -> list[dict]:
+    """SPEND AI WHERE IT PAYS: rules ideas first (plain code, almost free), checks before new
+    screens; an idea for the AI trader itself costs ~10 simulated AI days, so at most
+    `tradesim.search.ai_ideas_per_night` of them are screened per night (Sydney date), and only
+    when no rules idea is waiting."""
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    conf = ((cfg.get("tradesim") or {}).get("search") or {}) if cfg is not None else {}
+    cap = int(conf.get("ai_ideas_per_night", AI_IDEAS_PER_NIGHT))
+    night = dt.now(ZoneInfo("Australia/Sydney")).strftime("%Y-%m-%d")
+    p = lab_dir(cfg) / "ai_screens.json"
+    done = store.read_json(p, {}) or {}
+    rules = [i for i in todo if i["spec"].get("kind") != "ai"]
+    ai = [i for i in todo if i["spec"].get("kind") == "ai"]
+    rules.sort(key=lambda i: (i["stage"] != "check", i["n"]))
+    ai.sort(key=lambda i: (i["stage"] != "check", i["n"]))
+    if rules or done.get(night, 0) >= cap:
+        return rules
+    if ai:
+        done[night] = done.get(night, 0) + 1
+        store.write_json(p, done)
+    return ai[:1]
+
+
 def tick(cfg, max_minutes: float = 50.0, propose_ok: bool = True, ask=None) -> str:
     """One unit of the never-ending search. Returns what it did."""
     import time as wall
@@ -427,7 +498,7 @@ def tick(cfg, max_minutes: float = 50.0, propose_ok: bool = True, ask=None) -> s
 def _tick_one(cfg, did: list, inputs_for, yard: dict, propose_ok: bool, ask) -> bool:
     """One move of the search; False when there is nothing more to do this tick."""
     ideas = load_ideas(cfg)
-    todo = [i for i in ideas if i["stage"] in ("queued", "check")]
+    todo = _order(cfg, [i for i in ideas if i["stage"] in ("queued", "check")])
     fin = [i for i in ideas if i["stage"] == "finalist"]
     if fin:
         i = sealed_run(cfg, fin[0], inputs_for)

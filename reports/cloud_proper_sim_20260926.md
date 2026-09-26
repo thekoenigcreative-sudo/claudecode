@@ -15,8 +15,9 @@ after the close). The strategy search runs on its own, proposing and testing ide
 has passed WINNER.md, and nothing is close.** The best simple yardstick (stocks-in-play opening
 range breakout with a market-direction filter) made money on both test windows but not enough to
 be more than luck. The old day-trader rules lost again, and **the AI's choosing does not rescue
-them (E)**. The single AI trader lost money on its first 10 practice days; **the team did better
-than the single agent on the same days** but costs about 5x as much to run.
+them (E)**. The single AI trader lost money on its first 10 practice days; **the team beat the single
+agent on one 10-day sample and lost on another** (over 20 days: team -$123, single -$553) and costs
+about 5x as much to run.
 
 ## What was built (src/asxbot/lab/tsim, docs/tsim.md)
 
@@ -39,7 +40,7 @@ than the single agent on the same days** but costs about 5x as much to run.
 - **Rules-only yardsticks** (A, its variants D, rules drift C) and **the never-ending search**
   (Opus proposes ideas from the research log; every idea is counted; the bar rises with the
   count; practice -> check -> the sealed block once -> shadow days; the sealed block rotates after
-  3 finalists). Research log: `reports/tsim_research_log.md`.
+  3 finalists). Research log: `reports/research_log.md`.
 - **Fidelity check** against the live paper test, run automatically for every live day.
 - **Honest-testing guards**: pre-cutoff days are disguised for the AI (and the disguise is
   measured, see below); the sealed block (17 Aug - 25 Sep) is refused to anything but a finalist.
@@ -115,25 +116,45 @@ with taking the breakouts mechanically.
 | model calls per day | 35 | 167 |
 | API-equivalent cost (10 days) | **$18** | **$90** |
 
-The team was better by $676 over these days - a first reading, not a verdict. A second pair on
-10 consecutive practice days is running (see "Still running"). Its cost is almost all the Sonnet
-specialists re-reading the watchlist on every wake; that can be cut a lot (next steps).
+**A second pair, 10 consecutive practice days (22 May - 4 Jun), current code:**
+
+| | Single agent | Team |
+|---|---|---|
+| made on the simulated days | **+$1** | **-$244** |
+| trades / winners | 19 / 42% | 16 / 31% |
+| green / red days | 5 / 5 | 3 / 7 |
+| API-equivalent cost | $20 | $95 |
+
+**Over both samples (20 days): single -$553, team -$123, for $38 vs $185.** The team won the first
+sample and lost the second: no evidence yet that it is reliably better, and as built it costs 5x.
+Its cost is almost all the Sonnet specialists re-reading the watchlist every wake. A cheaper team
+(specialists only when the watchlist changes, a watched stock moves, or 20 minutes pass) was built
+and measured on the first 5 of those days: it saved only **6%** of the cost (most wakes do involve a
+watched stock), so a real saving needs a structural change (fewer specialists, or specialists only
+at set times) - not yet built.
 
 ### 6. The strategy search
 
-17 ideas so far (Opus's and the team researcher's). **None passed practice.** Each is in
-`reports/tsim_research_log.md` with its result and why it failed: momentum and VWAP-reversion variants
-(too few trades or t too low), a no-news gap fade (lost $794), several drift variants (lost), two
-AI-trader instruction changes (lost $746 and $302), two selective news-reading AI ideas (no trades:
-see "Limits"). One idea needs data we don't have (overseas markets) and is logged as needing a
-build. The bar rises with every idea tried (practice t >= 1.2 by now).
+**147 ideas registered, 108 tested, none passed.** 28 made money on their practice sample, but
+none cleared the gates (the best by t were two opening-range-breakout variants, t 2.3 and 2.1,
+with only 9-10 trades - under the 15 required - and the bar has risen to t >= 1.5 with the count).
+Tested by family: opening range 32, momentum 16, drift 16, AI-trader instruction changes 14, close
+strength 10, gap fade 7, index reversion 7, VWAP reversion 6, index momentum 3, pullback 2,
+sympathy 2. When the first five families ran dry (57 ideas) the search widened: three new
+families were built, then four more from the proposer's own new ideas (index follow, weak-closer
+rebound, intraday index momentum, sympathy moves by industry) - all four lost. 28 further ideas
+need data the lab does not have (overseas markets and futures, dividend dates, ASIC short
+positions, index rebalance notices, director-trade amounts, placement prices from the PDFs) and
+are listed as "needs a build" in `reports/research_log.md`, each with its reason. Three silent
+bugs were found and fixed on the way (disguised rules runs refusing every order; scattered
+sample days; new-family ideas refused as repeats).
 
 ## Decisions I made without asking (as the brief said)
 
 - **No origin, no data at first**: the session started without the repo's remote; when you
   attached it I set it as origin and used the cloud-data branch. The data is not committed.
 - **The IBKR history's opening auction is its 09:59 bar** for every stock (the staggered open
-  doesn't show in IBKR's stamps); the simulator starts its day there. LEARNINGS #32.
+  doesn't show in IBKR's stamps); the simulator starts its day there. LEARNINGS #31.
 - **The time machine (the old simulator) was not sped up**: its time goes into the live day
   trader's own scanner code, and editing live code during the frozen 10-day test is off limits.
   It runs 6 days in parallel on your PC (~2 min/day throughput). All new work runs on the new
