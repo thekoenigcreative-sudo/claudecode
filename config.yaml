@@ -849,3 +849,54 @@ arena:
         # through the same limits. Several at once: highest RVOL first.
         name: daytrader_setups_v1
         priority: highest_rvol
+
+# ---------------------------------------------------------------------------
+# THE PROPER TRADING SIMULATOR (src/asxbot/lab/tsim, docs/tsim.md; CLOUD_BRIEF.md, 26 Sep 2026).
+# Simulation only: nothing here reaches a broker. Written 26 Sep 2026 BEFORE any strategy result
+# on it was seen (the only runs before this block were plumbing checks and the fidelity check
+# against the live paper test's orders, which tunes nothing).
+tradesim:
+  primary_broker: ibkr         # the schedule the account is charged; every run is ALSO scored
+                               # under every broker below (commission is additive per order)
+  brokers:
+    ibkr:
+      pct: 0.088               # IBKR Australia Fixed, 0.08% + GST (config costs:, frozen 22 Sep)
+      min_aud: 6.60            # AUD 6 + GST
+      source: "interactivebrokers.com.au/en/pricing/commissions-stocks-asia-pacific.php; the only broker confirmed to take ASX share orders through an API (docs/tsim.md)"
+    ibkr_if_no_gst:
+      pct: 0.08                # sources conflict on whether AUD 6 includes GST: the lower bound
+      min_aud: 6.00
+      source: "same page; finder.com.au and brokerchooser differ on GST (docs/tsim.md)"
+    tiger_unconfirmed_api:
+      pct: 0.025               # cheapest found, but its OpenAPI's ASX support is NOT confirmed
+      min_aud: 2.50
+      source: "itiger.com/au/commissions; quant.itigerup.com OpenAPI lists US/HK/CN/SG only (docs/tsim.md)"
+  spread:
+    # 1-minute bars carry no bid/ask: the full quoted spread assumed by the stock's median
+    # daily dollar turnover (20 sessions before the day); half is paid each way on a marketable
+    # order and never less than one ASX tick. Conservative by design; checked by the fidelity run.
+    tiers:
+      - {min_turnover_aud: 50000000, spread_pct: 0.05}
+      - {min_turnover_aud: 10000000, spread_pct: 0.10}
+      - {min_turnover_aud: 2000000, spread_pct: 0.25}
+      - {min_turnover_aud: 500000, spread_pct: 0.50}
+      - {min_turnover_aud: 0, spread_pct: 1.00}
+  impact:
+    coeff_pct: 0.5             # % of price per 100% of the bar's volume taken
+    cap_pct: 2.0
+    auction_coeff_pct: 0.25
+  borrow_pct_annual: 3.0       # the arena's figure (arena.costs.short_borrow_pct_annual)
+  max_volume_share: 0.20       # the arena's fill cap per bar (arena.fill.max_volume_share)
+  start_cash_aud: 20000
+  leverage: 1.0                # the account's own limit, as the real-money limits (not a style rule)
+  ai:
+    # CLOUD_BRIEF "MODELS AND USAGE": every trading decision by Claude Opus 5.5 at HIGH effort.
+    model: claude-opus-5-5
+    effort: high
+    max_looks: 3               # look rounds per wake before it must act
+    max_calls_per_day: 40      # a BUDGET guard (~200k tokens/day measured 26 Sep), not a style rule
+  reader:
+    model: claude-sonnet-5     # reads each post-cutoff announcement once; never decides
+  budget:
+    weekly_share: 0.15         # the lab's share of the weekly Claude allowance
+    bots_reserve: 0.30         # never touched: the lab stops at 70% of the week

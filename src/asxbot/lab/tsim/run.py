@@ -137,6 +137,11 @@ def run(
     {"kind": "rules", "family": ..., "params": {...}} or {"kind": "ai", "addendum": "...",
     "max_looks": 3, "max_calls_per_day": 60, "model": ..., "effort": ...}."""
     days = sorted(days)
+    conf = (cfg.get("tradesim") or {}) if cfg is not None else {}
+    if start_cash == START_CASH and conf.get("start_cash_aud"):
+        start_cash = float(conf["start_cash_aud"])
+    if leverage == 1.0 and conf.get("leverage"):
+        leverage = float(conf["leverage"])
     rdir = tsim_local() / "runs" / run_id
     rdir.mkdir(parents=True, exist_ok=True)
     disguise = needs_disguise(days) if disguise is None else disguise
@@ -163,8 +168,7 @@ def run(
     hist, summ = inputs.history(), inputs.summaries()
     ann = inputs.announcements()
     shortable = set(inputs.shortable)
-    sb = SimBroker(acct, costs, float(((cfg.get("arena.fill") if cfg else None) or {}).get(
-        "max_volume_share", 0.20)), shortable)  # fmt: skip
+    sb = SimBroker(acct, costs, float(conf.get("max_volume_share", 0.20)), shortable)
     results = []
     for i, d in enumerate(days):
         if d.isoformat() in done:
