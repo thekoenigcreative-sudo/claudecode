@@ -81,6 +81,7 @@ class Order:
     fills: list = field(default_factory=list)
     closed_at: str = ""
     note: str = ""
+    good_till: str = ""  # an ISO time: the order stops working at this moment (good-till-time)
 
     @property
     def remaining(self) -> int:
@@ -233,6 +234,7 @@ class SimBroker:
         parent: str | None = None,
         by: str = "",
         why: str = "",
+        good_till: datetime | str | None = None,
     ) -> Order:
         code = code.upper()
         side = side.lower()
@@ -289,6 +291,8 @@ class SimBroker:
             stop=round_to_tick(stop, up=buy) if stop else None,
             trail_pct=trail_pct, tif=tif, attach=dict(attach or {}), reduce_only=reduce_only,
             oca=oca, parent=parent, by=by, why=why[:300],
+            good_till=(good_till.isoformat(timespec="seconds") if hasattr(good_till, "isoformat")
+                       else str(good_till or "")),
         )  # fmt: skip
         if type == "trailing_stop":
             o.high_water = ref
@@ -362,6 +366,9 @@ class SimBroker:
         start = slot_time(m.day, slot)
         by_code: dict[str, list[Order]] = {}
         for o in self.acct.working():
+            if o.good_till and datetime.fromisoformat(o.good_till) <= start:
+                self._close(o, "expired", start, "good-till time reached")
+                continue
             if datetime.fromisoformat(o.submitted_at) < start:
                 by_code.setdefault(o.code, []).append(o)
         for code, orders in by_code.items():
@@ -400,7 +407,15 @@ class SimBroker:
             if o.type == "trailing_stop" and o.high_water is not None:
                 # updated only after this bar's trigger check (conservative)
                 o.high_water = max(o.high_water, h) if not o.buy else min(o.high_water, l)
-            o.resting = True
+            if o.type in ("limit", "stop_limit") and o.limit and (
+                    o.type == "limit" or o.triggered):  # fmt: skip
+                # after this bar: is it still marketable at the bar's close? If not, it rests
+                # in the book and from now on fills only when the price trades through it.
+                half = self.costs.half_spread(c, turnover)
+                o.resting = not ((o.buy and c + half <= o.limit) or
+                                 (not o.buy and c - half >= o.limit))  # fmt: skip
+            else:
+                o.resting = True
             if price is None:
                 continue
             qty = min(o.remaining, cap - used)
@@ -458,6 +473,8 @@ class SimBroker:
             # stops that rested overnight and the auction went through
         if t == "market":
             return op, "market"
+        if t in ("stop", "trailing_stop") and o.triggered:
+            return op, "stop"  # a triggered stop is a market order until it is done
         if t in ("stop", "trailing_stop") or (t == "stop_limit" and not o.triggered):
             lvl = self._stop_level(o)
             if lvl is None:
@@ -477,15 +494,16 @@ class SimBroker:
             # within its limit, else it rests from the next bar
             if (o.buy and ref <= o.limit) or (not o.buy and ref >= o.limit):
                 return ref, "marketable"
-            o.resting = True
             return None, ""
         if t in ("limit", "stop_limit"):
             lim = o.limit
             if not o.resting:
+                # marketable when it arrives (or still marketable after a partial fill): it
+                # takes the market, never better than the bar's open plus half the spread
                 half = self.costs.half_spread(op, turnover)
                 if (o.buy and op + half <= lim) or (not o.buy and op - half >= lim):
                     return op, "marketable"
-            # resting: only a trade THROUGH the limit fills it
+            # resting in the book: only a trade THROUGH the limit fills it, at the limit
             if (o.buy and l < lim) or (not o.buy and h > lim):
                 return lim, "limit"
             return None, ""
