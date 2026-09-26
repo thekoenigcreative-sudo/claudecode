@@ -86,6 +86,10 @@ def score(out: dict, cfg=None) -> dict:
         "n_trades_all": len(trades),
         "rejected": sum(len(d.get("rejected") or []) for d in days),
         "daily": {d["day"]: round(float(p), 2) for d, p in zip(days, daily, strict=False)},
+        # P&L made on the simulated days themselves; the rest arose across gaps between sampled
+        # days (runs from before 26 Sep 13:30 that held positions over a gap)
+        "net_days": round(sum(float(d.get("pnl") or 0) for d in days), 2),
+        "gap_pnl": round(net_primary - sum(float(d.get("pnl") or 0) for d in days), 2),
     }
 
 

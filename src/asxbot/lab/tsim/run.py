@@ -117,6 +117,44 @@ def nights_until_next(day: date, days: list[date]) -> int:
     return 3 if day.weekday() == 4 else 1
 
 
+def gap_after(day: date, days: list[date]) -> bool:
+    """Is the run's next day NOT the next trading session (a sample with gaps)?"""
+    from asxbot.arena.replay_ibkr import sessions
+
+    later = [d for d in days if d > day]
+    if not later:
+        return False
+    return len(sessions(day, later[0])) > 2
+
+
+def flatten_for_gap(sb: SimBroker, m: Market) -> str:
+    """Before a gap in a sampled run, everything held is sold (or covered) at the day's close,
+    paying the auction's impact and brokerage, and every working order is cancelled: the
+    unsimulated days in between must not add P&L that no one managed."""
+    from datetime import datetime, time
+
+    from asxbot.lab.tsim.market import SYD
+
+    at = datetime.combine(m.day, time(16, 11), tzinfo=SYD)
+    for o in list(sb.acct.working()):
+        sb._close(o, "cancelled", at, "sample gap: the next simulated day is not the next session")
+    n = 0
+    for code, p in list(sb.acct.positions.items()):
+        px = m.last(code) or p.avg
+        o = sb.place(code, "sell" if p.qty > 0 else "cover", abs(p.qty), "market", at=at,
+                     reduce_only=True, by="lab", why="sample gap: closed at the close")  # fmt: skip
+        b = m.bars.get(code)
+        vol = float(b.v[-2]) if b is not None and b.v[-2] > 0 else abs(p.qty) * 5
+        price = sb.costs.aggressive_price(px, not o.buy, abs(p.qty), vol, m.turnover(code), True)
+        sb._fill(o, abs(p.qty), price, at, "sample gap: the day's close")
+        n += 1
+    sb.events = []
+    if sb.acct.marks:
+        sb.acct.marks[-1]["equity"] = round(sb.acct.equity(m.last), 2)
+        sb.acct.marks[-1]["positions"] = 0
+    return f"sample gap: {n} position(s) closed at the close, working orders cancelled"
+
+
 def run(
     run_id: str,
     trader_spec: dict,
@@ -184,8 +222,16 @@ def run(
             view.daily_store = lambda c, day: _daily_until(cfg, c, day)
         if hasattr(trader, "bind_alerts"):
             trader.bind_alerts(book, anon)
+        gap = gap_after(d, days)
+        trader.gap_after = gap
         r = run_day(m, sb, trader, book, view, nights=nights_until_next(d, days))
+        if gap:
+            before = r.equity_close
+            r.notes.append(flatten_for_gap(sb, m))
+            r.equity_close = acct.marks[-1]["equity"]
+            r.pnl = round(r.pnl + r.equity_close - before, 2)
         rec = asdict(r)
+        rec["gap_after"] = gap
         rec["news_coverage"] = inputs.news_coverage.get(d.isoformat(), "unknown")
         rec["market_move_pct"] = _index_close_move(m)
         rec["stocks"] = len(m.bars)

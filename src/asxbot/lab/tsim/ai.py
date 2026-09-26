@@ -66,6 +66,10 @@ class AITrader(Trader):
             parts.append("WOKEN BY:\n" + "\n".join("- " + self._reason(v, r) for r in reasons[:25]))
         parts.append("ACCOUNT: " + json.dumps(acct, separators=(",", ":")))
         parts.append("YOUR ALERTS: " + json.dumps(self._alerts_view, separators=(",", ":")))
+        if getattr(self, "gap_after", False):
+            parts.append("SAMPLE NOTE: tomorrow is not simulated - anything still held at "
+                         "today's close is sold at the closing price, and working orders are "
+                         "cancelled.")  # fmt: skip
         idx = v.m.index_move_pct()
         parts.append(f"INDEX TODAY: {'n/a' if idx is None else f'{idx:+.2f}%'}")
         if self.notes:

@@ -452,3 +452,25 @@ def test_the_disguise_hides_the_calendar():
     assert "2026" not in h and "31" not in h and "March" not in h and "FY26" not in h
     assert "12%" in a.headline("12% dividend increase")
     assert "(" not in a.date(D1) and "Tue" not in a.date(D1)
+
+
+def test_a_sampled_run_closes_everything_before_a_gap(tmp_path, monkeypatch):
+    """26 Sep: on scattered sample days a position held overnight jumped weeks of unsimulated
+    market (+$870 nobody managed). Before a gap, everything is closed at the close."""
+    from asxbot.arena.replay_ibkr import sessions
+    from asxbot.lab.tsim import run as R
+    from asxbot.lab.tsim.report import score
+    from asxbot.lab.tsim.synthetic import make_history
+
+    monkeypatch.setenv("ASXBOT_LAB_LOCAL", str(tmp_path / "lab"))
+    days = sessions(date(2026, 7, 1), date(2026, 8, 31))
+    codes = [f"{a}{b}X" for a in "ABS" for b in "ABCD"]
+    ann = make_history(tmp_path / "h", days, codes)
+    inp = R.prepare_inputs(None, days, history=tmp_path / "h", workers=1, ann=ann)
+    picked = [days[20], days[21], days[30], days[40]]  # a gap after the 2nd and the 3rd
+    assert [R.gap_after(d, picked) for d in picked] == [False, True, True, False]
+    out = R.run("t_gap", {"kind": "rules", "family": "drift"}, picked, inp, resume=False)
+    marks = out["account"]["marks"]
+    assert marks[1]["positions"] == 0 and marks[2]["positions"] == 0
+    s = score(out)
+    assert abs(s["gap_pnl"]) < 0.01  # nothing earned or lost across the gaps

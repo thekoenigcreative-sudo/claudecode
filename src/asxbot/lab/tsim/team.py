@@ -296,6 +296,10 @@ class TeamTrader(Trader):
                  "SPECIALISTS' PROPOSALS: " + json.dumps(props),
                  "NEW ANNOUNCEMENTS READ: "
                  + json.dumps(list(self.read.values())[-12:])]  # fmt: skip
+        if getattr(self, "gap_after", False):
+            parts.append("SAMPLE NOTE: tomorrow is not simulated - anything still held at "
+                         "today's close is sold at the closing price, and working orders are "
+                         "cancelled.")  # fmt: skip
         if self.notes:
             parts.append("YOUR NOTES TODAY:\n" + "\n".join(self.notes[-6:]))
         if lessons:

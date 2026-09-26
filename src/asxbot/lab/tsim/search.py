@@ -150,9 +150,14 @@ def check_bar(n: int) -> float:
 
 
 def sample(days: list[date], n: int, k: int = SAMPLE_DAYS) -> list[date]:
-    """A practice sample that rotates with the idea's number, in date order."""
-    rng = random.Random(f"practice-{n}")
-    return sorted(rng.sample(days, min(k, len(days))))
+    """A practice sample that rotates with the idea's number: a block of `k` CONSECUTIVE
+    sessions (26 Sep: scattered days let a position held overnight jump weeks of unsimulated
+    market, and multi-day strategies could not be judged)."""
+    days = sorted(days)
+    if len(days) <= k:
+        return days
+    start = random.Random(f"practice-{n}").randrange(0, len(days) - k + 1)
+    return days[start : start + k]
 
 
 # --------------------------------------------------------------------------- old rules
