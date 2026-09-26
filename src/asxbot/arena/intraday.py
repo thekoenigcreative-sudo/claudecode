@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from asxbot.arena.minutes import MINUTE_HISTORY_DAYS, MinuteBars
@@ -90,12 +91,89 @@ def visible(
     return out[out["close"] > 0] if index else out[out["volume"] > 0]
 
 
+def time_us(t: time_cls) -> int:
+    """A time of day in microseconds since midnight."""
+    return ((t.hour * 60 + t.minute) * 60 + t.second) * 1_000_000 + t.microsecond
+
+
+def tod_us(idx: pd.DatetimeIndex) -> np.ndarray:
+    """Each timestamp's wall-clock time of day (in its own time zone) in microseconds since
+    midnight: `idx.time` as numbers. Comparing these with `time_us(t)` is comparing
+    `idx.time` with `t` (a time has microseconds; nanoseconds are dropped, as `.time()`
+    drops them), without making a Python object per bar (27 Sep 2026, item #18: `.time`
+    was a tenth of a simulated day)."""
+    if not len(idx):
+        return np.empty(0, dtype=np.int64)
+    wall = idx.tz_localize(None) if idx.tz is not None else idx
+    return (wall.as_unit("ns").asi8 // 1000) % 86_400_000_000
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_EPOCH_NAIVE = datetime(1970, 1, 1)
+_ONE_US = timedelta(microseconds=1)
+
+
+def moment_ns(ts, aware: bool) -> int:
+    """A moment as nanoseconds since the epoch, as a bars index compares it (`aware`: the
+    index has a time zone). A naive moment against an aware index, or the reverse, raises,
+    as pandas' comparison does."""
+    if (ts.tzinfo is not None) != aware:
+        raise TypeError(f"cannot compare {'aware' if aware else 'naive'} bars with {ts!r}")
+    if isinstance(ts, pd.Timestamp):
+        return int(ts.value)
+    return (ts - (_EPOCH if aware else _EPOCH_NAIVE)) // _ONE_US * 1000
+
+
+class BarArrays:
+    """A bars frame's index and columns as numpy arrays (27 Sep 2026, item #18): what the
+    day trader's rules read, instead of slicing the frame for every bar. `src` is the frame
+    they are the values of; `memo` holds what the rules work out once per frame."""
+
+    __slots__ = ("src", "aware", "ns", "tod", "sorted", "o", "h", "l", "c", "v", "memo")
+
+    COLS = ("open", "high", "low", "close", "volume")
+
+    def __init__(self, df: pd.DataFrame | None = None):
+        if df is None:  # filled in by `prefix`
+            return
+        self.src = df
+        idx = df.index
+        n = len(idx)
+        self.aware = getattr(idx, "tz", None) is not None
+        self.ns = idx.as_unit("ns").asi8 if n else np.empty(0, dtype=np.int64)
+        self.tod = tod_us(idx) if n else np.empty(0, dtype=np.int64)
+        self.sorted = bool(idx.is_monotonic_increasing) if n else True
+        if tuple(df.columns) == self.COLS:
+            block = df.to_numpy(dtype=np.float64)
+            cols = [np.ascontiguousarray(block[:, j]) for j in range(5)]
+        else:
+            empty = np.full(n, np.nan)
+            cols = [df[c].to_numpy(dtype=np.float64) if c in df.columns else empty
+                    for c in self.COLS]  # fmt: skip
+        self.o, self.h, self.l, self.c, self.v = cols
+        self.memo: dict = {}
+
+    def prefix(self, n: int, src: pd.DataFrame) -> BarArrays:
+        """The first n rows' arrays, for `src` (the frame of those first n rows)."""
+        out = BarArrays()
+        out.src, out.aware, out.sorted, out.memo = src, self.aware, self.sorted, {}
+        out.ns, out.tod = self.ns[:n], self.tod[:n]
+        out.o, out.h, out.l, out.c, out.v = (x[:n] for x in (self.o, self.h, self.l, self.c,
+                                                             self.v))  # fmt: skip
+        return out
+
+    def last_at(self, t_ns: int) -> int | None:
+        """The position of the last row at or before `t_ns` (`df[df.index <= t].iloc[-1]`)."""
+        k = np.flatnonzero(self.ns <= t_ns)
+        return int(k[-1]) if len(k) else None
+
+
 def continuous(df: pd.DataFrame) -> pd.DataFrame:
     """Continuous-trading bars, 10:00 to before 16:00 (no closing auction)."""
     if not len(df):
         return df
-    t = df.index.time
-    return df[(t >= SESSION_OPEN) & (t < CONTINUOUS_END)]
+    t = tod_us(df.index)
+    return df[(t >= time_us(SESSION_OPEN)) & (t < time_us(CONTINUOUS_END))]
 
 
 def vwap(df: pd.DataFrame) -> pd.Series:
@@ -154,12 +232,13 @@ def usual_cum_volume(
         c = continuous(df)
         if not len(c):
             continue
-        per_min = pd.Series(0.0, index=range(360))
-        for ts, v in c["volume"].items():
-            m = minute_of_session(ts)
-            if 1 <= m < 360:  # from the 10:01 bar (VOLUME_FROM)
-                per_min[m] += float(v)
-        curves.append(per_min.cumsum())
+        per_min = np.zeros(360)
+        m = (tod_us(c.index) - time_us(SESSION_OPEN)) // 60_000_000  # minute_of_session
+        keep = (m >= 1) & (m < 360)  # from the 10:01 bar (VOLUME_FROM)
+        # each bar's volume added to its minute in the bars' order, as a loop over them
+        # did (np.add.at is unbuffered) - a Python loop per bar was a startup cost (item #18)
+        np.add.at(per_min, m[keep], c["volume"].to_numpy(dtype=np.float64)[keep])
+        curves.append(pd.Series(per_min, index=range(360)).cumsum())
     if len(curves) < min_sessions:
         return None
     return pd.concat(curves, axis=1).mean(axis=1)
@@ -185,7 +264,7 @@ def counted_volume(df: pd.DataFrame, start=None, end=None) -> float:
     c = continuous(df)
     if not len(c):
         return 0.0
-    c = c[c.index.time >= VOLUME_FROM]
+    c = c[tod_us(c.index) >= time_us(VOLUME_FROM)]
     if start is not None:
         c = c[c.index >= start]
     if end is not None:
@@ -319,6 +398,7 @@ class ReplayFeed(IntradayFeed):
         self.delay = None if delay_minutes is None else int(delay_minutes)
         self.delayed = bool(self.delay)
         self._cache: dict[tuple[str, date], pd.DataFrame | None] = {}
+        self._prepared: dict[tuple, tuple] = {}
 
     def refresh(self, codes: list[str], now: datetime) -> list[str]:
         return list(codes)
@@ -330,10 +410,54 @@ class ReplayFeed(IntradayFeed):
         return self._cache[key]
 
     def bars(self, code: str, day: date, now: datetime) -> pd.DataFrame:
-        if self.delay is None:
-            return visible(self.full(code, day), now, None, day_complete=True,
-                           index=code.startswith("^"))  # fmt: skip
-        return visible(self.full(code, day), now, self.delay, index=code.startswith("^"))
+        day_rows = self._rows(code, day, only_continuous=False)
+        if day_rows is None:
+            if self.delay is None:
+                return visible(self.full(code, day), now, None, day_complete=True,
+                               index=code.startswith("^"))  # fmt: skip
+            return visible(self.full(code, day), now, self.delay, index=code.startswith("^"))
+        frame, arrays = day_rows
+        return frame.iloc[: self._upto(arrays, now)]
+
+    def continuous_bars(
+        self, code: str, day: date, now: datetime
+    ) -> tuple[pd.DataFrame, BarArrays | None]:
+        """`continuous(self.bars(code, day, now))`, and its arrays (None: not prepared)."""
+        day_rows = self._rows(code, day, only_continuous=True)
+        if day_rows is None:
+            return continuous(self.bars(code, day, now)), None
+        frame, arrays = day_rows
+        n = self._upto(arrays, now)
+        part = frame.iloc[:n]
+        return part, arrays.prefix(n, part)
+
+    # What `visible` (and `continuous`) return, without masking the whole day at every
+    # minute (27 Sep 2026, item #18). Every filter they apply is row by row - traded (volume,
+    # or an index's close, above 0), in continuous trading, final by `now` (index <= a
+    # cut-off) - so on a day's sorted bars the rows passing the first two are picked once
+    # per stock and day, and those final by `now` are the ones up to where the cut-off falls.
+    # The same rows in the same order (tests/test_scan_speed.py).
+    def _rows(self, code: str, day: date, only_continuous: bool):
+        key = (code, day, only_continuous)
+        full = self.full(code, day)
+        got = self._prepared.get(key)
+        if got is None or got[0] is not full:  # prepared from these very bars, or again
+            rows = None
+            if full is not None and len(full) and full.index.is_monotonic_increasing:
+                keep = full[full["close"] > 0] if code.startswith("^") else full[
+                    full["volume"] > 0]  # fmt: skip
+                if only_continuous:
+                    keep = continuous(keep)
+                rows = (keep, BarArrays(keep))
+            got = self._prepared[key] = (full, rows)
+        return got[1]
+
+    def _upto(self, arrays: BarArrays, now: datetime) -> int:
+        """How many of the prepared rows are final by `now` (`index <= cutoff`)."""
+        now = now.astimezone(SYD)
+        lag = 1 if self.delay is None else int(self.delay) + 2
+        cutoff = moment_ns(now - timedelta(minutes=lag), arrays.aware)
+        return int(np.searchsorted(arrays.ns, cutoff, side="right"))
 
 
 def live_provider(cfg) -> str:
@@ -456,6 +580,15 @@ class MarketView:
                 self.feed.refresh([code], now)
             self._fetched[code] = now
         return self.feed.bars(code, self.day, now)
+
+    def continuous_bars(
+        self, code: str, now: datetime, fetch: bool = False
+    ) -> tuple[pd.DataFrame, BarArrays | None]:
+        """`continuous(self.bars(code, now, fetch))`; in the replay, also its arrays, which
+        the replay feed prepares once per stock and day (None: build them from the frame)."""
+        if self.replay and hasattr(self.feed, "continuous_bars"):
+            return self.feed.continuous_bars(code, self.day, now)
+        return continuous(self.bars(code, now, fetch)), None
 
     def covered(self, code: str, start: datetime, end: datetime) -> bool:
         """Did the feed actually watch `code` over [start, end] - so a gap in its bars there

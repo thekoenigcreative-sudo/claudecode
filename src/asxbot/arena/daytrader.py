@@ -29,12 +29,24 @@ from datetime import time as time_cls
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from asxbot.arena import notify
 from asxbot.arena.agents import DECIDER, AgentCallFailed, call_agent
 from asxbot.arena.broker import OPENING_SIDES
-from asxbot.arena.intraday import MarketView, continuous, entries_allowed, rvol_at, vwap
+from asxbot.arena.intraday import (
+    CONTINUOUS_END,
+    VOLUME_FROM,
+    BarArrays,
+    MarketView,
+    continuous,
+    entries_allowed,
+    minute_of_session,
+    time_us,
+    vwap,
+)
+from asxbot.arena.intraday import moment_ns as _ns
 from asxbot.arena.levels import Playbook
 from asxbot.arena.liquid import SizeRule, liquid_universe, size_rule
 from asxbot.arena.orders import ArenaOrderRefused, arena_place_order
@@ -97,6 +109,70 @@ def _close_at(df: pd.DataFrame, ts) -> float | None:
 
 
 # --------------------------------------------------------------------------
+# the bars as numbers (27 Sep 2026, item #18). A simulated day took 12.5 minutes, 97% of it
+# here: every setup, at every bar, for every stock, every minute, re-sliced the day's
+# DataFrame (a boolean mask, a new frame, a Timestamp per bar), so the work grew with the
+# square of the day. Now each stock's bars are arrays (intraday.BarArrays: built once per
+# stock and day in the replay, once per scan live) and the rules read them.
+# THE RULES ARE UNCHANGED: every figure is the one pandas computed - the same rows, in the
+# same order, reduced the way pandas reduces them (a sum or mean skips NaN, a max or min of
+# nothing is NaN, a cumulative sum skips NaN) - proven by replaying 20 days before and after
+# and diffing every setup, order and fill (scripts/replay_identity.py, TRACKER.md), and by
+# tests/test_scan_speed.py against the old code, kept there as the reference.
+# --------------------------------------------------------------------------
+US_PER_MIN = 60_000_000
+
+
+def _nsum(a: np.ndarray) -> float:
+    """pandas' sum: NaN skipped, 0.0 for nothing."""
+    m = np.isnan(a)
+    return float(np.where(m, 0.0, a).sum() if m.any() else a.sum())
+
+
+def _nmean(a: np.ndarray) -> float:
+    """pandas' mean: NaN skipped, NaN for nothing."""
+    m = np.isnan(a)
+    n = len(a) - int(m.sum())
+    if n <= 0:
+        return math.nan
+    return float((np.where(m, 0.0, a).sum() if m.any() else a.sum()) / np.float64(n))
+
+
+def _nmax(a: np.ndarray) -> float:
+    """pandas' max: NaN skipped, NaN for nothing."""
+    a = a[~np.isnan(a)]
+    return float(a.max()) if len(a) else math.nan
+
+
+def _nmin(a: np.ndarray) -> float:
+    """pandas' min: NaN skipped, NaN for nothing."""
+    a = a[~np.isnan(a)]
+    return float(a.min()) if len(a) else math.nan
+
+
+def _cumsum(a: np.ndarray) -> np.ndarray:
+    """pandas' cumsum: NaN skipped (and left NaN in place)."""
+    m = np.isnan(a)
+    if not m.any():
+        return np.cumsum(a)
+    out = np.cumsum(np.where(m, 0.0, a))
+    out[m] = np.nan
+    return out
+
+
+def _vwap_arr(a: BarArrays) -> np.ndarray:
+    """intraday.vwap, as numbers: typical price (h+l+c)/3 weighted by volume, running."""
+    tp = (a.h + a.l + a.c) / 3.0
+    pv = _cumsum(tp * a.v)
+    v = _cumsum(a.v)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return pv / np.where(v > 0, v, np.nan)
+
+
+_VOL_FROM_US, _CONT_END_US = time_us(VOLUME_FROM), time_us(CONTINUOUS_END)
+
+
+# --------------------------------------------------------------------------
 # the four setups, exactly as config.yaml writes them. Each looks at bar i of `bars` (the
 # day's continuous bars a decision may see) and returns a Setup if bar i triggers it.
 # --------------------------------------------------------------------------
@@ -119,6 +195,11 @@ class Ctx:
     covered: Callable[[datetime, datetime], bool] | None = None
     _vwap: pd.Series | None = None
     _resumed: list | None = None
+    # The bars and the index as arrays (item #18): built on first use and again if `bars` or
+    # `index` is replaced; the scan builds the index's once and hands it to every stock.
+    _cols: BarArrays | None = None
+    _icols: BarArrays | None = None
+    _usual: tuple | None = None
 
     def watched(self, start, end) -> bool:
         """True when a stretch with no bars from `start` to `end` (minutes, inclusive) means
@@ -126,81 +207,170 @@ class Ctx:
         return True if self.covered is None else bool(self.covered(start, end))
 
     @property
+    def a(self) -> BarArrays:
+        if self._cols is None or self._cols.src is not self.bars:
+            self._cols = BarArrays(self.bars)
+        return self._cols
+
+    @property
+    def ia(self) -> BarArrays:
+        if self._icols is None or self._icols.src is not self.index:
+            self._icols = BarArrays(self.index)
+        return self._icols
+
+    @property
     def vw(self) -> pd.Series:
         if self._vwap is None:
             self._vwap = vwap(self.bars)
         return self._vwap
 
+    def vwa(self) -> np.ndarray:
+        """`vw`'s values, as an array."""
+        a = self.a
+        if "vwap" not in a.memo:
+            a.memo["vwap"] = _vwap_arr(a)
+        return a.memo["vwap"]
+
+    def _usual_arr(self) -> np.ndarray | None:
+        u = self.usual
+        if u is None:
+            return None
+        if self._usual is None or self._usual[0] is not u:
+            self._usual = (u, u.to_numpy(dtype=np.float64))
+        return self._usual[1]
+
+    def _rvol(self, m: int, t_ns: int) -> float | None:
+        """intraday.rvol_at: the volume from 10:01 through the bar at `t_ns` (minute `m` of
+        the session) against the usual volume by that minute."""
+        u = self._usual_arr()
+        if u is None or m < 0 or m >= len(u):
+            return None
+        base = float(u[m])
+        if base <= 0:
+            return None
+        a = self.a
+        counted = (a.tod >= _VOL_FROM_US) & (a.tod < _CONT_END_US) & (a.ns <= t_ns)
+        return _nsum(a.v[counted]) / base
+
     def rvol(self, ts) -> float | None:
-        return rvol_at(self.bars, self.usual, ts)
+        if self.usual is None:
+            return None
+        return self._rvol(minute_of_session(ts), _ns(ts, self.a.aware))
+
+    def rvol_i(self, i: int) -> float | None:
+        """`rvol` at bar i."""
+        a = self.a
+        return self._rvol(int(a.tod[i] // US_PER_MIN) - 600, int(a.ns[i]))
+
+    def _move(self, t_ns: int) -> float | None:
+        k, j = self.a.last_at(t_ns), self.ia.last_at(t_ns)
+        if k is None or j is None:
+            return None
+        px, ix = float(self.a.c[k]), float(self.ia.c[j])
+        return ((px / self.prev_close - 1) - (ix / self.index_prev_close - 1)) * 100
 
     def move_vs_index(self, ts) -> float | None:
-        px, ix = _close_at(self.bars, ts), _close_at(self.index, ts)
-        if px is None or ix is None:
-            return None
-        return ((px / self.prev_close - 1) - (ix / self.index_prev_close - 1)) * 100
+        return self._move(_ns(ts, self.a.aware))
+
+    def in_window(self, i: int, window) -> bool:
+        """`_in(bar i's time, window)`."""
+        return time_us(_t(window[0])) <= int(self.a.tod[i]) <= time_us(_t(window[1]))
+
+    def opening_range(self, minutes: int) -> tuple[float, float, float] | None:
+        """The bars from 10:00 for `minutes`: (the first one's open, their high, their low);
+        None when there is none."""
+        a = self.a
+        key = ("range", minutes, self.day)
+        if key not in a.memo:
+            day_open = datetime.combine(self.day, OPEN, tzinfo=SYD)
+            start = _ns(day_open, a.aware)
+            end = _ns(day_open + timedelta(minutes=minutes), a.aware)
+            inside = (a.ns >= start) & (a.ns < end)
+            a.memo[key] = (
+                (float(a.o[inside][0]), _nmax(a.h[inside]), _nmin(a.l[inside]))
+                if inside.any()
+                else None
+            )
+        return a.memo[key]
+
+    def first_breaks(self, window, hi: float, lo: float) -> tuple[int | None, int | None]:
+        """`_first_breaks`, as bar positions."""
+        a = self.a
+        key = ("breaks", str(window[0]), str(window[1]), hi, lo)
+        if key not in a.memo:
+            inside = (a.tod >= time_us(_t(window[0]))) & (a.tod <= time_us(_t(window[1])))
+            up = np.flatnonzero(inside & (a.c > hi))
+            down = np.flatnonzero(inside & (a.c < lo))
+            a.memo[key] = (int(up[0]) if len(up) else None, int(down[0]) if len(down) else None)
+        return a.memo[key]
+
+    def is_bar(self, k: int | None, i: int) -> bool:
+        """`first == ts`: is the bar at position k (a first break; None: none) bar i's time?"""
+        return k is not None and bool(self.a.ns[k] == self.a.ns[i])
 
 
 def gap_and_go(c: Ctx, i: int) -> Setup | None:
     p = c.conf["gap_and_go"]
-    ts = c.bars.index[i]
-    if not _in(ts, p["window"]):
+    if not c.in_window(i, p["window"]):
         return None
-    day_open = datetime.combine(c.day, OPEN, tzinfo=SYD)
-    rng_end = day_open + timedelta(minutes=int(p["range_minutes"]))
-    opening = c.bars[(c.bars.index >= day_open) & (c.bars.index < rng_end)]
-    if not len(opening) or not len(c.index):
+    opening = c.opening_range(int(p["range_minutes"]))
+    if opening is None or not len(c.index):
         return None
-    iopen_row = c.index[c.index.index >= day_open]
-    if not len(iopen_row):
+    ia = c.ia
+    key = ("open_row", c.day)  # the index's first bar from 10:00
+    if key not in ia.memo:
+        k = np.flatnonzero(ia.ns >= _ns(datetime.combine(c.day, OPEN, tzinfo=SYD), ia.aware))
+        ia.memo[key] = int(k[0]) if len(k) else None
+    iopen = ia.memo[key]
+    if iopen is None:
         return None
-    gap = (
-        (float(opening["open"].iloc[0]) / c.prev_close - 1)
-        - (float(iopen_row["open"].iloc[0]) / c.index_prev_close - 1)
-    ) * 100
+    first_open, hi, lo = opening
+    gap = ((first_open / c.prev_close - 1) - (float(ia.o[iopen]) / c.index_prev_close - 1)) * 100
     need = float(p["gap_pct_vs_index"])
-    bar = c.bars.iloc[i]
-    so_far = c.bars.iloc[: i + 1]
-    hi, lo = float(opening["high"].max()), float(opening["low"].min())
+    a = c.a
+    close = float(a.c[i])
     # The rule names THE FIRST bar in the window that closes beyond the range. Only that
     # bar can be the trigger; its RVOL is then tested. Until 2026-09-25 any later bar that
     # happened to have the volume fired, hours after the range had gone (see
     # opening_range_breakout, the same fault, found in the agent's day-1 rejections).
-    first_up, first_down = _first_breaks(c.bars, p["window"], hi, lo)
-    rv = c.rvol(ts)
+    first_up, first_down = c.first_breaks(p["window"], hi, lo)
     ctx = {"range_high": hi, "range_low": lo, "range_minutes": int(p["range_minutes"])}
-    if gap >= need and first_up == ts and float(so_far["low"].min()) >= c.prev_close:
+    if gap >= need and c.is_bar(first_up, i) and _nmin(a.l[: i + 1]) >= c.prev_close:
+        rv = c.rvol_i(i)
         if rv is None or rv < float(p["min_rvol"]):
             return None  # the first close above the range had no volume: no setup today
+        ts = c.bars.index[i]
         return Setup(
             c.ticker,
             "gap_and_go",
             "buy",
             ts.isoformat(timespec="minutes"),
-            float(bar["close"]),
+            close,
             lo,
             rv,
-            f"gap {gap:+.1f}% vs index, first close ({_px(bar['close'])}) above the "
+            f"gap {gap:+.1f}% vs index, first close ({_px(close)}) above the "
             f"{p['range_minutes']}-min high {_px(hi)}, gap unfilled, RVOL {rv:.1f}",
             {**ctx, "first_break": ts.strftime("%H:%M")},
         )
     if (
         gap <= -need
         and c.shortable
-        and first_down == ts
-        and float(so_far["high"].max()) <= c.prev_close
+        and c.is_bar(first_down, i)
+        and _nmax(a.h[: i + 1]) <= c.prev_close
     ):
+        rv = c.rvol_i(i)
         if rv is None or rv < float(p["min_rvol"]):
             return None
+        ts = c.bars.index[i]
         return Setup(
             c.ticker,
             "gap_and_go",
             "short",
             ts.isoformat(timespec="minutes"),
-            float(bar["close"]),
+            close,
             hi,
             rv,
-            f"gap {gap:+.1f}% vs index, first close ({_px(bar['close'])}) below the "
+            f"gap {gap:+.1f}% vs index, first close ({_px(close)}) below the "
             f"{p['range_minutes']}-min low {_px(lo)}, gap unfilled, RVOL {rv:.1f}",
             {**ctx, "first_break": ts.strftime("%H:%M")},
         )
@@ -220,17 +390,12 @@ def _first_breaks(bars: pd.DataFrame, window, hi: float, lo: float):
 
 def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
     p = c.conf["opening_range_breakout"]
-    ts = c.bars.index[i]
-    if not _in(ts, p["window"]):
+    if not c.in_window(i, p["window"]):
         return None
-    day_open = datetime.combine(c.day, OPEN, tzinfo=SYD)
-    rng = c.bars[
-        (c.bars.index >= day_open)
-        & (c.bars.index < day_open + timedelta(minutes=int(p["range_minutes"])))
-    ]
-    if not len(rng):
+    rng = c.opening_range(int(p["range_minutes"]))
+    if rng is None:
         return None
-    hi, lo = float(rng["high"].max()), float(rng["low"].min())
+    _, hi, lo = rng
     # THE FIRST bar in the window that closes beyond the range is the only bar that can be
     # the breakout; the volume test is applied to it. Until 2026-09-25 the code fired on
     # the first bar that closed beyond the range AND had the volume, which let a range
@@ -239,49 +404,51 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
     # each rejected by the agent as "the scanner's 30-min low doesn't match the bars". The
     # range was right; the bar was not the break. A first break without the volume means
     # no opening-range setup on that side today (tests/test_day1_fixes.py).
-    first_up, first_down = _first_breaks(c.bars, p["window"], hi, lo)
-    bar = c.bars.iloc[i]
-    up = first_up == ts and bar["close"] > hi
-    down = first_down == ts and bar["close"] < lo and c.shortable
+    first_up, first_down = c.first_breaks(p["window"], hi, lo)
+    a = c.a
+    close, volume = float(a.c[i]), float(a.v[i])
+    up = c.is_bar(first_up, i) and close > hi
+    down = c.is_bar(first_down, i) and close < lo and c.shortable
     if not (up or down):
         return None
     look = int(p["bar_volume_lookback"])
-    before = c.bars.iloc[max(0, i - look) : i]
+    before = a.v[max(0, i - look) : i]
     if len(before) < max(3, look // 2):
         return None
-    avg = float(before["volume"].mean())
-    if avg <= 0 or float(bar["volume"]) < float(p["bar_volume_multiple"]) * avg:
+    avg = _nmean(before)
+    if avg <= 0 or volume < float(p["bar_volume_multiple"]) * avg:
         return None  # the break came without the volume: no setup on this side today
-    rv = c.rvol(ts)
+    rv = c.rvol_i(i)
     if rv is None or rv < float(p["min_rvol"]):
         return None
     mid = (hi + lo) / 2
-    vol_x = float(bar["volume"]) / avg
+    vol_x = volume / avg
+    ts = c.bars.index[i]
     ctx = {"range_high": hi, "range_low": lo, "range_minutes": int(p["range_minutes"]),
            "first_break": ts.strftime("%H:%M")}  # fmt: skip
-    if up and mid < bar["close"]:
+    if up and mid < close:
         return Setup(
             c.ticker,
             "opening_range_breakout",
             "buy",
             ts.isoformat(timespec="minutes"),
-            float(bar["close"]),
+            close,
             mid,
             rv,
-            f"first close ({_px(bar['close'])}) above the 30-min high {_px(hi)} on {vol_x:.1f}x "
+            f"first close ({_px(close)}) above the 30-min high {_px(hi)} on {vol_x:.1f}x "
             f"the prior {look} bars' volume, RVOL {rv:.1f}",
             ctx,
         )
-    if down and mid > bar["close"]:
+    if down and mid > close:
         return Setup(
             c.ticker,
             "opening_range_breakout",
             "short",
             ts.isoformat(timespec="minutes"),
-            float(bar["close"]),
+            close,
             mid,
             rv,
-            f"first close ({_px(bar['close'])}) below the 30-min low {_px(lo)} on {vol_x:.1f}x "
+            f"first close ({_px(close)}) below the 30-min low {_px(lo)} on {vol_x:.1f}x "
             f"the prior {look} bars' volume, RVOL {rv:.1f}",
             ctx,
         )
@@ -290,66 +457,63 @@ def opening_range_breakout(c: Ctx, i: int) -> Setup | None:
 
 def vwap_reclaim(c: Ctx, i: int) -> Setup | None:
     p = c.conf["vwap_reclaim"]
-    ts = c.bars.index[i]
-    if not _in(ts, p["window"]):
+    if not c.in_window(i, p["window"]):
         return None
     slope, lookback = int(p["vwap_slope_bars"]), int(p["pullback_lookback"])
     if i - 1 - slope < 0 or i < lookback:
         return None
-    vw, closes = c.vw, c.bars["close"]
-    prev_ts = c.bars.index[i - 1]
-    move = c.move_vs_index(prev_ts)
+    a = c.a
+    vw, closes = c.vwa(), a.c
+    move = c._move(int(a.ns[i - 1]))
     if move is None:
         return None
-    window = range(i - lookback, i)
-    below = sum(1 for j in window if closes.iloc[j] < vw.iloc[j])
-    above = sum(1 for j in window if closes.iloc[j] > vw.iloc[j])
-    vol_before = c.bars["volume"].iloc[max(0, i - int(p["bar_volume_lookback"])) : i]
-    if not len(vol_before) or float(c.bars["volume"].iloc[i]) < float(vol_before.mean()):
+    below = int(np.count_nonzero(closes[i - lookback : i] < vw[i - lookback : i]))
+    above = int(np.count_nonzero(closes[i - lookback : i] > vw[i - lookback : i]))
+    vol_before = a.v[max(0, i - int(p["bar_volume_lookback"])) : i]
+    if not len(vol_before) or float(a.v[i]) < _nmean(vol_before):
         return None
     n = int(p["stop_lookback"])
-    recent = c.bars.iloc[max(0, i - n + 1) : i + 1]
+    recent = slice(max(0, i - n + 1), i + 1)
     need_move, need_bars = float(p["min_move_vs_index_pct"]), int(p["min_bars_below"])
-    rv = c.rvol(ts)
-    bar = c.bars.iloc[i]
+    close = float(closes[i])
     if (
         move >= need_move
-        and vw.iloc[i - 1] > vw.iloc[i - 1 - slope]
+        and vw[i - 1] > vw[i - 1 - slope]
         and below >= need_bars
-        and closes.iloc[i - 1] < vw.iloc[i - 1]
-        and closes.iloc[i] > vw.iloc[i]
+        and closes[i - 1] < vw[i - 1]
+        and closes[i] > vw[i]
     ):
         return Setup(
             c.ticker,
             "vwap_reclaim",
             "buy",
-            ts.isoformat(timespec="minutes"),
-            float(bar["close"]),
-            float(recent["low"].min()),
-            rv,
+            c.bars.index[i].isoformat(timespec="minutes"),
+            close,
+            _nmin(a.l[recent]),
+            c.rvol_i(i),
             f"up {move:+.1f}% vs index, VWAP rising, {below} of the last {lookback} "
-            f"bars below VWAP, closed back above it at {_px(bar['close'])} "
-            f"(VWAP {_px(vw.iloc[i])})",
+            f"bars below VWAP, closed back above it at {_px(close)} "
+            f"(VWAP {_px(vw[i])})",
         )
     if (
         c.shortable
         and move <= -need_move
-        and vw.iloc[i - 1] < vw.iloc[i - 1 - slope]
+        and vw[i - 1] < vw[i - 1 - slope]
         and above >= need_bars
-        and closes.iloc[i - 1] > vw.iloc[i - 1]
-        and closes.iloc[i] < vw.iloc[i]
+        and closes[i - 1] > vw[i - 1]
+        and closes[i] < vw[i]
     ):
         return Setup(
             c.ticker,
             "vwap_reclaim",
             "short",
-            ts.isoformat(timespec="minutes"),
-            float(bar["close"]),
-            float(recent["high"].max()),
-            rv,
+            c.bars.index[i].isoformat(timespec="minutes"),
+            close,
+            _nmax(a.h[recent]),
+            c.rvol_i(i),
             f"down {move:+.1f}% vs index, VWAP falling, {above} of the last {lookback} "
-            f"bars above VWAP, closed back below it at {_px(bar['close'])} "
-            f"(VWAP {_px(vw.iloc[i])})",
+            f"bars above VWAP, closed back below it at {_px(close)} "
+            f"(VWAP {_px(vw[i])})",
         )
     return None
 
@@ -365,16 +529,18 @@ def resumptions(c: Ctx) -> list[tuple]:
     gap = timedelta(minutes=int(p["min_gap_minutes"]) + 1)  # 10 untraded minutes between
     lo_t, hi_t = time_cls(10, 5), time_cls(15, 30)
     if len(idx) > 1:
-        steps = idx[1:] - idx[:-1]
-        for k in (steps >= gap).nonzero()[0]:
-            a, b = idx[k], idx[k + 1]
-            if not (lo_t <= a.time() < hi_t):
+        ns, tod = c.a.ns, c.a.tod
+        lo_us, hi_us = time_us(lo_t), time_us(hi_t)
+        gap_ns, half_hour = gap // timedelta(microseconds=1) * 1000, 30 * 60 * 10**9
+        for k in np.flatnonzero(np.diff(ns) >= gap_ns):
+            if not (lo_us <= tod[k] < hi_us):
                 continue
-            n_prior = idx.searchsorted(a, side="right") - idx.searchsorted(
-                a - timedelta(minutes=30), side="right"
+            n_prior = np.searchsorted(ns, ns[k], side="right") - np.searchsorted(
+                ns, ns[k] - half_hour, side="right"
             )
             if n_prior < float(p["prior_activity_share"]) * 30:
                 continue
+            a, b = idx[k], idx[k + 1]
             # 26 Sep 2026 (review B1): a gap is a halt only if the feed watched those
             # minutes. A hole in the IBKR feed's bars (a stretch it was not streaming or
             # fetching the stock) read as a halt, and a bar after it fired a "resumption"
@@ -382,12 +548,12 @@ def resumptions(c: Ctx) -> list[tuple]:
             # halt rule is unchanged; a hole is simply not a halt.
             if not c.watched(a + ONE_MIN, b - ONE_MIN):
                 continue
-            out.append((b, float(c.bars["close"].iloc[k]), a))
+            out.append((b, float(c.a.c[k]), a))
     day_open = datetime.combine(c.day, OPEN, tzinfo=SYD)
     if (
         len(idx)
-        and idx[0].time() >= _t(p["late_first_trade"])
         and c.news
+        and idx[0].time() >= _t(p["late_first_trade"])
         and c.watched(day_open, idx[0] - ONE_MIN)  # a late start, not a late first look
     ):
         out.append((idx[0], c.prev_close, None))
@@ -397,6 +563,8 @@ def resumptions(c: Ctx) -> list[tuple]:
 
 def halt_resumption(c: Ctx, i: int) -> Setup | None:
     p = c.conf["halt_resumption"]
+    if not resumptions(c):  # no halt today: nothing to look at (item #18)
+        return None
     ts = c.bars.index[i]
     rng_m, within = int(p["resumption_range_minutes"]), int(p["within_minutes"])
     for resumed, before_px, before_ts in resumptions(c):
@@ -458,17 +626,31 @@ def detect(
 ) -> list[Setup]:
     """Setups triggered by bars after `since` (and up to `until`, when given), first trigger
     of each (stock, setup, side) only. Bars after the scan's end time are not triggers."""
-    out = []
-    for i, ts in enumerate(c.bars.index):
-        if since is not None and ts <= since:
+    out: list[Setup] = []
+    a = c.a
+    if not len(a.ns):
+        return out
+    # A setup whose block says `enabled: false` is not looked for (Practice Lab variants,
+    # 26 Sep 2026; the frozen blocks don't set it, so nothing changes live).
+    rules = [
+        (name, fn)
+        for name, fn in DETECTORS.items()
+        if (c.conf.get(name) or {}).get("enabled", True) is not False
+    ]
+    since_ns = None if since is None else _ns(since, a.aware)
+    until_ns = None if until is None else _ns(until, a.aware)
+    end_us = time_us(scan_end)
+    # The bars at or before `since` were evaluated by an earlier scan: on a sorted index they
+    # are the first ones, so the loop starts after them instead of walking past them.
+    start = 0 if since_ns is None or not a.sorted else int(
+        np.searchsorted(a.ns, since_ns, side="right"))  # fmt: skip
+    for i in range(start, len(a.ns)):
+        t = a.ns[i]
+        if since_ns is not None and t <= since_ns:
             continue
-        if ts.time() > scan_end or (until is not None and ts > until):
+        if a.tod[i] > end_us or (until_ns is not None and t > until_ns):
             break
-        for name, fn in DETECTORS.items():
-            # A setup whose block says `enabled: false` is not looked for (Practice Lab
-            # variants, 26 Sep 2026; the frozen blocks don't set it, so nothing changes live).
-            if (c.conf.get(name) or {}).get("enabled", True) is False:
-                continue
+        for _name, fn in rules:
             s = fn(c, i)
             if s is not None and s.key not in fired:
                 fired.add(s.key)
@@ -495,11 +677,12 @@ def watched_through(c: Ctx, since) -> pd.Timestamp | None:
     if since is None and idx[0] > day_open and not c.watched(day_open, idx[0] - ONE_MIN):
         return None
     if len(idx) > 1:
-        steps = idx[1:] - idx[:-1]
-        for k in (steps > ONE_MIN).nonzero()[0]:
+        ns = c.a.ns
+        holes = np.diff(ns) > ONE_MIN // timedelta(microseconds=1) * 1000
+        if since is not None:
+            holes &= ns[1:] > _ns(since, c.a.aware)  # a stretch ending after `since`
+        for k in np.flatnonzero(holes):
             a, b = idx[k], idx[k + 1]
-            if since is not None and b <= since:
-                continue
             if not c.watched(a + ONE_MIN, b - ONE_MIN):
                 return a
     return idx[-1]
@@ -577,6 +760,15 @@ def news_today(data_dir: Path, day: date) -> set[str]:
 # --------------------------------------------------------------------------
 # one scan
 # --------------------------------------------------------------------------
+def _continuous_bars(view, code: str, now: datetime) -> tuple[pd.DataFrame, BarArrays | None]:
+    """`continuous(view.bars(code, now, fetch=False))`, with its arrays when the view has
+    them ready (the replay's, item #18)."""
+    fn = getattr(view, "continuous_bars", None)
+    if fn is None:
+        return continuous(view.bars(code, now, fetch=False)), None
+    return fn(code, now, fetch=False)
+
+
 def scan(
     view: MarketView,
     pb: Playbook,
@@ -591,14 +783,15 @@ def scan(
     scan_conf = pb.raw.get("scan") or {}
     end = _t(scan_conf.get("end", "15:45"))
     max_age = int(pb.raw.get("max_signal_age_bars", 5))
-    index = continuous(view.bars(view.index, now, fetch=False))
+    index, icols = _continuous_bars(view, view.index, now)
     iprev = view.prev_close(view.index)
     fired = set(state.get("fired", []))
     rows, found = [], []
     if iprev is None or not len(index):
         return [], {}
+    icols = icols or BarArrays(index)  # the index as arrays, once for every stock (item #18)
     for code in codes:
-        bars = continuous(view.bars(code, now, fetch=False))
+        bars, cols = _continuous_bars(view, code, now)
         if not len(bars):
             continue
         prev = view.prev_close(code)
@@ -616,6 +809,8 @@ def scan(
             code in news,
             conf,
             covered=lambda a, b, code=code: view.covered(code, a, b),
+            _cols=cols,
+            _icols=icols,
         )
         last_eval = state["last_eval"].get(code)
         since = datetime.fromisoformat(last_eval) if last_eval else None
@@ -632,20 +827,17 @@ def scan(
             if age > max_age:
                 s.context["stale"] = True
             found.append(s)
-        ts = bars.index.max()
-        mv = c.move_vs_index(ts)
+        a = c.a
+        k = int(np.argmax(a.ns))  # the newest bar (`bars.index.max()`)
+        hhmm = int(a.tod[k]) // US_PER_MIN
         rows.append(
             {
                 "ticker": code,
-                "bar": ts.strftime("%H:%M"),
-                "move_vs_index": mv,
-                "rvol": c.rvol(ts),
-                "new_high": bool(
-                    len(bars) > 1 and bars["high"].iloc[-1] >= bars["high"].iloc[:-1].max()
-                ),
-                "new_low": bool(
-                    len(bars) > 1 and bars["low"].iloc[-1] <= bars["low"].iloc[:-1].min()
-                ),
+                "bar": f"{hhmm // 60:02d}:{hhmm % 60:02d}",
+                "move_vs_index": c._move(int(a.ns[k])),
+                "rvol": c.rvol_i(k),
+                "new_high": bool(len(bars) > 1 and a.h[-1] >= _nmax(a.h[:-1])),
+                "new_low": bool(len(bars) > 1 and a.l[-1] <= _nmin(a.l[:-1])),
                 "resumed": bool(resumptions(c)),
                 "news": code in news,
             }
@@ -1218,12 +1410,12 @@ def _peer_moves(view: MarketView, codes: list[str], now: datetime) -> tuple[dict
     26 Sep 2026: the peers' figure was the plain move since the previous close, handed to the
     agent as "industry_peers_median_move_vs_index_pct"; on a day the index fell 1%, a flat
     industry read as 1% ahead of the market. Now it is against the index, as it says."""
-    index = continuous(view.bars(view.index, now, fetch=False))
+    index, _ = _continuous_bars(view, view.index, now)
     iprev = view.prev_close(view.index)
     ix = (float(index["close"].iloc[-1]) / iprev - 1) * 100 if len(index) and iprev else None
     rows, lasts = {}, {}
     for code in codes:
-        b = continuous(view.bars(code, now, fetch=False))
+        b, _ = _continuous_bars(view, code, now)
         if not len(b):
             continue
         lasts[code] = float(b["close"].iloc[-1])
