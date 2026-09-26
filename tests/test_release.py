@@ -237,6 +237,7 @@ def test_the_rule_is_written_in_claude_md():
 
 
 # -- the real %LOCALAPPDATA% (asxbot.localdir) ---------------------------------------------
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only (CREATE_NO_WINDOW / UNC / taskkill)")
 def test_the_share_path_maps_a_drive_letter_and_the_override_wins(tmp_path, monkeypatch):
     from asxbot import localdir as LD
 
