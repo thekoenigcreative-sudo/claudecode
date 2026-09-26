@@ -22,7 +22,7 @@ import pandas as pd
 
 from asxbot.lab.tsim.market import CLOSE_AUCTION_SLOT, SLOTS, History, to_grid
 
-CHECKPOINTS = tuple(range(15, 361, 15)) + (SLOTS,)
+CHECKPOINTS = tuple(range(16, 362, 15)) + (SLOTS,)
 OPEN_WINDOWS = (5, 10, 15)
 
 

@@ -97,6 +97,13 @@ class TraderView:
 
     def news_codes(self) -> dict[str, int]:
         """Codes with a price-sensitive announcement since the last close (visible now)."""
+        key = self.m.now.replace(second=0, microsecond=0)
+        if getattr(self, "_news_key", None) == key:
+            return self._news_val
+        self._news_key, self._news_val = key, self._news_codes()
+        return self._news_val
+
+    def _news_codes(self) -> dict[str, int]:
         from datetime import time as t_
 
         from asxbot.arena.intraday import prior_sessions

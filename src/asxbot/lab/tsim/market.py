@@ -1,7 +1,7 @@
 """The market, minute by minute, from the stored IBKR 1-minute history.
 
-One trading day is a grid of 372 one-minute slots, 10:00 to 16:11 Sydney (slot i starts at
-10:00 + i minutes). Every stock in the universe and the ASX 200 index (^AXJO) are loaded onto
+One trading day is a grid of 373 one-minute slots, 09:59 to 16:11 Sydney (slot i starts at
+09:59 + i minutes; slot 0 is the opening auction's bar). Every stock in the universe and the ASX 200 index (^AXJO) are loaded onto
 it as arrays, so the engine and the scanner work in plain numpy, not per-bar pandas.
 
 What a trader may see at the simulated time `now` (the rule the whole simulator keeps):
@@ -11,13 +11,13 @@ What a trader may see at the simulated time `now` (the rule the whole simulator 
   * announcements only once released (released_at <= now);
   * daily history only up to the day before (summaries.py, built from the same history).
 
-The opening auction: the ASX opens in five groups by the code's first character (A-B 10:00,
-C-F 10:02:15, G-M 10:04:30, N-R 10:06:45, S-Z 10:09, each +/- 15 s). The stock's first traded
-bar at or after its group's minute carries the opening auction: its OPEN is taken as the
-auction price and its volume as an upper bound on the auction's (it also holds the first
-seconds of continuous trading). The closing auction is the 16:10 bar (IBKR's history holds the
-closing auction print in it - checked 24 Sep, TRACKER #44). Both are ASSUMPTIONS about IBKR's
-bars, checked by the fidelity run (fidelity.py) before any result is trusted.
+The opening auction: IBKR's history stamps every stock's opening auction as a 09:59 bar (checked
+26 Sep on the cloud copy: BHP, CBA, FMG, NAB, WBC, S32, ZIP, PLS, MIN, A2M on 24 Sep all have a
+09:59 bar with the auction's volume, S-Z included - the ASX's staggered open, A-B 10:00 to S-Z
+~10:09, does not show in the stamps, TRACKER #33). So slot 0 (09:59) is the auction: its price
+is the bar's open and its volume the auction's. A stock with no 09:59 trade opens at its first
+traded bar at or after its group's minute. The closing auction is the 16:10 bar (slot 371).
+Both are ASSUMPTIONS about IBKR's bars, checked by the fidelity run before results are trusted.
 """
 
 from __future__ import annotations
@@ -31,10 +31,10 @@ import numpy as np
 import pandas as pd
 
 SYD = ZoneInfo("Australia/Sydney")
-GRID_START = time(10, 0)
-SLOTS = 372  # 10:00 .. 16:11
-CLOSE_AUCTION_SLOT = 370  # 16:10
-CONTINUOUS_END_SLOT = 360  # 16:00: continuous trading ends; the pre-close follows
+GRID_START = time(9, 59)
+SLOTS = 373  # 09:59 (the opening auction) .. 16:11
+CLOSE_AUCTION_SLOT = 371  # 16:10
+CONTINUOUS_END_SLOT = 361  # 16:00: continuous trading ends; the pre-close follows
 FEED_LAG = timedelta(seconds=20)
 INDEX = "^AXJO"
 # The ASX's staggered open: (first character up to, minute offset from 10:00)
@@ -60,14 +60,14 @@ def visible_slots(day: date, now: datetime) -> int:
 
 
 def open_offset(code: str) -> int:
-    """Minutes after 10:00 at which the stock's opening auction is struck."""
+    """The slot of the stock's group open when it has no 09:59 auction bar (slot 1 = 10:00)."""
     c = (code or "A").upper()[0]
     if not c.isalpha():
-        return 0
+        return 1
     for last, off in OPEN_GROUPS:
         if c <= last:
-            return off
-    return 9
+            return 1 + off
+    return 10
 
 
 @dataclass
@@ -130,8 +130,9 @@ def to_grid(code: str, day: date, df: pd.DataFrame | None) -> DayBars | None:
     # A bar with no volume is not a trade (IBKR's placeholder rows): price blanked.
     dead = v <= 0
     o[dead] = h[dead] = l[dead] = c[dead] = np.nan
-    first = open_offset(code)
-    traded = np.flatnonzero((v > 0) & (np.arange(SLOTS) >= first) & (np.arange(SLOTS) < 360))
+    first = 0 if v[0] > 0 else open_offset(code)
+    traded = np.flatnonzero((v > 0) & (np.arange(SLOTS) >= first)
+                            & (np.arange(SLOTS) < CONTINUOUS_END_SLOT))
     if len(traded):
         s = int(traded[0])
         ap, av = float(o[s]), float(v[s])
@@ -217,6 +218,7 @@ class Market:
         self.ann = ann
         self.now = datetime.combine(day, time(8, 0), tzinfo=SYD)
         self._prev: dict[str, float | None] = {}
+        self._turnover: dict[str, float | None] = {}
 
     # -- the clock ---------------------------------------------------------
     @property
@@ -242,10 +244,12 @@ class Market:
 
     def turnover(self, code: str) -> float | None:
         """Median daily dollar turnover over the 20 sessions before the day."""
-        if self.summaries is None:
-            return None
-        s = self.summaries.before(code.upper(), self.day, 20)
-        return None if s is None or not len(s) else float(s["turnover"].median())
+        code = code.upper()
+        if code not in self._turnover:
+            s = self.summaries.before(code, self.day, 20) if self.summaries is not None else None
+            self._turnover[code] = None if s is None or not len(s) else float(
+                s["turnover"].median())  # fmt: skip
+        return self._turnover[code]
 
     def visible_announcements(self, since: datetime | None = None) -> pd.DataFrame:
         if not len(self.ann):

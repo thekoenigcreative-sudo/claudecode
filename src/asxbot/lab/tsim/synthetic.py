@@ -9,15 +9,14 @@ from datetime import date, datetime, time, timedelta
 import numpy as np
 import pandas as pd
 
-from asxbot.lab.tsim.market import SYD, open_offset
+from asxbot.lab.tsim.market import SYD
 
 LABEL = "SYNTHETIC DATA - plumbing test only, not a result"
 
 
 def _day_frame(rng, day: date, code: str, prev_close: float, drift: float, vol_pd: float,
                daily_volume: float, gap: float = 0.0) -> pd.DataFrame:  # fmt: skip
-    first = open_offset(code)
-    minutes = list(range(first, 360)) + [370]
+    minutes = [-1, *range(0, 360), 370]  # 09:59 is the opening auction (as IBKR stamps it)
     n = len(minutes)
     sigma = vol_pd / np.sqrt(n)
     rets = rng.normal(drift / n, sigma, n)
