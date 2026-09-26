@@ -16,8 +16,8 @@ Yahoo's official open on 1,174 of 1,174 stock-days checked (12 codes, May-Sep, d
 adjustment removed), but the bar also has a range in 88% of them - some continuous trades are
 folded into it - so the auction price is its open, and its volume is the auction plus a little.
 Every opening group's continuous trading starts in the 10:00 bar (index 1) - the ASX's
-staggered open is not visible in them. Continuous trading ends with the 16:00 bar (zero volume in the sample);
-the CLOSING AUCTION prints in the 16:10 bar. A bar with no volume is no trade: its prices are
+staggered open is not visible in them. Continuous trading ends with the 16:00 bar (zero volume
+in the sample); the CLOSING AUCTION prints in the 16:10 bar. A bar with no volume is no trade: its prices are
 NaN in the grid, so nothing can fill on it.
 """
 
@@ -392,7 +392,10 @@ def summarise(p: DayPanel) -> pd.DataFrame:
         out[f"ow{k}"] = s
     last30 = minute_index(time(15, 30))
     out["vol_last30"] = p.v[:, last30 : CONT_END + 1].sum(axis=1)
-    return pd.DataFrame(out)
+    df = pd.DataFrame(out)
+    num = df.select_dtypes("float32").columns
+    df[num] = df[num].astype("float64")  # the grids are float32; the table is not
+    return df
 
 
 def add_history_features(daily: pd.DataFrame) -> pd.DataFrame:

@@ -94,6 +94,13 @@ class Search:
         played = [r for r in recs if not r["gaps"]]
         s = book.score(played)
         s["gaps"] = len(recs) - len(played)
+        trades = [t for r in played for t in r["daytrader"]["books"]["bot"]["trades"]]
+        sgn = {"buy": 1, "short": -1}
+        # the move itself, before any cost: what the idea would make if trading were free
+        s["raw_pnl"] = round(float(sum(sgn[t["side"]] * (t["exit"] - t["entry"]) * t["qty"]
+                                       for t in trades)), 2)  # fmt: skip
+        s["costs"] = round(float(s["raw_pnl"] - sum(t["net"] for t in trades)), 2)
+        s["turnover"] = round(float(sum(t["entry"] * t["qty"] for t in trades)), 2)
         s["stuck_at_close"] = sum(len(r["daytrader"]["books"]["bot"]["stuck_at_close"])
                                   for r in played)  # fmt: skip
         return s, played
@@ -234,6 +241,7 @@ def _slim(s: dict, b: dict) -> dict:
         "top3_share_of_gross_pct": s.get("top3_share_of_gross_pct"),
         "up_days": s.get("up_days"), "down_days": s.get("down_days"),
         "stuck_at_close": s.get("stuck_at_close"), "gaps": s.get("gaps"),
+        "raw_pnl": s.get("raw_pnl"), "costs": s.get("costs"), "turnover": s.get("turnover"),
         "baseline_pnl_same_days": round(sum(b["daily"].get(d, 0.0) for d in s.get("daily", {})),
                                         2),
         "vs_baseline": versus(s, b) if s.get("daily") else 0.0,

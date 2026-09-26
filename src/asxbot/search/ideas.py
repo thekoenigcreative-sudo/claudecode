@@ -8,7 +8,17 @@ sqrt(2 ln N) over ALL ideas tried so far, winners and losers (WINNER.md's valida
 charged on every try rather than only on those validated - the stricter reading).
 
 Waves: 1 = the brief's yardsticks A, B and C; 2 = variants of them, each changing one thing
-for a stated reason; 3 = new families, widening rather than tweaking. Proposals beyond these
+for a stated reason; 3 = new families, widening rather than tweaking. Waves 1-3 were
+registered before any real data ran (commit 9d3017b).
+
+Wave 4 (registered 26 Sep after waves 1-3 had run on the PRACTICE split only - the check set
+and the sealed test were not looked at for proposing): what practice showed is that costs, not
+direction, decide. Intraday ideas paid ~0.85% a round trip (the $6.60 minimum on ~$4,000
+positions plus the spread) against raw moves of -0.9% to +0.5%; multi-day holds moved more
+(20-day breakouts +2.7% to +5% a trade raw, results drift +2%). So wave 4 tries bigger
+positions in the most liquid names (the minimum brokerage diluted, the tightest spread tier),
+entering pre-open news in the opening auction, and a new, cheap-to-trade family: a weekly
+rotation among liquid names. Proposals beyond these
 (from a later session) go in data/search/proposals.json with the same fields and get ids
 from 100 up.
 """
@@ -168,6 +178,64 @@ IDEAS: list[dict] = [
     {"id": "D02", "family": "day2_orb", "wave": 3, "parent": "D01",
      "params": {"react_min": 0.10},
      "reason": "Only after very big reactions (10%+)."},
+    # ---------------- wave 4: after practice showed costs decide (see the docstring) --------
+    {"id": "A13", "family": "orb_inplay", "wave": 4, "parent": "A03",
+     "params": {"window": 15, "max_value": 10000.0, "min_adv": 50e6},
+     "reason": "A03 moved +0.46% a trade raw but paid ~0.85%: $10,000 positions in $50m+ "
+               "turnover names cut the round trip to roughly 0.3%."},
+    {"id": "A14", "family": "orb_inplay", "wave": 4, "parent": "A11",
+     "params": {"window": 15, "exit": "trail", "trail_r": 2.0, "trail_after_r": 2.0,
+                "max_value": 10000.0, "min_adv": 50e6},
+     "reason": "A11 (the loose trail) in liquid names at $10,000: the same cost argument."},
+    {"id": "L04", "family": "late_trend", "wave": 4, "parent": "L01",
+     "params": {"max_value": 10000.0, "min_adv": 50e6},
+     "reason": "Late momentum moved +0.22% raw on 130 trades; in liquid names at $10,000 the "
+               "round trip is ~0.25%, so the question is whether the move holds there."},
+    {"id": "G04", "family": "gap_fade", "wave": 4, "parent": "G02",
+     "params": {"gap_min": 0.05, "max_value": 10000.0},
+     "reason": "Big no-news gap fades moved +0.58% raw; larger positions dilute the brokerage."},
+    {"id": "B16", "family": "drift", "wave": 4, "parent": "B02",
+     "params": {"buckets": ["results", "guidance_up"], "entry": "open0", "hold": 5},
+     "reason": "Pre-open results and upgrades bought in day 0's opening auction when the "
+               "auction gaps up 3-25%: the day-0 continuation is part of the drift that the "
+               "close0 entry gave away."},
+    {"id": "B17", "family": "drift", "wave": 4, "parent": "B08",
+     "params": {"entry": "open0", "hold": 1},
+     "reason": "Every brief type, bought in the opening auction on a 3-25% gap, sold at the "
+               "next day's close: the short end of the drift."},
+    {"id": "B18", "family": "drift", "wave": 4, "parent": "B02",
+     "params": {"buckets": ["results"], "hold": 5, "react_min": 0.06, "per_position": 6000.0},
+     "reason": "Results with big reactions (B02 and B12 moved ~2% raw) at a size that "
+               "dilutes the minimum brokerage."},
+    {"id": "B19", "family": "drift", "wave": 4, "parent": "B14",
+     "params": {"hold": 5, "ps_only": False, "react_min": 0.06},
+     "reason": "B14 (all announcements of the types) moved +1.3% raw; with only big "
+               "reactions (B12's filter) the move per trade should be larger."},
+    {"id": "K03", "family": "breakout20", "wave": 4, "parent": "K01",
+     "params": {"regime": "index_ma"},
+     "reason": "Breakouts made +2.7% raw a trade in practice but lost on the check set, a "
+               "momentum idea that may need a rising market: only when the index is above "
+               "its 20-session average. (Proposed from practice, judged on check.)"},
+    {"id": "K04", "family": "breakout20", "wave": 4, "parent": "K02",
+     "params": {"vol_mult": 3.0, "hold": 10},
+     "reason": "Only breakouts on triple volume: stronger demand, held two weeks."},
+    {"id": "W01", "family": "rotation", "wave": 4, "parent": None,
+     "params": {"side": "winners", "lookback": 5, "every": 5},
+     "reason": "Weekly rotation into the four strongest liquid names of the week: "
+               "short-horizon industry/stock momentum, traded once a week in $10m+ names."},
+    {"id": "W02", "family": "rotation", "wave": 4, "parent": None,
+     "params": {"side": "losers", "lookback": 5, "every": 5},
+     "reason": "The opposite: weekly reversal (Lehmann 1990) - the week's biggest liquid "
+               "losers bounce."},
+    {"id": "W03", "family": "rotation", "wave": 4, "parent": "W01",
+     "params": {"side": "winners", "lookback": 20, "every": 10},
+     "reason": "Monthly momentum, held a fortnight."},
+    {"id": "W04", "family": "rotation", "wave": 4, "parent": "W02",
+     "params": {"side": "losers", "lookback": 20, "every": 10},
+     "reason": "Monthly losers, held a fortnight (medium-term reversal)."},
+    {"id": "W05", "family": "rotation", "wave": 4, "parent": "W01",
+     "params": {"side": "winners", "lookback": 5, "every": 5, "regime": "index_ma"},
+     "reason": "Weekly winners only while the index is above its 20-session average."},
 ]
 
 

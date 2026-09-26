@@ -138,6 +138,7 @@ ORB_DEFAULTS = {
     "risk_pct": 1.0,
     "max_value": 5000.0,
     "min_r_over_cost": 3.0,
+    "min_adv": 0.0,  # added 26 Sep (wave 4): a turnover floor above the liquid rule; 0 = off
     "shorts": False,
     "regime": None,
     "close_cap": None,
@@ -166,6 +167,7 @@ def orb_inplay(ctx: Ctx, days: list[date], P: dict) -> list[dict]:
             from_i = max(from_i, minute_index(time(10, 31)) + sim.LATENCY)
         last_i = minute_index(time.fromisoformat(P["last_entry"]))
         r = liquid(rows, P["max_value"])
+        r = r[r["adv_turnover"] >= P["min_adv"]]
         r = r[(r["first_idx"] >= 0) & (r["first_idx"] + w - 1 <= D) & (r[f"ow{w}_avg14"] > 0)]
         r = r.assign(rvol=r[f"ow{w}"] / r[f"ow{w}_avg14"])
         r = r[r["rvol"] >= P["min_rvol"]]
@@ -235,7 +237,11 @@ DRIFT_DEFAULTS = {
     "react_min": 0.03,  # day-0 move against the index, measured at 16:00 (before the auction)
     "react_max": 0.25,  # beyond this it is a re-rating/takeover jump, not a drift candidate
     "hold": 5,  # sessions after day 0; out in that session's closing auction
-    "entry": "close0",  # close0 (day 0's closing auction) | open1 (the next session's open)
+    # close0 (day 0's closing auction) | open1 (the next session's opening auction) | open0
+    # (added 26 Sep, wave 4: news released before the open, bought in day 0's opening auction
+    # when the auction's own gap is in [react_min, react_max]; no index adjustment - the
+    # index's open is not known before the auction)
+    "entry": "close0",
     "stop_pct": None,  # a stop this far under the entry, on the daily low (open if gapped)
     "max_positions": 5,
     "per_position": 4000.0,
@@ -270,10 +276,16 @@ def drift(ctx: Ctx, days: list[date], P: dict) -> list[dict]:
             continue
         if not (row["adv_turnover"] >= P["min_turnover"]):
             continue
-        ix_ret = _index_ret(ctx, d0)
-        if ix_ret is None:
-            continue
-        react = row["last_cont_close"] / row["prev_close"] - 1 - ix_ret
+        if P["entry"] == "open0":
+            if n["released_at"] >= d0 + pd.Timedelta(hours=10) or not np.isfinite(
+                    row["auc_open_px"]):  # fmt: skip
+                continue
+            react = row["auc_open_px"] / row["prev_close"] - 1
+        else:
+            ix_ret = _index_ret(ctx, d0)
+            if ix_ret is None:
+                continue
+            react = row["last_cont_close"] / row["prev_close"] - 1 - ix_ret
         s = 1 if P["direction"] == "with" else -1
         if not (P["react_min"] <= s * react <= P["react_max"]):
             continue
@@ -351,7 +363,7 @@ def _hold_book(ctx: Ctx, dayset, signals, P, tag: str) -> list[dict]:
                 still.append(pos)
         open_pos = still
         # 2) entries: signals of today (close0) or of the session before (open1)
-        if P["entry"] == "close0":
+        if P["entry"] in ("close0", "open0"):
             todays = signals.get(d, [])
         else:
             i = ctx.pos.get(d)
@@ -423,6 +435,7 @@ GAP_FADE_DEFAULTS = {
     "regime": None,
     "close_cap": None,
     "need_green_from_low": True,  # the price at entry is above the low so far (turning)
+    "min_adv": 0.0,  # added 26 Sep (wave 4); 0 = off
 }
 
 
@@ -437,6 +450,7 @@ def gap_fade(ctx: Ctx, days: list[date], P: dict) -> list:
             continue
         book = []
         r = liquid(rows, P["max_value"])
+        r = r[r["adv_turnover"] >= P["min_adv"]]
         r = r[(r["gap"] <= -P["gap_min"]) & (r["first_idx"] >= 0) & (r["first_idx"] < ei)]
         prev = ctx.prev_session(d)
         if prev is not None:
@@ -491,6 +505,7 @@ LATE_TREND_DEFAULTS = {
     "catalyst": "any",  # any | news
     "regime": None,
     "close_cap": 0.2,
+    "min_adv": 0.0,  # added 26 Sep (wave 4); 0 = off
 }
 
 
@@ -514,6 +529,7 @@ def late_trend(ctx: Ctx, days: list[date], P: dict) -> list:
             continue
         ix_move = float(ig[iok[-1]]) / float(ipc) - 1
         r = liquid(rows, P["max_value"])
+        r = r[r["adv_turnover"] >= P["min_adv"]]
         cand = []
         for code, row in r.iterrows():
             i = p.row.get(code)
@@ -624,6 +640,44 @@ def breakout20(ctx: Ctx, days: list[date], P: dict) -> list:
     return _hold_book(ctx, dayset, signals, P, tag="breakout20")
 
 
+ROTATION_DEFAULTS = {
+    "lookback": 5,  # sessions of return used to rank (to 16:00 of the rebalance day)
+    "every": 5,  # rebalance every this many sessions; each position is held that long
+    "top_n": 4,
+    "side": "winners",  # winners (momentum) | losers (reversal)
+    "per_position": 4750.0,
+    "min_turnover": 10_000_000.0,
+    "regime": None,
+    "close_cap": 0.2,
+    "entry": "close0",
+    "stop_pct": None,
+}
+
+
+def rotation(ctx: Ctx, days: list[date], P: dict) -> list:
+    """Added 26 Sep (wave 4): a weekly cross-sectional rotation among liquid names - buy the
+    top (or bottom) `top_n` by `lookback`-session return in the closing auction, hold `every`
+    sessions, rotate. Few trades, liquid names: the cheapest idea to trade."""
+    P = {**ROTATION_DEFAULTS, **P, "hold": P.get("every", ROTATION_DEFAULTS["every"]),
+         "max_positions": P.get("top_n", ROTATION_DEFAULTS["top_n"])}  # fmt: skip
+    dayset = [pd.Timestamp(x) for x in days]
+    closes = ctx.m.daily.pivot(index="day", columns="code", values="close").sort_index()
+    signals = {}
+    for k, d in enumerate(dayset):
+        if k % int(P["every"]):
+            continue
+        rows = ctx.by_day.get(d)
+        i = closes.index.get_indexer([d])[0]
+        if rows is None or i < P["lookback"] or not regime_ok(ctx, d.date(), 1, P["regime"]):
+            continue
+        past = closes.iloc[i - int(P["lookback"])]
+        r = rows[rows["adv_turnover"] >= P["min_turnover"]]
+        ret = (r["last_cont_close"] / past.reindex(r.index) - 1).dropna()
+        ret = ret.sort_values(ascending=P["side"] == "losers").head(int(P["top_n"]))
+        signals[d] = [(c, r.loc[c], P["side"]) for c in ret.index]
+    return _hold_book(ctx, dayset, signals, P, tag="rotation")
+
+
 DAY2_DEFAULTS = {
     **ORB_DEFAULTS,
     "react_min": 0.05,  # yesterday's news reaction against the index, at 16:00
@@ -682,6 +736,7 @@ FAMILIES = {
     "reversal": (reversal, REVERSAL_DEFAULTS, "multiday"),
     "breakout20": (breakout20, BREAKOUT_DEFAULTS, "multiday"),
     "day2_orb": (day2_orb, DAY2_DEFAULTS, "intraday"),
+    "rotation": (rotation, ROTATION_DEFAULTS, "multiday"),
 }
 
 __all__ = ["Ctx", "FAMILIES", "START_CASH"]
