@@ -340,12 +340,12 @@ def tick(cfg, max_minutes: float = 55.0, force: bool = False, now: datetime | No
 
 
 def _alive(pid: int) -> bool:
-    try:
-        import psutil
+    """A tick killed without its `finally` (a reboot, a kill) leaves its lock behind. Until
+    26 Sep 2026 this asked psutil, which is not in the venv, and without it read every lock as
+    alive: after one such kill no tick would ever have run again."""
+    from asxbot.arena.watchdog import pid_alive
 
-        return psutil.pid_exists(pid)
-    except ImportError:
-        return True
+    return pid_alive(pid)
 
 
 def _work(cfg, deadline: float) -> str:

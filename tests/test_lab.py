@@ -3,6 +3,7 @@ agent, anonymisation, the locked test's seal, the variant whitelist, the gates a
 No network, no model: the agent's answers come from a stand-in."""
 
 import json
+import os
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -473,6 +474,26 @@ def test_never_in_the_watchers_hours():
     assert runner.stop_time(datetime(2026, 9, 26, 14, 0, tzinfo=syd)) == datetime(
         2026, 9, 28, 6, 45, tzinfo=syd
     )
+
+
+def test_a_dead_ticks_lock_does_not_stop_the_lab_for_good(lab_local, monkeypatch):
+    """A tick killed without its `finally` (a reboot, a kill) leaves tick.lock behind. The next
+    tick must see that its pid is gone and run; a live tick's lock still stops a second one."""
+    import subprocess
+    import sys
+    from zoneinfo import ZoneInfo
+
+    saturday = datetime(2026, 9, 26, 14, 0, tzinfo=ZoneInfo("Australia/Sydney"))
+    monkeypatch.setattr(runner, "_work", lambda cfg, deadline: "worked")
+    lock = lab_local / "tick.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                          capture_output=True, text=True, check=True)  # fmt: skip
+    lock.write_text(gone.stdout.strip())
+    assert runner.tick(None, now=saturday) == "worked"
+    assert not lock.exists()
+    lock.write_text(str(os.getpid()))
+    assert runner.tick(None, now=saturday).startswith("another tick is running")
 
 
 def test_ingest_registers_good_proposals_and_says_why_others_were_refused(cfg, tmp_path):
