@@ -146,7 +146,7 @@ def run(
     rdir.mkdir(parents=True, exist_ok=True)
     if disguise is None:
         # only a model can remember a past day; plain-code traders see the market as it was
-        disguise = trader_spec.get("kind") == "ai" and needs_disguise(days)
+        disguise = trader_spec.get("kind") in ("ai", "team") and needs_disguise(days)
     spec = {"run_id": run_id, "trader": trader_spec, "days": [d.isoformat() for d in days],
             "disguised": disguise, "start_cash": start_cash, "leverage": leverage,
             "news_coverage": {d.isoformat(): inputs.news_coverage.get(d.isoformat(), "unknown")
@@ -259,6 +259,16 @@ def make_trader(spec: dict, *, journal: Journal, cfg=None, ask=None, log_dir=Non
             max_calls_per_day=int(spec.get("max_calls_per_day") or conf.get("max_calls_per_day")
                                   or 60),
             addendum=str(spec.get("addendum") or ""), cfg=cfg, ask=ask, log_dir=log_dir,
+        )  # fmt: skip
+    if kind == "team":
+        from asxbot.lab.tsim.team import TeamTrader
+
+        conf = ((cfg.get("tradesim") or {}).get("team") or {}) if cfg is not None else {}
+        return TeamTrader(
+            journal=journal, cfg=cfg, ask=ask, log_dir=log_dir,
+            max_wakes_per_day=int(spec.get("max_wakes_per_day") or conf.get("max_wakes_per_day")
+                                  or 18),
+            register_ideas=bool(spec.get("register_ideas", True)),
         )  # fmt: skip
     raise ValueError(f"unknown trader kind {kind!r}")
 

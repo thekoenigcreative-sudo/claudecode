@@ -396,3 +396,50 @@ def test_the_index_is_live_without_volume(mkt):
     m = Market(D1, History(root), ["AAA"], None, s2)
     m.now = slot_time(D1, 100) + timedelta(seconds=30)
     assert m.index is not None and m.index_move_pct() is not None
+
+
+def test_the_team_runs_its_stages_in_parallel_and_the_risk_manager_vetoes(mkt, tmp_path):
+    """Readers, scanner, specialists (in parallel), decider, risk manager with a veto."""
+    import threading
+
+    from asxbot.lab.tsim.team import TeamTrader
+
+    root, summ = mkt
+    m = Market(D1, History(root), ["AAA", "BBB"], None, summ)
+    b = broker_for(m)
+    seen = []
+    lock = threading.Lock()
+
+    def ask(prompt, *, system, model, effort, cfg=None, **kw):
+        line = system[system.index("ROLE:"):].split("\n")[0]
+        role = next(r for r in ("announcement reader", "market scanner", "strategy specialist",
+                                "DECISION-MAKER", "RISK MANAGER", "RESEARCHER") if r in line)
+        role = {"market scanner": "scanner", "announcement reader": "reader"}.get(role, role)
+        with lock:
+            seen.append((role, model))
+        text = {
+            "scanner": '{"watchlist": [{"code": "AAA", "why": "x"}, {"code": "BBB", "why": "y"}]}',
+            "strategy specialist": '{"proposals": [{"code": "AAA", "side": "buy"}]}',
+            "DECISION-MAKER": '{"orders": [{"op": "place", "code": "AAA", "side": "buy", '
+                              '"qty": 100, "type": "market"}, {"op": "place", "code": "BBB", '
+                              '"side": "buy", "qty": 100, "type": "market"}], "note": "go"}',
+            "RISK MANAGER": '{"verdicts": [{"index": 0, "approve": true}, {"index": 1, '
+                            '"approve": false, "why": "too thin"}]}',
+            "RESEARCHER": '{"lessons": ["l"], "ideas": []}',
+        }.get(role, "{}")  # fmt: skip
+        return {"text": text, "seconds": 5.0, "usage": {"output": 10}}
+
+    t = TeamTrader(journal=Journal(tmp_path / "run"), ask=ask, register_ideas=False)
+    book = AlertBook()
+    v = TraderView(m, b, NoAnon())
+    t.bind_alerts(book, v.anon)
+    r = run_day(m, b, t, book, v)
+    roles = {x[0] for x in seen}
+    assert {"scanner", "strategy specialist", "DECISION-MAKER", "RISK MANAGER",
+            "RESEARCHER"} <= roles  # fmt: skip
+    assert sum(1 for x in seen if x[0] == "strategy specialist") % 5 == 0  # five at once
+    top = ("DECISION-MAKER", "RISK MANAGER")
+    assert all(mo.startswith("claude-opus") for ro, mo in seen if ro in top)
+    codes = {o.code for o in b.acct.orders.values()}
+    assert codes == {"AAA"}  # BBB was vetoed
+    assert r.calls >= 8 and "opus:output" in r.usage and "sonnet:output" in r.usage
