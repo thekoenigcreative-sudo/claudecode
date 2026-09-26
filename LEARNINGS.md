@@ -733,6 +733,11 @@ it. What it found that no log had shown:
 - **Scheduled tasks and daylight saving.** A trigger written with a UTC offset (+10:00, what
   New-ScheduledTaskTrigger writes) fires at a fixed UTC time: from 5 Oct, day 7 of the test,
   the 07:30 start would have been 08:30. Local times have no offset.
+- **A date is a date somewhere.** The event log stamps in UTC and `place_order`'s "positions
+  opened today" compared that date with Sydney's: from 4 Oct a buy filled 10:00-11:00 would
+  have counted on the day before. Its test passed at 04:23 on Saturday (still Friday in UTC)
+  and failed the 15:00 deploy. A test that reads the clock must not depend on the hour it
+  runs; a stored day carries its timezone or is stored as the local day.
 - **A test that touched the real thing.** A test that built the real feed wrote the live
   doctor.json; another build's test run in this working tree did the same at 00:32. State
   paths are isolated for every test in conftest, not per test.
