@@ -345,6 +345,8 @@ def main() -> int:
     ap.add_argument("--client-id", type=int, default=46)
     ap.add_argument("--chunk", type=int, default=CHUNK_SESSIONS, help="sessions a request")
     ap.add_argument("--workers", type=int, default=WORKERS, help="requests in flight")
+    ap.add_argument("--news-only", action="store_true",
+                    help="only the news stocks outside the list (their live-collector days)")
     ap.add_argument("--oldest-first", action="store_true",
                     help="work the oldest chunk first (a second run beside the scheduled one)")
     args = ap.parse_args()
@@ -404,9 +406,12 @@ def main() -> int:
         t = datetime.now(SYD)
         return is_trading_day(t.date()) and NO_FETCH_HOURS[0] <= t.hour < NO_FETCH_HOURS[1]
 
-    stats = fetch_all(gw, root, sessions, codes, chunk=args.chunk, workers=args.workers,
-                      stop_now=stop_now, progress=lambda s: print(s, flush=True),
-                      oldest_first=args.oldest_first)  # fmt: skip
+    if args.news_only:  # the list's window is left to the scheduled run (26 Sep 2026)
+        stats = {"codes": 0, "requests": 0, "news_only": True}
+    else:
+        stats = fetch_all(gw, root, sessions, codes, chunk=args.chunk, workers=args.workers,
+                          stop_now=stop_now, progress=lambda s: print(s, flush=True),
+                          oldest_first=args.oldest_first)  # fmt: skip
     if extra and not stop_now():
         print(f"news stocks outside the list: {len(extra)} codes over {len(extra_sessions)} "
               f"sessions ({extra_sessions[0]}..{extra_sessions[-1]})", flush=True)  # fmt: skip
