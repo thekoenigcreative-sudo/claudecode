@@ -295,3 +295,70 @@ def test_the_simulator_never_touches_a_real_broker():
 
 
 _ = np
+
+
+# --------------------------------------------------------------------------- the search
+class _Cfg:
+    def __init__(self, root):
+        self.root = root
+        self.data_dir = root / "data"
+        self.raw = {}
+
+    def get(self, key, default=None):
+        return default
+
+
+def test_search_counts_every_idea_and_refuses_repeats(tmp_path):
+    from asxbot.lab.tsim import search
+
+    cfg = _Cfg(tmp_path)
+    a = search.register(cfg, {"kind": "rules", "family": "orb", "params": {"window": 10}}, "r", "t")
+    assert a["n"] == 1 and a["stage"] == "queued"
+    assert search.register(cfg, {"kind": "rules", "family": "orb", "params": {"window": 10}},
+                           "again", "t") is None  # fmt: skip
+    assert search.register(cfg, {"kind": "rules", "family": "nope"}, "r", "t") is None
+    assert search.register(cfg, {"kind": "rules", "family": "orb", "params": {"leverage": 5}},
+                           "not a parameter", "t") is None  # fmt: skip
+    assert search.register(cfg, {"kind": "ai", "addendum": "x" * 601}, "too long", "t") is None
+    b = search.register(cfg, {"kind": "new_family", "describe": "pairs"}, "r", "t")
+    assert b["stage"] == "needs_build" and search.n_tried(cfg) == 1
+
+
+def test_the_bar_rises_with_the_count_and_samples_rotate():
+    from asxbot.lab.tsim import search
+
+    assert search.check_bar(100) > search.check_bar(10) >= 1.0
+    assert search.practice_bar(100) > search.practice_bar(10)
+    days = [date(2026, 4, 1) + timedelta(days=i) for i in range(60)]
+    assert search.sample(days, 1) != search.sample(days, 2)
+    assert search.sample(days, 3) == sorted(search.sample(days, 3))
+
+
+def test_gate_demands_profit_trades_t_and_beating_yardsticks_and_old_rules():
+    from asxbot.lab.tsim import search
+
+    good = {"net": 900.0, "trades": 30, "t_stat": 3.0, "old_rules": -500.0, "worst_day": -100}
+    assert search.gate("check", good, 10, best_yard=100.0)[0]
+    ok, why = search.gate("check", {**good, "net": 50.0}, 10, best_yard=100.0)
+    assert not ok and "yardstick" in why
+    ok, why = search.gate("check", {**good, "old_rules": 1000.0}, 10, best_yard=0.0)
+    assert not ok and "old rules" in why
+
+
+def test_the_sealed_block_is_run_once_per_finalist_and_rotates_when_worn(tmp_path, monkeypatch):
+    from asxbot.lab.tsim import splits as S
+
+    cfg = _Cfg(tmp_path)
+    with pytest.raises(S.Sealed):
+        S.days(cfg, "sealed")
+    assert S.use_seal(cfg, "I0001") == 1
+    with pytest.raises(S.Sealed):
+        S.use_seal(cfg, "I0001")
+    S.use_seal(cfg, "I0002")
+    assert not S.rotate_if_worn(cfg, newest=date(2026, 12, 1))  # only 2 uses
+    S.use_seal(cfg, "I0003")
+    assert not S.rotate_if_worn(cfg, newest=date(2026, 10, 5))  # not 30 new days yet
+    assert S.rotate_if_worn(cfg, newest=date(2026, 12, 1))
+    d = S.current(cfg)
+    assert d["sealed"][0] > "2026-09-25" and ["2026-08-17", "2026-09-25"] in d["check"]
+    assert d["uses"] == []
