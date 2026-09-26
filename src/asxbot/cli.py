@@ -627,6 +627,9 @@ def build_parser() -> argparse.ArgumentParser:
     from asxbot.arena.cli import add_parsers as _arena_parsers
 
     _arena_parsers(sub)
+    from asxbot.lab.cli import add_parsers as _lab_parsers
+
+    _lab_parsers(sub)
     ibk = sub.add_parser("ibkr", help="IB Gateway live market data (read-only)").add_subparsers(
         dest="ibkr_cmd", required=True
     )

@@ -244,15 +244,21 @@ def scratch_arena(cfg: Config, scratch: Path, clock: Clock, day: date, universe:
 # --------------------------------------------------------------------------
 def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: pd.DataFrame,
                hist: HistoryBars | None = None, keep: Path | None = None,
-               universe: set[str] | None = None) -> dict:  # fmt: skip
-    """Both rule bots through one session. Returns the day's record (books, trades, gaps)."""
+               universe: set[str] | None = None, *, v2pb=None, dtpb=None,
+               agent=None) -> dict:  # fmt: skip
+    """Both rule bots through one session. Returns the day's record (books, trades, gaps).
+
+    The Practice Lab (26 Sep 2026, PRACTICE_LAB.md) passes a VARIANT's playbooks (`v2pb`,
+    `dtpb`: the frozen blocks with its changes) and, for the day trader's agent book, `agent`:
+    a stand-in for `daytrader.ask_agent` (the lab's own cached model call, never OpenClaw).
+    Without them this is the frozen rule-bot replay, unchanged."""
     from asxbot.arena.levels import load_playbook
 
     hist = hist or HistoryBars(history_root(), str((cfg.get("arena.fill") or {}).get(
         "minute_price", "close")))  # fmt: skip
     index = str(cfg.get("backtest.index_ticker", "^AXJO"))
-    v2pb = load_playbook(cfg, "asx_announcements_v2")
-    dtpb = load_playbook(cfg, "asx_daytrader")
+    v2pb = v2pb or load_playbook(cfg, "asx_announcements_v2")
+    dtpb = dtpb or load_playbook(cfg, "asx_daytrader")
     prev = prior_sessions(day, 1)
     prev_day = prev[0] if prev else day - timedelta(days=1)
     out: dict = {"day": day.isoformat(), "gaps": []}
@@ -270,6 +276,9 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
         return out
 
     scratch = Path(tempfile.mkdtemp(prefix=f"replay_{day:%m%d}_"))
+    real_ask = daytrader.ask_agent
+    if agent is not None:
+        daytrader.ask_agent = agent
     try:
         live = scratch / "announcements" / "live"
         live.mkdir(parents=True)
@@ -295,11 +304,11 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
 
         t = datetime.combine(day, time_cls(10, 0, 20), tzinfo=SYD)
         end = datetime.combine(day, time_cls(16, 30), tzinfo=SYD)
-        books = [(v2pb, "bot"), (dtpb, "bot")]
+        books = [(v2pb, "bot"), (dtpb, "bot")] + ([(dtpb, "agent")] if agent is not None else [])
         while t <= end:
             clock.t = t
             v2_flow.v2_bot_cycle(arena, v2pb, view, t, ann=day_ann)
-            daytrader.cycle(arena, dtpb, view, t, use_agent=False, refresh=False)
+            daytrader.cycle(arena, dtpb, view, t, use_agent=agent is not None, refresh=False)
             for pb, kind in books:
                 arena.broker.work(arena.account(pb, kind), t)
             for pb in (v2pb, dtpb):
@@ -315,6 +324,8 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
                               if k in ("status", "why", "decided_at")}  # fmt: skip
         out["v2"]["candidates"] = len(load_bot_state(arena.cfg.data_dir, day).get("candidates", []))
         out["daytrader"] = _book(arena, dtpb, day, hist)
+        if agent is not None:
+            out["daytrader"]["agent_book"] = _book(arena, dtpb, day, hist, kind="agent")
         sig = daytrader.load_state(arena.cfg.data_dir, day).get("signals", [])
         by_setup = pd.Series([s["setup"] for s in sig]).value_counts().to_dict() if sig else {}
         out["daytrader"]["setups"] = {
@@ -326,6 +337,7 @@ def replay_day(cfg: Config, day: date, codes: list[str], shorts: set[str], ann: 
         }  # fmt: skip
         return out
     finally:
+        daytrader.ask_agent = real_ask
         if keep is not None:
             shutil.copytree(scratch, keep / scratch.name, dirs_exist_ok=True)
         shutil.rmtree(scratch, ignore_errors=True)
@@ -345,10 +357,11 @@ def _index_move(hist: HistoryBars, index: str, day: date, prev_day: date) -> flo
     return round((float(b["close"].iloc[-1]) / float(a["close"].iloc[-1]) - 1) * 100, 3)
 
 
-def _book(arena, pb, day: date, hist: HistoryBars) -> dict:
-    """The bot's book after the day: its equity and every trade (an opening fill and the
-    exits that closed it), with fees, the initial risk and the R multiple."""
-    acct = arena.account(pb, "bot")
+def _book(arena, pb, day: date, hist: HistoryBars, kind: str = "bot") -> dict:
+    """The bot's (or, in the Practice Lab, the agent's) book after the day: its equity and
+    every trade (an opening fill and the exits that closed it), with fees, the initial risk
+    and the R multiple."""
+    acct = arena.account(pb, kind)
     prices = arena.broker.prices(acct, day)
     orders = sorted(acct.orders.values(), key=lambda o: o.order_id)
     trades = []

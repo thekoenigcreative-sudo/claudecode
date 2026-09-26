@@ -464,7 +464,11 @@ def detect(
             continue
         if ts.time() > scan_end or (until is not None and ts > until):
             break
-        for fn in DETECTORS.values():
+        for name, fn in DETECTORS.items():
+            # A setup whose block says `enabled: false` is not looked for (Practice Lab
+            # variants, 26 Sep 2026; the frozen blocks don't set it, so nothing changes live).
+            if (c.conf.get(name) or {}).get("enabled", True) is False:
+                continue
             s = fn(c, i)
             if s is not None and s.key not in fired:
                 fired.add(s.key)
