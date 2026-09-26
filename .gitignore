@@ -32,3 +32,6 @@ htmlcov/
 
 # replay workers' intermediate slices; the report and its JSON are what is kept
 reports/replay_ibkr_*_parts/
+
+# cloud session data (unzipped from the cloud-data branch)
+/cloud_data/
