@@ -198,6 +198,7 @@ def test_asxbot_missing_is_logged_and_exits_1(repo):
     assert line.startswith("could not run asxbot arena evening-due")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only behaviour (cloud runs on Linux)")
 def test_a_killed_run_leaves_its_last_lines_and_reads_as_not_returned(repo):
     """Run the launcher as its own process, kill it mid-report, and read what it left.
 
