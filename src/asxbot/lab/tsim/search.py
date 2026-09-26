@@ -261,6 +261,11 @@ def research_packet(cfg) -> str:
             + ", ".join(exhausted)
             + " - widen the search: other families, holding periods, signals."
         )
+    waiting_ai = sum(1 for i in ideas if i["stage"] == "queued" and i["spec"].get("kind") == "ai")
+    lines.append(f"AI-TRADER IDEAS WAITING: {waiting_ai} (each costs ~10 simulated AI days; "
+                 "at most "
+                 f"{AI_IDEAS_PER_NIGHT} is screened a night) - prefer rules ideas, which are "
+                 "nearly free, unless an AI idea is clearly better.")  # fmt: skip
     lines.append("RECENT IDEAS (newest last):")
     for i in ideas[-40:]:
         r = i["results"].get("practice") or {}
@@ -390,6 +395,34 @@ def sealed_run(cfg, idea: dict, inputs_for) -> dict:
                   why="; ".join(fails) or "passed the sealed block")  # fmt: skip
 
 
+AI_IDEAS_PER_NIGHT = 1
+
+
+def _order(cfg, todo: list[dict]) -> list[dict]:
+    """SPEND AI WHERE IT PAYS: rules ideas first (plain code, almost free), checks before new
+    screens; an idea for the AI trader itself costs ~10 simulated AI days, so at most
+    `tradesim.search.ai_ideas_per_night` of them are screened per night (Sydney date), and only
+    when no rules idea is waiting."""
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    conf = ((cfg.get("tradesim") or {}).get("search") or {}) if cfg is not None else {}
+    cap = int(conf.get("ai_ideas_per_night", AI_IDEAS_PER_NIGHT))
+    night = dt.now(ZoneInfo("Australia/Sydney")).strftime("%Y-%m-%d")
+    p = lab_dir(cfg) / "ai_screens.json"
+    done = store.read_json(p, {}) or {}
+    rules = [i for i in todo if i["spec"].get("kind") != "ai"]
+    ai = [i for i in todo if i["spec"].get("kind") == "ai"]
+    rules.sort(key=lambda i: (i["stage"] != "check", i["n"]))
+    ai.sort(key=lambda i: (i["stage"] != "check", i["n"]))
+    if rules or done.get(night, 0) >= cap:
+        return rules
+    if ai:
+        done[night] = done.get(night, 0) + 1
+        store.write_json(p, done)
+    return ai[:1]
+
+
 def tick(cfg, max_minutes: float = 50.0, propose_ok: bool = True, ask=None) -> str:
     """One unit of the never-ending search. Returns what it did."""
     import time as wall
@@ -427,7 +460,7 @@ def tick(cfg, max_minutes: float = 50.0, propose_ok: bool = True, ask=None) -> s
 def _tick_one(cfg, did: list, inputs_for, yard: dict, propose_ok: bool, ask) -> bool:
     """One move of the search; False when there is nothing more to do this tick."""
     ideas = load_ideas(cfg)
-    todo = [i for i in ideas if i["stage"] in ("queued", "check")]
+    todo = _order(cfg, [i for i in ideas if i["stage"] in ("queued", "check")])
     fin = [i for i in ideas if i["stage"] == "finalist"]
     if fin:
         i = sealed_run(cfg, fin[0], inputs_for)

@@ -897,6 +897,9 @@ tradesim:
     max_calls_per_day: 40      # a BUDGET guard (~200k tokens/day measured 26 Sep), not a style rule
   reader:
     model: claude-sonnet-5     # reads each post-cutoff announcement once; never decides
+  search:
+    ai_ideas_per_night: 1      # ideas for the AI trader itself cost ~10 simulated AI days each
+                               # (26 Sep: the team's researcher files several a day)
   budget:
     weekly_share: 0.15         # the lab's share of the weekly Claude allowance
     bots_reserve: 0.30         # never touched: the lab stops at 70% of the week
