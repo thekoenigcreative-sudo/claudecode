@@ -22,7 +22,10 @@ from pathlib import Path
 from asxbot import proc
 from asxbot.lab import store
 
-USAGE_STOP = 0.70  # Rick, 25 Sep 23:56: builds stop at 70% weekly usage; lab agent calls too
+# Rick, 25 Sep 23:56: builds stop at 70% weekly usage, and so do the lab's agent calls. The Foreman
+# passes his current rule (he can change or lift it in the Trader chat) as ASXBOT_LAB_USAGE_STOP.
+_STOP = os.environ.get("ASXBOT_LAB_USAGE_STOP", "0.70").strip().lower()
+USAGE_STOP = None if _STOP in ("none", "") else float(_STOP)
 
 
 class UsageStop(RuntimeError):

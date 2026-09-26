@@ -508,3 +508,29 @@ def test_ingest_registers_good_proposals_and_says_why_others_were_refused(cfg, t
     assert out["registered"] == ["dt-0001", "dt-0002"] and len(out["refused"]) == 1
     assert "may not be changed" in out["refused"][0]["why"]
     assert reg.load("dt-0002")["books"] == ["bot", "agent"]
+
+
+def test_the_evening_report_carries_the_lab_scoreboard(cfg, monkeypatch):
+    from asxbot.arena import report as R
+    from asxbot.lab import report as LR
+
+    assert R.practice_lab_lines(cfg) == []  # no lab yet: nothing added
+    store.write_json(store.lab_data(cfg) / "status.json", {"research_needed": False})
+    store.write_json(
+        store.lab_data(cfg) / "scoreboard.json",
+        {
+            "variants_tried": 4,
+            "winners": [],
+            "in_shadow": [
+                {
+                    "variant": "dt-0002",
+                    "book": "bot",
+                    "shadow": {"pnl": 312.5, "days": 3, "vs_frozen_bot": 120.0},
+                }
+            ],
+        },
+    )
+    lines = R.practice_lab_lines(cfg)
+    assert lines[0].startswith("Practice Lab: 4 variants tried, 1 in shadow trading")
+    assert "dt-0002 (bot): shadow +312 over 3 days" in lines[1] or "+313" in lines[1]
+    assert LR.evening_section(cfg) == lines

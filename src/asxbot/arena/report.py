@@ -605,7 +605,19 @@ def gather(arena: Arena, day: date | None = None) -> dict:
         "flags_for_claude": [
             {"ticker": r.get("ticker"), "flag": r.get("flag")} for r in today_rows("arena_flags")
         ],
+        # The Practice Lab's scoreboard (PRACTICE_LAB.md 6): simulated practice on real history,
+        # paper money, never mixed with the arena's own results above.
+        "practice_lab": practice_lab_lines(cfg),
     }
+
+
+def practice_lab_lines(cfg) -> list[str]:
+    try:
+        from asxbot.lab.report import evening_section
+
+        return evening_section(cfg)
+    except Exception:  # noqa: BLE001 - the report must arrive even if the lab's files are odd
+        return []
 
 
 def render_plain(facts: dict) -> str:
@@ -708,6 +720,11 @@ def render_plain(facts: dict) -> str:
         for a in facts["active_alerts"]:
             lines.append(f"- {a['key']}: {a['message']}")
 
+    if facts.get("practice_lab"):
+        lines.append("")
+        lines.append("<b>Practice Lab</b> (simulated on real history, paper money)")
+        lines += [escape(x) for x in facts["practice_lab"]]
+
     lines.append("")
     lines.append(f"Archive: {facts['archive']}")
     lines.append("Written by code (the agent did not write this one).")
@@ -743,6 +760,9 @@ def agent_brief(facts: dict) -> str:
         "- Cover: what you traded and why, what the limits refused, how you are doing against "
         "your yardstick bot, green days vs red days, and what you will watch next.\n"
         "- If you placed no trades, say why not - that is a real answer.\n"
+        "- If FACTS practice_lab has lines, end with them under the heading 'Practice Lab', word "
+        "for word: it is simulated practice on real history with paper money, never part of "
+        "today's arena results.\n"
         f"{settings_rule}"
         f"{down_rule}"
         "- Index membership comes from FACTS asx200_list, which is authoritative and dated "
