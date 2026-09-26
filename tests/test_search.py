@@ -191,7 +191,8 @@ def test_every_family_runs_end_to_end_and_the_log_is_written(synthetic, tmp_path
     tried = s.run(only=list(firsts.values()), progress=None)
     assert {r["id"] for r in tried} == set(firsts.values())
     for r in tried:
-        assert r["verdict"] in ("failed practice", "failed check", "finalist", "not run")
+        assert r["verdict"] in ("failed practice", "failed check", "finalist", "not run",
+                                "not run - no data")
     log, rep = report.write(tmp_path, tried, {"date": "2026-09-26", "data_note": "synthetic"})
     text = log.read_text(encoding="utf-8")
     assert "Survivorship" in text and all(i in text for i in firsts.values())
