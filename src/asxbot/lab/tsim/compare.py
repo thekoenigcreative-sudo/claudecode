@@ -45,6 +45,8 @@ def report(cfg, run_a: str, run_b: str, out: Path | None = None) -> Path:
          "| | " + run_a + " | " + run_b + " |", "|---|---|---|"]  # fmt: skip
     rows = [
         ("net after costs (IBKR)", lambda s: f"${s['net']:,.2f}"),
+        ("  made on the simulated days", lambda s: f"${s['net_days']:,.2f}"),
+        ("  across unsimulated gaps (not trading)", lambda s: f"${s['gap_pnl']:,.2f}"),
         ("closed trades", lambda s: s["trades"]),
         ("win rate", lambda s: "-" if s["win_rate"] is None else f"{s['win_rate']:.0%}"),
         ("brokerage", lambda s: f"${s['fees']:,.2f}"),
@@ -55,10 +57,18 @@ def report(cfg, run_a: str, run_b: str, out: Path | None = None) -> Path:
         ("model calls per day", lambda s: s["calls_per_day"]),
         ("thinking time per day", lambda s: f"{s['think_s_per_day']:.0f} s"),
         ("tokens (all days)", lambda s: _money(s["tokens"])),
-        ("  of which Opus", lambda s: _money(s["tokens"], "opus:") if "opus:output" in
-         s["tokens"] else "all (single agent)"),  # fmt: skip
-        ("  of which Sonnet", lambda s: _money(s["tokens"], "sonnet:") if "sonnet:output" in
-         s["tokens"] else "-"),  # fmt: skip
+        (
+            "  of which Opus",
+            lambda s: (
+                _money(s["tokens"], "opus:")
+                if "opus:output" in s["tokens"]
+                else "all (single agent)"
+            ),
+        ),  # fmt: skip
+        (
+            "  of which Sonnet",
+            lambda s: _money(s["tokens"], "sonnet:") if "sonnet:output" in s["tokens"] else "-",
+        ),  # fmt: skip
         ("API-equivalent cost", lambda s: f"${s['tokens'].get('cost_usd', 0):,.2f}"),
     ]
     for name, f in rows:
@@ -70,10 +80,11 @@ def report(cfg, run_a: str, run_b: str, out: Path | None = None) -> Path:
         mv = da[day].get("market_move_pct")
         L.append(f"| {day} | {'' if mv is None else f'{mv:+.2f}%'} | ${da[day]['pnl']:,.2f} | "
                  f"${db[day]['pnl']:,.2f} |")  # fmt: skip
-    diff = sb["net"] - sa["net"]
+    diff = sb["net_days"] - sa["net_days"]
     L += ["", "## Plainly", "",
           f"Over {len(common)} days the {'second' if diff > 0 else 'first'} did better by "
-          f"${abs(diff):,.2f} after costs. {len(common)} days is a small sample: this is a first "
+          f"${abs(diff):,.2f} after costs, on what was made on the simulated days themselves. "
+          f"{len(common)} days is a small sample: this is a first "
           "reading, not a verdict (WINNER.md's bar needs 40+ trades on the sealed block and 10+ "
           "shadow days)."]  # fmt: skip
     out = out or Path(cfg.root) / "reports" / f"tsim_compare_{run_a}_vs_{run_b}.md"
