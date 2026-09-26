@@ -575,3 +575,34 @@ def test_a_tick_waiting_for_budget_does_not_spin(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "budget_ok", lambda cfg=None: (False, "spent"))
     out = search.tick(cfg, max_minutes=0.05, propose_ok=False)
     assert out.count("waiting for budget") == 1
+
+
+def test_the_cheaper_team_reruns_specialists_only_when_something_changed(mkt, tmp_path):
+    from asxbot.lab.tsim.team import TeamTrader
+
+    root, summ = mkt
+
+    def run(every):
+        m = Market(D1, History(root), ["AAA"], None, summ)
+        b = broker_for(m)
+        n = {"spec": 0}
+
+        def ask(prompt, *, system, model, effort, cfg=None, **kw):
+            line = system[system.index("ROLE:"):].split("\n")[0]
+            if "specialist" in line:
+                n["spec"] += 1
+            text = ('{"watchlist": [{"code": "AAA", "why": "x"}]}' if "scanner" in line else
+                    '{"alerts": [{"type": "time", "at": "10:30"}, {"type": "time", "at": '
+                    '"10:35"}, {"type": "time", "at": "10:40"}]}' if "DECISION" in line
+                    else "{}")  # fmt: skip
+            return {"text": text, "seconds": 1.0, "usage": {}}
+
+        t = TeamTrader(journal=Journal(tmp_path / f"r{every}"), ask=ask, register_ideas=False,
+                       specialists_every_min=every)  # fmt: skip
+        book = AlertBook()
+        v = TraderView(m, b, NoAnon())
+        t.bind_alerts(book, v.anon)
+        run_day(m, b, t, book, v)
+        return n["spec"]
+
+    assert run(20) < run(None)

@@ -142,7 +142,8 @@ class TeamTrader(Trader):
     def __init__(self, *, journal: Journal, cfg=None, ask=None, log_dir: Path | None = None,
                  max_wakes_per_day: int = 18, scan_every_min: int = 10,
                  max_readers: int = 12, name: str = "team", decider=OPUS, risk=OPUS,
-                 staff=SONNET, reader=SONNET_LOW, register_ideas: bool = True):  # fmt: skip
+                 staff=SONNET, reader=SONNET_LOW, register_ideas: bool = True,
+                 specialists_every_min: int | None = 20):  # fmt: skip
         self.name = name
         self.journal = journal
         self.cfg = cfg
@@ -154,6 +155,12 @@ class TeamTrader(Trader):
         self.models = {"decider": decider, "risk": risk, "scanner": staff, "specialist": staff,
                        "reader": reader, "researcher": decider}  # fmt: skip
         self.register_ideas = register_ideas
+        # The cost cut (26 Sep: the first team spent ~85% of its tokens on specialists re-reading
+        # the same watchlist every wake): specialists re-run only when the watchlist changed, a
+        # watched stock or a position did something, or this many minutes passed; otherwise
+        # their last proposals stand. None: every wake (the first team, as compared).
+        self.specialists_every = (timedelta(minutes=int(specialists_every_min))
+                                  if specialists_every_min else None)  # fmt: skip
         self._reset_day()
 
     def _reset_day(self):
@@ -164,6 +171,9 @@ class TeamTrader(Trader):
         self.read: dict[str, dict] = {}
         self.notes: list[str] = []
         self.day_log: list[dict] = []
+        self.last_props: dict = {}
+        self.props_at: datetime | None = None
+        self.props_for: tuple = ()
 
     # ------------------------------------------------------------------ calls
     def _call(self, role: str, system: str, prompt: str, v: TraderView, d: Decision):
@@ -282,6 +292,18 @@ class TeamTrader(Trader):
                 props[f] = ps
         return props, secs
 
+    def _specialists_due(self, v, reasons, dossier, phase) -> bool:
+        if self.specialists_every is None or self.props_at is None or phase != "SESSION":
+            return True
+        if tuple(sorted(dossier)) != self.props_for:
+            return True
+        if v.m.now - self.props_at >= self.specialists_every:
+            return True
+        watched = {v.anon.real(c) for c in dossier} | set(v.b.acct.positions)
+        return any(r.get("code") in watched and r.get("type") in (
+            "price_above", "price_below", "volume", "move", "news", "scanner", "order")
+            for r in reasons)  # fmt: skip
+
     def _decide(self, v, d, phase, reasons, props, dossier, lessons) -> tuple[dict, float]:
         acct = v.account()
         parts = [f"NOW: {v.when()}  [{phase}]",
@@ -366,7 +388,12 @@ class TeamTrader(Trader):
         lat += self._scanner(v, d, force_scan)
         v.m.now = t0 + timedelta(seconds=lat)
         dossier = self._dossier(v)
-        props, s = self._specialists(v, d, dossier)
+        if self._specialists_due(v, reasons, dossier, phase):
+            props, s = self._specialists(v, d, dossier)
+            self.last_props, self.props_at = props, v.m.now
+            self.props_for = tuple(sorted(dossier))
+        else:
+            props, s = self.last_props, 0.0
         lat += s
         v.m.now = t0 + timedelta(seconds=lat)
         lessons = self.journal.lessons(v.m.day.isoformat())

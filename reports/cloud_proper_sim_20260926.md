@@ -99,6 +99,11 @@ learns its way to a profit.
 **Opus high vs xhigh** (same 10 days, same code): high -$407, xhigh **-$980**, with 2.6x the
 thinking time and 1.8x the cost. **Decisions stay on high.**
 
+**B: the AI choosing among A's stocks in play** (same 10 days as the high/xhigh test): **-$349**
+(11 trades, 18% winners). Yardstick A (rules) on the same days: **-$99**. The free AI trader:
+-$407. **B did not beat A** - on these days the AI's reading of in-play stocks cost money compared
+with taking the breakouts mechanically.
+
 ### 5. The team vs the single agent (the same 10 days)
 
 | | Single agent | Team |
@@ -158,6 +163,15 @@ build. The bar rises with every idea tried (practice t >= 1.2 by now).
 - **Survivorship**: today's stock list on past days.
 - **Samples are small**: 10 AI days is a first reading. WINNER.md needs 40+ trades on the sealed
   block and 10+ shadow days.
+
+## Tests
+
+The whole suite passes on Linux except one test that was already failing before this build and
+fails only at certain hours: `tests/test_ibkr_feed.py::test_the_report_labels_every_kind_of_decision_by_its_prices`
+stamps its events with `date.today()` (the machine's date) while the report reads the Sydney day -
+between 00:00 Sydney and 00:00 UTC they differ (LEARNINGS #29's kind of bug). Left for the PC build:
+it is in the live report's code, which is frozen during the 10-day test. Four Windows-only tests are
+skipped on Linux (they still run on Windows).
 
 ## What happens next
 
