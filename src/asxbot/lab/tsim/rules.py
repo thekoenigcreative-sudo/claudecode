@@ -85,6 +85,14 @@ class RuleTrader(Trader):
         m = v.m
         if m.index is None:
             return False
+        if m.n_visible == 0:
+            # before the open (drift enters in the opening auction): the index's trend -
+            # yesterday's close against its 10-day average
+            s = m.summaries.before("^AXJO", m.day, 10) if m.summaries is not None else None
+            if s is None or len(s) < 5:
+                return False
+            up = float(s["close"].iloc[-1]) > float(s["close"].mean())
+            return up if side == "buy" else not up
         if r == "index_day":
             mv = m.index_move_pct()
             return mv is not None and ((mv > 0) if side == "buy" else (mv < 0))
@@ -206,6 +214,8 @@ class ORB(RuleTrader):
             hh, mm = p["rank_at"].split(":")
             if v.m.now.time() < time(int(hh), int(mm)):
                 return []
+            if p["regime"] == "first30" and v.m.n_visible < 31:
+                return []  # the first 30 minutes' direction is not known before 10:30
             news = v.news_codes()
             cands = []
             for code in v.m.bars:
