@@ -48,7 +48,9 @@ def week_state() -> dict:
 
 def budget_ok(cfg=None) -> tuple[bool, str]:
     conf = ((cfg.get("tradesim") or {}).get("budget") or {}) if cfg is not None else {}
-    share = float(conf.get("weekly_share", 0.15))
+    # ASXBOT_TSIM_WEEKLY_SHARE: a session's own share (the cloud session on its one-time credit,
+    # 26 Sep); the stop at 1 - bots_reserve (70% of the week) holds whatever the share
+    share = float(os.environ.get("ASXBOT_TSIM_WEEKLY_SHARE") or conf.get("weekly_share", 0.15))
     reserve = float(conf.get("bots_reserve", 0.30))
     st = week_state()
     if st["lab_share"] >= share:
