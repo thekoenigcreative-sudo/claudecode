@@ -749,6 +749,23 @@ Standing rule 12 below.
 
 ---
 
+## 30. The cloud's data was cleaner than the PC's
+
+26 Sep, bringing the cloud's rules-only search home. Its engine listed the stocks by their
+history folders. Rick's PC still has a `PRN` folder from the first night's fetch, from before
+the `PRN_` naming (#29). Both folders read as PRN, so PRN_'s bars went in twice every day. The
+cloud VM's copy of the data had no old folder, so its 1,119 tests passed. On the PC every news
+idea that looks a stock up by its code crashed. Deduplicated and tested; with that fixed, the
+PC's own history reproduces the cloud's results to the dollar.
+
+- **A copy of the data is not the data.** Work done on an export gets re-run once on the
+  machine that owns the original before its numbers are trusted there.
+- **A count kept in a gitignored file stays where it was made.** The search's count of ideas
+  tried (which sets the bar every later idea must clear) lived in the VM's `data/`. It was
+  seeded on the PC from the committed report before anything could run here.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not

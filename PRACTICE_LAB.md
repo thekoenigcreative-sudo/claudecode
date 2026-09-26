@@ -117,3 +117,10 @@ and `reports/cloud_rules_search_<date>.md`.
 
     set ASXBOT_HISTORY_DIR=<the IBKR history folder>   (default: the lab's own cache)
     python -m asxbot.search all
+
+On Rick's PC (26 Sep): the search's cache is rebuilt from the history into
+%LOCALAPPDATA%\asx-bot\search\cache (outside Google Drive; ASXBOT_SEARCH_CACHE overrides).
+`data/search/tried.jsonl` was seeded from reports/cloud_rules_search_20260926.json, so the count
+of ideas tried carries on at N = 72 and `run` tries only ideas added after them. Never rewrite
+or delete it: it sets the bar every later idea must clear. `report` rebuilds the report with
+blank summary sections unless `--summary/--next/--checks` are given.

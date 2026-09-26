@@ -197,3 +197,27 @@ def test_every_family_runs_end_to_end_and_the_log_is_written(synthetic, tmp_path
     text = log.read_text(encoding="utf-8")
     assert "Survivorship" in text and all(i in text for i in firsts.values())
     assert "Nothing passed" in rep.read_text(encoding="utf-8")
+
+
+def test_the_cache_stays_out_of_google_drive_unless_a_data_folder_is_given(tmp_path, monkeypatch):
+    from asxbot.search.data import cache_dir
+
+    monkeypatch.delenv("ASXBOT_SEARCH_CACHE", raising=False)
+    monkeypatch.delenv("ASXBOT_DATA_DIR", raising=False)
+    monkeypatch.setenv("ASXBOT_LOCAL_APPDATA", str(tmp_path / "local"))
+    assert cache_dir() == tmp_path / "local" / "asx-bot" / "search" / "cache"
+    assert cache_dir(tmp_path / "d") == tmp_path / "d" / "search" / "cache"
+    monkeypatch.setenv("ASXBOT_DATA_DIR", str(tmp_path / "e"))
+    assert cache_dir() == tmp_path / "e" / "search" / "cache"
+    monkeypatch.setenv("ASXBOT_SEARCH_CACHE", str(tmp_path / "c"))
+    assert cache_dir(tmp_path / "d") == tmp_path / "c"
+
+
+def test_an_old_prn_folder_next_to_prn_underscore_is_one_code(tmp_path):
+    # Rick's PC has both (the PRN folder predates the PRN_ naming, LEARNINGS #29); reading
+    # both read PRN_ twice a day and broke every idea that looks a stock up by its code
+    from asxbot.search.data import Market
+
+    for name in ("PRN", "PRN_", "BHP", "^AXJO"):
+        (tmp_path / name).mkdir()
+    assert Market(tmp_path, tmp_path / "data").codes() == ["BHP", "PRN"]

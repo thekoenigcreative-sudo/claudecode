@@ -8,7 +8,10 @@ Where the data lives (never in git):
             (%LOCALAPPDATA%\\asx-bot\\ibkr\\history, or ASXBOT_LOCAL_APPDATA on Linux).
   data      the repo's data/ folder (announcements/history, announcements/live, universe/):
             --data, ASXBOT_DATA_DIR, or <repo>/data.
-  cache     derived arrays, rebuilt from the history on demand: <data>/search/cache.
+  cache     derived arrays, rebuilt from the history on demand: ASXBOT_SEARCH_CACHE, else
+            <data>/search/cache when the data folder was given (--data, ASXBOT_DATA_DIR),
+            else %LOCALAPPDATA%\\asx-bot\\search\\cache - outside Google Drive, like the
+            lab's own bulky files (lab/store.py). Only tried.jsonl etc. stay in <data>/search.
 
 The minute grid runs 09:59 to 16:12 Sydney. In the IBKR bars (checked 26 Sep on three days,
 ~1,000 stock-days) the OPENING AUCTION is in a 09:59 bar (grid index 0): that bar's OPEN equals
@@ -69,6 +72,17 @@ def data_dir(explicit: str | Path | None = None) -> Path:
     if env:
         return Path(env)
     return Path(__file__).resolve().parents[3] / "data"
+
+
+def cache_dir(data: str | Path | None = None) -> Path:
+    env = os.environ.get("ASXBOT_SEARCH_CACHE")
+    if env:
+        return Path(env)
+    if data or os.environ.get("ASXBOT_DATA_DIR"):
+        return data_dir(data) / "search" / "cache"
+    from asxbot.localdir import asx_local
+
+    return asx_local() / "search" / "cache"
 
 
 def code_of(folder: str) -> str:
@@ -133,7 +147,7 @@ class Market:
     def __init__(self, history: str | Path | None = None, data: str | Path | None = None):
         self.history = history_dir(history)
         self.data = data_dir(data)
-        self.cache = self.data / "search" / "cache"
+        self.cache = cache_dir(data)
         self._daily: pd.DataFrame | None = None
         self._index: pd.DataFrame | None = None
         self._ann: pd.DataFrame | None = None
@@ -143,11 +157,13 @@ class Market:
     def codes(self) -> list[str]:
         if not self.history.exists():
             return []
-        return sorted(
+        # a set: an old PRN folder from before the PRN_ naming (LEARNINGS #29) is still on
+        # Rick's PC next to PRN_, and both are the one code, read through safe_stem
+        return sorted({
             code_of(p.name)
             for p in self.history.iterdir()
             if p.is_dir() and not p.name.startswith(("^", "_", "."))
-        )
+        })
 
     def days_on_disk(self) -> list[date]:
         d = self.history / INDEX
