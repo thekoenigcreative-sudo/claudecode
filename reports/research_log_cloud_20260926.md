@@ -1,589 +1,177 @@
 # Research log (the CLOUD session's search, 26 Sep 2026): the trading simulator's strategy search
 
-*RULES-ONLY SEARCH - fake money, plain-code rules, IBKR 1-minute history. Not live, not a verdict on the AI trader.*
-
-*Survivorship bias: the universe is today's index list applied to every past day, so the stocks that later fell out (often after falling) are missing. Results are biased upward; a loss here is a stronger negative than it looks, and a profit is weaker than it looks.*
-
-Rebuilt 2026-09-26 11:06 from data/search/tried.jsonl. Ideas tried: **72**. The check-set bar now stands at t >= 2.92 (sqrt(2 ln N), N = every idea tried).
-
-IBKR 1-minute history for 540 codes and the ASX 200 index, 2026-03-26 to 2026-09-25 (129 sessions): practice (TUNE) 66 sessions, check (VALIDATE) 33, sealed (LOCKED) 30. Announcements in the archive: 405875 (73567 price-sensitive). Stock-days with a closing-auction print: 94%. Frozen rule bots for comparison: replay_ibkr_20260926_1319.json.
-
-## A01 - orb_inplay (defaults)
-
-- Idea #1 (wave 1, parent -), tried 2026-09-26T10:52:43.
-- Why it might work: Yardstick A as the brief gives it: opening-window RVOL ranks the day's stocks in play; with a catalyst, the first 5-minute range's break in the opening candle's direction often runs all day (Zarattini & Aziz 2023, US).
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 46 trades, -2,604 after costs, win rate 28.3%, t -2.869, worst day -274, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,604
-
-## A02 - orb_inplay (window=10)
-
-- Idea #2 (wave 1, parent A01), tried 2026-09-26T10:52:55.
-- Why it might work: A 10-minute range filters the ASX's noisy first minutes after a staggered open; fewer, better-defined breaks.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 52 trades, -1,104 after costs, win rate 40.4%, t -1.294, worst day -269, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,104
-
-## A03 - orb_inplay (window=15)
-
-- Idea #3 (wave 1, parent A01), tried 2026-09-26T10:52:56.
-- Why it might work: A 15-minute range: wider stop, fewer false breaks, lower cost per R.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 49 trades, -701 after costs, win rate 42.9%, t -0.776, worst day -269, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -701
-
-## A04 - orb_inplay (exit=trail)
-
-- Idea #4 (wave 1, parent A01), tried 2026-09-26T10:52:58.
-- Why it might work: The brief's trailing-stop variant: keep the trend days, give back less on reversals (trail 1R once 1R up).
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 46 trades, -2,611 after costs, win rate 30.4%, t -2.865, worst day -274, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,611
-
-## A05 - orb_inplay (top_k=2)
-
-- Idea #5 (wave 1, parent A01), tried 2026-09-26T10:52:59.
-- Why it might work: Only the two most in-play stocks: if RVOL rank carries the edge, the top of the list should be better than the third.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 33 trades, -2,099 after costs, win rate 24.2%, t -2.778, worst day -274, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,099
-
-## B01 - drift (buckets=['results'], hold=2)
-
-- Idea #6 (wave 1, parent -), tried 2026-09-26T10:53:00.
-- Why it might work: Post-earnings drift: prices underreact to results, and a strong day-0 reaction keeps drifting (Bernard & Thomas 1989); 2-day hold.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 23 trades, +119 after costs, win rate 43.5%, t 0.102, worst day -774, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - no better than the frozen rule bot (-1,617)
-
-## B02 - drift (buckets=['results'], hold=5)
-
-- Idea #7 (wave 1, parent B01), tried 2026-09-26T10:53:03.
-- Why it might work: Results drift over a week (LEARNINGS #9: results were the only type with a pulse - a hypothesis from a slice, so it is tested here out of sample).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 18 trades, +987 after costs, win rate 55.6%, t 0.783, worst day -307, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 18 trades (fewer than 20); no better than the frozen rule bot (-749)
-
-## B03 - drift (buckets=['results'], hold=10)
-
-- Idea #8 (wave 1, parent B01), tried 2026-09-26T10:53:05.
-- Why it might work: Results drift over two weeks: the literature's drift is slow.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 13 trades, -391 after costs, win rate 53.8%, t -0.272, worst day -408, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -391; 13 trades (fewer than 20); no better than the frozen rule bot (-2,127)
-
-## B04 - drift (buckets=['guidance_up'], hold=5)
-
-- Idea #9 (wave 1, parent -), tried 2026-09-26T10:53:08.
-- Why it might work: Guidance upgrades are revisions analysts follow over days.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 2 trades, -217 after costs, win rate 0.0%, t -0.544, worst day -137, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -217; 2 trades (fewer than 20); no better than the frozen rule bot (-1,953)
-
-## B05 - drift (buckets=['contract'], hold=5)
-
-- Idea #10 (wave 1, parent -), tried 2026-09-26T10:53:08.
-- Why it might work: Contract wins in small/mid caps are digested slowly by thinly-covered names.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 21 trades, -296 after costs, win rate 61.9%, t -0.213, worst day -675, frozen bot same days +1,736, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -296; no better than the frozen rule bot (-2,032)
-
-## B06 - drift (buckets=['drilling'], hold=5)
-
-- Idea #11 (wave 1, parent -), tried 2026-09-26T10:53:08.
-- Why it might work: Drilling/assay news: retail follow-through over days in explorers.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 11 trades, -1,172 after costs, win rate 45.5%, t -0.763, worst day -935, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,172; 11 trades (fewer than 20); no better than the frozen rule bot (-2,908)
-
-## B07 - drift (buckets=['takeover'], hold=10, react_max=0.6)
-
-- Idea #12 (wave 1, parent -), tried 2026-09-26T10:53:09.
-- Why it might work: Takeover news: the price sits under the offer and closes the gap as the deal firms up (merger arbitrage in miniature).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 1 trades, -129 after costs, win rate 0.0%, t -1.678, worst day -57, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -129; 1 trades (fewer than 20); no better than the frozen rule bot (-1,865)
-
-## B08 - drift (hold=5)
-
-- Idea #13 (wave 1, parent -), tried 2026-09-26T10:53:09.
-- Why it might work: All the brief's types together (results, guidance up, contracts, drilling, takeovers): the broadest drift test, most trades.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 41 trades, -1,344 after costs, win rate 51.2%, t -0.615, worst day -840, frozen bot same days +1,736, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -1,344; no better than the frozen rule bot (-3,080)
-
-## B09 - drift (buckets=['guidance_down'], hold=5, direction=against)
-
-- Idea #14 (wave 1, parent -), tried 2026-09-26T10:53:13.
-- Why it might work: Guidance downgrades long only: buy the overreaction after a big fall.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 1 trades, -612 after costs, win rate 0.0%, t -1.116, worst day -535, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -612; 1 trades (fewer than 20); no better than the frozen rule bot (-2,348)
-
-## C01 - orb_inplay (regime=index_ma)
-
-- Idea #15 (wave 1, parent A01), tried 2026-09-26T10:53:13.
-- Why it might work: Longs only when the index closed above its 20-session average: breakouts fail more in a falling market.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 10 trades, -444 after costs, win rate 30.0%, t -0.922, worst day -250, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -444; 10 trades (fewer than 20)
-
-## C02 - orb_inplay (regime=first30)
-
-- Idea #16 (wave 1, parent A01), tried 2026-09-26T10:53:14.
-- Why it might work: Only in the direction of the index's first 30 minutes (the day's tone); entries wait until 10:31.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 16 trades, -311 after costs, win rate 37.5%, t -1.102, worst day -137, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -311; 16 trades (fewer than 20)
-
-## C03 - orb_inplay (close_cap=0.2)
-
-- Idea #17 (wave 1, parent A01), tried 2026-09-26T10:53:15.
-- Why it might work: Closing-volume cap: never hold more than 20% of the usual closing auction, so the flat-by-close exit is always absorbed (9 stuck positions in the replay).
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 46 trades, -2,604 after costs, win rate 28.3%, t -2.869, worst day -274, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,604
-
-## C04 - orb_inplay (regime=index_ma, close_cap=0.2)
-
-- Idea #18 (wave 1, parent A01), tried 2026-09-26T10:53:17.
-- Why it might work: Both C filters on A together.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 10 trades, -444 after costs, win rate 30.0%, t -0.922, worst day -250, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -444; 10 trades (fewer than 20)
-
-## C05 - drift (hold=5, regime=index_ma)
-
-- Idea #19 (wave 1, parent B08), tried 2026-09-26T10:53:18.
-- Why it might work: Drift with the regime filter: underreaction is continued more readily in a rising market.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 15 trades, -183 after costs, win rate 60.0%, t -0.138, worst day -768, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -183; 15 trades (fewer than 20); no better than the frozen rule bot (-1,919)
-
-## C06 - drift (buckets=['results'], hold=5, regime=index_ma)
-
-- Idea #20 (wave 1, parent B02), tried 2026-09-26T10:53:22.
-- Why it might work: Results drift with the regime filter.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 1 trades, +51 after costs, win rate 100.0%, t 0.271, worst day -78, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 1 trades (fewer than 20); no better than the frozen rule bot (-1,685)
-
-## A06 - orb_inplay (catalyst=news)
-
-- Idea #21 (wave 2, parent A01), tried 2026-09-26T10:53:24.
-- Why it might work: News-only catalyst: a gap without news may be flow that reverses; news is information that persists.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 41 trades, -2,060 after costs, win rate 26.8%, t -2.305, worst day -397, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,060
-
-## A07 - orb_inplay (catalyst=none)
-
-- Idea #22 (wave 2, parent A01), tried 2026-09-26T10:53:25.
-- Why it might work: A control: no catalyst at all. If this does as well, the catalyst adds nothing.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 34 trades, -1,133 after costs, win rate 32.4%, t -1.36, worst day -350, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,133
-
-## A08 - orb_inplay (min_rvol=3.0)
-
-- Idea #23 (wave 2, parent A01), tried 2026-09-26T10:53:27.
-- Why it might work: Only truly in-play stocks (3x usual opening volume); fewer, stronger days.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 44 trades, -2,137 after costs, win rate 29.5%, t -2.473, worst day -274, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,137
-
-## A09 - orb_inplay (shorts=True)
-
-- Idea #24 (wave 2, parent A01), tried 2026-09-26T10:53:28.
-- Why it might work: The short mirror in the ASX 200 (shortable): down-candle openings with news break down as well as up.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 91 trades, -2,595 after costs, win rate 37.4%, t -1.817, worst day -401, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,595
-
-## A10 - orb_inplay (min_r_over_cost=6.0)
-
-- Idea #25 (wave 2, parent A01), tried 2026-09-26T10:53:29.
-- Why it might work: Costs eat small ranges: require 1R to be 6x the round trip, not 3x.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 19 trades, -1,238 after costs, win rate 26.3%, t -2.221, worst day -250, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,238; 19 trades (fewer than 20)
-
-## A11 - orb_inplay (window=15, exit=trail, trail_r=2.0, trail_after_r=2.0)
-
-- Idea #26 (wave 2, parent A03), tried 2026-09-26T10:53:31.
-- Why it might work: Wide range with a loose trail: let the trend days pay for the chop.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 49 trades, -737 after costs, win rate 42.9%, t -0.838, worst day -269, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -737
-
-## A12 - orb_inplay (risk_pct=0.5, top_k=5)
-
-- Idea #27 (wave 2, parent A01), tried 2026-09-26T10:53:32.
-- Why it might work: Spread the same risk over more names: lower variance, same edge if it is there (costs rise per trade).
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 67 trades, -1,657 after costs, win rate 31.3%, t -2.069, worst day -317, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,657
-
-## B10 - drift (hold=5, entry=open1)
-
-- Idea #28 (wave 2, parent B08), tried 2026-09-26T10:53:33.
-- Why it might work: Enter at the next open instead of the day-0 auction: avoids paying the close's spike, sees the overnight.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 41 trades, -2,125 after costs, win rate 43.9%, t -0.819, worst day -1,084, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,125; no better than the frozen rule bot (-3,861)
-
-## B11 - drift (hold=5, stop_pct=0.08)
-
-- Idea #29 (wave 2, parent B08), tried 2026-09-26T10:53:37.
-- Why it might work: An 8% stop on the daily low: cut the reversals of the reaction.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 44 trades, -1,373 after costs, win rate 47.7%, t -0.699, worst day -758, frozen bot same days +1,736, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -1,373; no better than the frozen rule bot (-3,109)
-
-## B12 - drift (hold=5, react_min=0.06)
-
-- Idea #30 (wave 2, parent B08), tried 2026-09-26T10:53:41.
-- Why it might work: Only big reactions (6%+ against the index): stronger news, stronger drift.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 25 trades, +488 after costs, win rate 56.0%, t 0.261, worst day -586, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - no better than the frozen rule bot (-1,248)
-
-## B13 - drift (hold=5, react_min=0.01, react_max=0.03)
-
-- Idea #31 (wave 2, parent B08), tried 2026-09-26T10:53:45.
-- Why it might work: Small reactions: underreaction is largest where the market barely moved.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 28 trades, -1,495 after costs, win rate 42.9%, t -0.718, worst day -1,005, frozen bot same days +1,736, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -1,495; no better than the frozen rule bot (-3,231)
-
-## B14 - drift (hold=5, ps_only=False)
-
-- Idea #32 (wave 2, parent B08), tried 2026-09-26T10:53:49.
-- Why it might work: Include non-price-sensitive announcements of the same types (more trades).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 45 trades, +501 after costs, win rate 51.1%, t 0.228, worst day -768, frozen bot same days +1,736, stuck at close 1.
-- Verdict: **failed practice** - no better than the frozen rule bot (-1,235)
-
-## B15 - drift (hold=5, min_turnover=5000000.0)
-
-- Idea #33 (wave 2, parent B08), tried 2026-09-26T10:53:56.
-- Why it might work: Liquid names only: costs and stuck exits fall; does the drift survive?
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 30 trades, -1,735 after costs, win rate 43.3%, t -0.994, worst day -897, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,735; no better than the frozen rule bot (-3,471)
-
-## G01 - gap_fade (defaults)
-
-- Idea #34 (wave 3, parent -), tried 2026-09-26T10:54:00.
-- Why it might work: No-news gaps down of 3%+ in liquid names are often flow, not information; buy the turn at 10:30 with a stop under the low, out at the close.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 72 trades, -2,397 after costs, win rate 31.9%, t -2.536, worst day -413, frozen bot same days -4,607, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -2,397
-
-## G02 - gap_fade (gap_min=0.05)
-
-- Idea #35 (wave 3, parent G01), tried 2026-09-26T10:54:02.
-- Why it might work: Only big no-news gaps (5%+): more overshoot to recover.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 20 trades, -130 after costs, win rate 40.0%, t -0.284, worst day -139, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -130
-
-## G03 - gap_fade (entry_at=11:00)
-
-- Idea #36 (wave 3, parent G01), tried 2026-09-26T10:54:03.
-- Why it might work: Wait until 11:00: the low is more often in by then.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 78 trades, -2,536 after costs, win rate 30.8%, t -2.706, worst day -411, frozen bot same days -4,607, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -2,536
-
-## L01 - late_trend (defaults)
-
-- Idea #37 (wave 3, parent -), tried 2026-09-26T10:54:04.
-- Why it might work: Intraday momentum into the close (Gao, Han, Li & Zhou 2018): the day's strong, heavy-volume movers keep rising into the closing auction.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 130 trades, -3,803 after costs, win rate 22.3%, t -6.214, worst day -242, frozen bot same days -4,607, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -3,803
-
-## L02 - late_trend (catalyst=news)
-
-- Idea #38 (wave 3, parent L01), tried 2026-09-26T10:54:05.
-- Why it might work: Only movers with price-sensitive news today.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 51 trades, -1,631 after costs, win rate 19.6%, t -3.692, worst day -193, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,631
-
-## L03 - late_trend (regime=index_ma)
-
-- Idea #39 (wave 3, parent L01), tried 2026-09-26T10:54:07.
-- Why it might work: Late momentum only in a rising market.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 47 trades, -1,161 after costs, win rate 29.8%, t -2.726, worst day -190, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,161
-
-## R01 - reversal (defaults)
-
-- Idea #40 (wave 3, parent -), tried 2026-09-26T10:54:08.
-- Why it might work: Short-term reversal: a liquid stock's big no-news drop is often liquidity demand that is repaid the next day (Lehmann 1990; Nagel 2012).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 228 trades, -12,989 after costs, win rate 32.0%, t -4.103, worst day -1,025, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -12,989; no better than the frozen rule bot (-14,725)
-
-## R02 - reversal (hold=3)
-
-- Idea #41 (wave 3, parent R01), tried 2026-09-26T10:54:09.
-- Why it might work: The same, held three sessions.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 91 trades, -1,899 after costs, win rate 46.2%, t -0.576, worst day -1,241, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,899; no better than the frozen rule bot (-3,635)
-
-## R03 - reversal (drop_min=0.07)
-
-- Idea #42 (wave 3, parent R01), tried 2026-09-26T10:54:09.
-- Why it might work: Only big drops (7%+).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 75 trades, -6,070 after costs, win rate 30.7%, t -3.336, worst day -740, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -6,070; no better than the frozen rule bot (-7,806)
-
-## R04 - reversal (regime=index_ma)
-
-- Idea #43 (wave 3, parent R01), tried 2026-09-26T10:54:10.
-- Why it might work: Reversal only in a rising market (a falling one keeps falling).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 90 trades, -3,585 after costs, win rate 37.8%, t -1.583, worst day -1,025, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -3,585; no better than the frozen rule bot (-5,321)
-
-## K01 - breakout20 (defaults)
-
-- Idea #44 (wave 3, parent -), tried 2026-09-26T10:54:10.
-- Why it might work: A 20-session high on double volume: momentum over the next week.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 35 trades, +2,679 after costs, win rate 57.1%, t 1.229, worst day -498, frozen bot same days +1,736, stuck at close 0.
-- Check (VALIDATE): 24 trades, -2,031, t -1.521 against a bar of 2.751; 2x spread/impact -2,555; cheapest API broker -1,978.
-- Verdict: **failed check** - P&L after costs -2,031; no better than the frozen rule bot (-1,782); worst day -806 (below -3%); t-statistic -1.52 below the bar 2.75 for 44 variants tried; loses with spread and impact doubled (-2,555); carried by its best 3 trades (without them -2,857)
-
-## K02 - breakout20 (hold=10)
-
-- Idea #45 (wave 3, parent K01), tried 2026-09-26T10:54:10.
-- Why it might work: The same, held two weeks.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 22 trades, +3,701 after costs, win rate 63.6%, t 1.92, worst day -532, frozen bot same days +1,736, stuck at close 0.
-- Check (VALIDATE): 19 trades, -2,122, t -1.616 against a bar of 2.759; 2x spread/impact -2,586; cheapest API broker -2,080.
-- Verdict: **failed check** - P&L after costs -2,122; 19 trades (fewer than 20); no better than the frozen rule bot (-1,874); worst day -764 (below -3%); t-statistic -1.62 below the bar 2.76 for 45 variants tried; loses with spread and impact doubled (-2,586); carried by its best 3 trades (without them -3,193)
-
-## D01 - day2_orb (defaults)
-
-- Idea #46 (wave 3, parent -), tried 2026-09-26T10:54:11.
-- Why it might work: The day after a 5%+ news reaction, the stock is still in play: its opening range break in the reaction's direction.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 9 trades, -312 after costs, win rate 44.4%, t -0.743, worst day -237, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -312; 9 trades (fewer than 20); no better than the frozen rule bot (-2,048)
-
-## D02 - day2_orb (react_min=0.1)
-
-- Idea #47 (wave 3, parent D01), tried 2026-09-26T10:54:12.
-- Why it might work: Only after very big reactions (10%+).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 5 trades, +42 after costs, win rate 60.0%, t 0.122, worst day -237, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 5 trades (fewer than 20); no better than the frozen rule bot (-1,694)
-
-## A13 - orb_inplay (window=15, max_value=10000.0, min_adv=50000000.0)
-
-- Idea #48 (wave 4, parent A03), tried 2026-09-26T10:56:01.
-- Why it might work: A03 moved +0.46% a trade raw but paid ~0.85%: $10,000 positions in $50m+ turnover names cut the round trip to roughly 0.3%.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 38 trades, +224 after costs, win rate 44.7%, t 0.189, worst day -301, frozen bot same days -4,607, stuck at close 0.
-- Check (VALIDATE): 24 trades, -477, t -0.81 against a bar of 2.783; 2x spread/impact -511; cheapest API broker -530.
-- Verdict: **failed check** - P&L after costs -477; t-statistic -0.81 below the bar 2.78 for 48 variants tried; loses with spread and impact doubled (-511); carried by its best 3 trades (without them -1,039)
-
-## A14 - orb_inplay (window=15, exit=trail, trail_r=2.0, trail_after_r=2.0, max_value=10000.0, min_adv=50000000.0)
-
-- Idea #49 (wave 4, parent A11), tried 2026-09-26T10:56:16.
-- Why it might work: A11 (the loose trail) in liquid names at $10,000: the same cost argument.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 38 trades, +163 after costs, win rate 44.7%, t 0.143, worst day -301, frozen bot same days -4,607, stuck at close 0.
-- Check (VALIDATE): 24 trades, -477, t -0.81 against a bar of 2.79; 2x spread/impact -511; cheapest API broker -530.
-- Verdict: **failed check** - P&L after costs -477; t-statistic -0.81 below the bar 2.79 for 49 variants tried; loses with spread and impact doubled (-511); carried by its best 3 trades (without them -1,039)
-
-## L04 - late_trend (max_value=10000.0, min_adv=50000000.0)
-
-- Idea #50 (wave 4, parent L01), tried 2026-09-26T10:56:19.
-- Why it might work: Late momentum moved +0.22% raw on 130 trades; in liquid names at $10,000 the round trip is ~0.25%, so the question is whether the move holds there.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 7 trades, -84 after costs, win rate 42.9%, t -0.44, worst day -158, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -84; 7 trades (fewer than 20)
-
-## G04 - gap_fade (gap_min=0.05, max_value=10000.0)
-
-- Idea #51 (wave 4, parent G02), tried 2026-09-26T10:56:20.
-- Why it might work: Big no-news gap fades moved +0.58% raw; larger positions dilute the brokerage.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 21 trades, -62 after costs, win rate 52.4%, t -0.078, worst day -235, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -62
-
-## B16 - drift (buckets=['results', 'guidance_up'], entry=open0, hold=5)
-
-- Idea #52 (wave 4, parent B02), tried 2026-09-26T10:56:21.
-- Why it might work: Pre-open results and upgrades bought in day 0's opening auction when the auction gaps up 3-25%: the day-0 continuation is part of the drift that the close0 entry gave away.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 22 trades, -1,538 after costs, win rate 36.4%, t -0.852, worst day -785, frozen bot same days +1,736, stuck at close 1.
-- Verdict: **failed practice** - P&L after costs -1,538; no better than the frozen rule bot (-3,274)
-
-## B17 - drift (entry=open0, hold=1)
-
-- Idea #53 (wave 4, parent B08), tried 2026-09-26T10:56:24.
-- Why it might work: Every brief type, bought in the opening auction on a 3-25% gap, sold at the next day's close: the short end of the drift.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 46 trades, -1,909 after costs, win rate 37.0%, t -0.863, worst day -1,032, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,909; no better than the frozen rule bot (-3,645)
-
-## B18 - drift (buckets=['results'], hold=5, react_min=0.06, per_position=6000.0)
-
-- Idea #54 (wave 4, parent B02), tried 2026-09-26T10:56:28.
-- Why it might work: Results with big reactions (B02 and B12 moved ~2% raw) at a size that dilutes the minimum brokerage.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 9 trades, +73 after costs, win rate 55.6%, t 0.049, worst day -482, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 9 trades (fewer than 20); no better than the frozen rule bot (-1,663)
-
-## B19 - drift (hold=5, ps_only=False, react_min=0.06)
-
-- Idea #55 (wave 4, parent B14), tried 2026-09-26T10:56:30.
-- Why it might work: B14 (all announcements of the types) moved +1.3% raw; with only big reactions (B12's filter) the move per trade should be larger.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 30 trades, +128 after costs, win rate 56.7%, t 0.054, worst day -1,081, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - no better than the frozen rule bot (-1,608)
-
-## K03 - breakout20 (regime=index_ma)
-
-- Idea #56 (wave 4, parent K01), tried 2026-09-26T10:56:38.
-- Why it might work: Breakouts made +2.7% raw a trade in practice but lost on the check set, a momentum idea that may need a rising market: only when the index is above its 20-session average. (Proposed from practice, judged on check.)
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 22 trades, +671 after costs, win rate 54.5%, t 0.412, worst day -555, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - no better than the frozen rule bot (-1,065)
-
-## K04 - breakout20 (vol_mult=3.0, hold=10)
-
-- Idea #57 (wave 4, parent K02), tried 2026-09-26T10:56:38.
-- Why it might work: Only breakouts on triple volume: stronger demand, held two weeks.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 16 trades, +1,657 after costs, win rate 50.0%, t 1.248, worst day -434, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 16 trades (fewer than 20); no better than the frozen rule bot (-79)
-
-## W01 - rotation (side=winners, lookback=5, every=5)
-
-- Idea #58 (wave 4, parent -), tried 2026-09-26T10:56:38.
-- Why it might work: Weekly rotation into the four strongest liquid names of the week: short-horizon industry/stock momentum, traded once a week in $10m+ names.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 47 trades, +429 after costs, win rate 40.4%, t 0.136, worst day -941, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - no better than the frozen rule bot (-1,307)
-
-## W02 - rotation (side=losers, lookback=5, every=5)
-
-- Idea #59 (wave 4, parent -), tried 2026-09-26T10:56:38.
-- Why it might work: The opposite: weekly reversal (Lehmann 1990) - the week's biggest liquid losers bounce.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 47 trades, -1,592 after costs, win rate 36.2%, t -0.377, worst day -1,147, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -1,592; no better than the frozen rule bot (-3,328)
-
-## W03 - rotation (side=winners, lookback=20, every=10)
-
-- Idea #60 (wave 4, parent W01), tried 2026-09-26T10:56:38.
-- Why it might work: Monthly momentum, held a fortnight.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 19 trades, -671 after costs, win rate 47.4%, t -0.211, worst day -915, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -671; 19 trades (fewer than 20); no better than the frozen rule bot (-2,406)
-
-## W04 - rotation (side=losers, lookback=20, every=10)
-
-- Idea #61 (wave 4, parent W02), tried 2026-09-26T10:56:38.
-- Why it might work: Monthly losers, held a fortnight (medium-term reversal).
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 20 trades, -2,957 after costs, win rate 30.0%, t -0.867, worst day -1,170, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,957; no better than the frozen rule bot (-4,693)
-
-## W05 - rotation (side=winners, lookback=5, every=5, regime=index_ma)
-
-- Idea #62 (wave 4, parent W01), tried 2026-09-26T10:56:38.
-- Why it might work: Weekly winners only while the index is above its 20-session average.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 16 trades, +206 after costs, win rate 43.8%, t 0.107, worst day -817, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 16 trades (fewer than 20); no better than the frozen rule bot (-1,530)
-
-## X01 - index_timing (defaults)
-
-- Idea #63 (wave 5, parent -), tried 2026-09-26T10:58:05.
-- Why it might work: Intraday index momentum (Gao et al. 2018): after a 0.5%+ index rise by 15:30, the last half-hour tends to follow; in STW the round trip is ~0.3%.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 0 trades, +0 after costs, win rate None%, t 0.0, worst day +0, frozen bot same days +0, stuck at close 0.
-- Verdict: **not run - no data** - no practice session had the data this idea trades
-
-## X02 - index_timing (signal=first30, threshold=0.003)
-
-- Idea #64 (wave 5, parent X01), tried 2026-09-26T10:58:17.
-- Why it might work: The first half-hour's direction (0.3%+) held to the close in the index fund.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 0 trades, +0 after costs, win rate None%, t 0.0, worst day +0, frozen bot same days +0, stuck at close 0.
-- Verdict: **not run - no data** - no practice session had the data this idea trades
-
-## X03 - index_timing (direction=against, threshold=0.008)
-
-- Idea #65 (wave 5, parent X01), tried 2026-09-26T10:58:17.
-- Why it might work: The opposite: after a 0.8%+ index FALL by 15:30, buy the fund for the late-day bounce (end-of-day rebalancing flows).
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 0 trades, +0 after costs, win rate None%, t 0.0, worst day +0, frozen bot same days +0, stuck at close 0.
-- Verdict: **not run - no data** - no practice session had the data this idea trades
-
-## V01 - vwap_fade (defaults)
-
-- Idea #66 (wave 5, parent -), tried 2026-09-26T10:58:18.
-- Why it might work: Large caps stretched 1.5% under VWAP and 1% under the index without news are usually liquidity trades, not information: buy for the move back to VWAP.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 72 trades, -2,940 after costs, win rate 34.7%, t -3.128, worst day -421, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,940
-
-## V02 - vwap_fade (dev=0.025, vs_index=0.02)
-
-- Idea #67 (wave 5, parent V01), tried 2026-09-26T10:58:20.
-- Why it might work: Only bigger stretches (2.5% under VWAP, 2% under the index).
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 13 trades, -265 after costs, win rate 38.5%, t -0.649, worst day -153, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -265; 13 trades (fewer than 20)
-
-## B20 - drift (buckets=['results'], hold=5, per_position=10000.0, max_positions=2)
-
-- Idea #68 (wave 5, parent B02), tried 2026-09-26T10:58:21.
-- Why it might work: B02 (results, a week) moved +2.2% raw a trade: two $10,000 slots halve the brokerage per dollar.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 10 trades, -2,842 after costs, win rate 30.0%, t -1.234, worst day -921, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -2,842; 10 trades (fewer than 20); no better than the frozen rule bot (-4,578)
-
-## K05 - breakout20 (per_position=6600.0, max_positions=3, min_turnover=10000000.0)
-
-- Idea #69 (wave 5, parent K01), tried 2026-09-26T10:58:24.
-- Why it might work: Breakouts in $10m+ names at a third of the book each: cheaper to trade, and a different slice of the momentum question K01 failed on the check set.
-- Compared with: the frozen v2 rule bot on the same days.
-- Practice (TUNE): 11 trades, +2,874 after costs, win rate 81.8%, t 1.432, worst day -414, frozen bot same days +1,736, stuck at close 0.
-- Verdict: **failed practice** - 11 trades (fewer than 20)
-
-## X04 - index_timing (etf=INDEX_PROXY)
-
-- Idea #70 (wave 5, parent X01), tried 2026-09-26T10:59:31.
-- Why it might work: X01 on the index proxy: intraday index momentum into the close.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 15 trades, -286 after costs, win rate 13.3%, t -3.152, worst day -51, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -286; 15 trades (fewer than 20)
-
-## X05 - index_timing (etf=INDEX_PROXY, signal=first30, threshold=0.003)
-
-- Idea #71 (wave 5, parent X02), tried 2026-09-26T10:59:43.
-- Why it might work: X02 on the index proxy: the first half-hour's direction held to the close.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 6 trades, -85 after costs, win rate 66.7%, t -0.781, worst day -92, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -85; 6 trades (fewer than 20)
-
-## X06 - index_timing (etf=INDEX_PROXY, direction=against, threshold=0.008)
-
-- Idea #72 (wave 5, parent X03), tried 2026-09-26T10:59:44.
-- Why it might work: X03 on the index proxy: the late-day bounce after a 0.8%+ fall.
-- Compared with: the frozen daytrader rule bot on the same days.
-- Practice (TUNE): 8 trades, -160 after costs, win rate 0.0%, t -2.775, worst day -37, frozen bot same days -4,607, stuck at close 0.
-- Verdict: **failed practice** - P&L after costs -160; 8 trades (fewer than 20)
+Updated Sat 26 Sep 2026 18:59. Ideas tried: **118**. Practice bar now t >= 1.54; check bar t >= 3.09; sealed block 2026-08-17 to 2026-09-25 (used by 0 of 3 finalists). Lab usage this week: 40.0% of the weekly allowance, 7585 calls.
+
+_Survivorship: the universe is the stocks in today's history cache (today's index lists applied to past days) - stocks that later dropped out are missing, which flatters results._
+
+All money is simulated on stored history; every figure is after brokerage, spread and slippage (IBKR's fees; other brokers in each run's scores).
+
+## Yardsticks (practice window, rules only)
+
+| yardstick | days | trades | net | t | old rules same days |
+|---|---|---|---|---|---|
+| A: stocks in play ORB | 66 | 64 | $1,274 | 0.86 | $-4,607 |
+| A trail: ORB, 3% trailing stop | 66 | 64 | $293 | 0.22 | $-4,607 |
+| A+D regime: ORB, index direction | 66 | 42 | $1,153 | 1.07 | $-4,607 |
+| A+D first30: ORB, first-30-min direction | 66 | 39 | $1,233 | 1.26 | $-4,607 |
+| A+D closing volume cap 20% | 66 | 63 | $1,018 | 0.83 | $-4,607 |
+| C rules: announcement drift 5 days | 66 | 71 | $163 | 0.09 | $-4,607 |
+| C rules + D regime: drift, index direction | 66 | 54 | $38 | 0.02 | $-4,607 |
+
+## Every idea
+
+| id | what | why it might work | practice | check | sealed | verdict |
+|---|---|---|---|---|---|---|
+| I0001 | hod_mom {"from": "12:00", "last_entry": "14:30", "min_rvol": 3.0, "min_chg_pct": 3.0, "lookback": 60, "min_turnover_aud": 5000000.0, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "allow_short": true, "exit": "close", "trail_pct": 0.0, "regime": "none"} | Intraday momentum research finds that stocks with large, heavy-volume moves keep drifting into the close as institutions finish their orders | $-49, 5 tr, t -0.18 |  |  | failed: lost $49 after costs; 5 trades (< 15); t -0.18 < bar 0.59 (N=2); did not beat the best yardstick ($1,305) |
+| I0002 | vwap_rev {"stretch_pct": 3.0, "stop_pct": 2.0, "from": "11:00", "last_entry": "15:00", "min_turnover_aud": 20000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "allow_short": true, "exit": "close", "trail_pct": 0.0, "regime": "none"} | Large, liquid ASX names that stretch 3% from VWAP after the open auction has settled are usually being pushed by a single impatient order ra | $404, 28 tr, t 0.34 |  |  | failed: t 0.34 < bar 0.59 (N=2) |
+| I0003 | new family: Residual gap fade: at 10:00–10:10, compute each stock's expected open from overnight drivers (S&P 500/ASX SPI futures, s | Most ASX opening gaps are fair repricing to what happened overnight in the US and in commodities. Plain gap fades therefore mostly fight inf |  |  |  | needs_build:  |
+| I0004 | gap_fade {"min_gap_pct": 3.0, "max_gap_pct": 8.0, "enter_after": 15, "stop_mult": 0.5, "min_turnover_aud": 5000000.0, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "allow_short": true, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Gap fading is the one family with no test and no yardstick. On the ASX, gaps in liquid names with no news are often priced off a thin openin | $-794, 34 tr, t -0.68 |  |  | failed: lost $794 after costs; t -0.68 < bar 0.83 (N=4); did not beat the best yardstick ($695) |
+| I0005 | drift {"types": ["results", "guidance", "contract", "clinical"], "direction": "against", "allow_short": false, "min_react_pct": 7.0, "hold_days": 3, "stop_pct": 8.0, "min_turnover_aud": 2000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Drift 'with' the reaction came out near zero (t 0.09), so this tests the opposite effect: buying only, after large drops on announcements in | $-72, 7 tr, t -0.12 |  |  | failed: lost $72 after costs; 7 trades (< 15); t -0.12 < bar 1.15 (N=14); did not beat the best yardstick ($512) |
+| I0006 | drift {"types": ["results", "guidance", "contract", "clinical", "acquisition", "exploration"], "direction": "against", "allow_short": false, "min_react_pct": 5.0, "hold_days": 3, "stop_pct": 8.0, "min_turnover_aud": 1000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | I0005 (buy the overreaction to a big announcement drop, hold 3 days) had the best result so far: t 1.52, 80% wins and +$1.3k. It failed only | $-366, 17 tr, t -0.48 |  |  | failed: lost $366 after costs; t -0.48 < bar 1.15 (N=14); did not beat the best yardstick ($512) |
+| I0007 | orb {"window": 30, "min_open_rvol": 3.0, "min_gap_pct": 3.0, "need_catalyst": true, "rank_at": "10:35", "allow_short": false, "max_trades": 2, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "min_turnover_aud": 1000000.0} | Stocks-in-play ORB is the strongest base we have (t 0.86 to 1.26 with a first-30-minute direction filter). This version combines the 30-minu | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 0.95 (N=6); did not beat the best yardstick ($434) |
+| I0008 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 3.0, "need_catalyst": true, "min_open_rvol": 2.0, "allow_short": false, "max_trades": 2, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "min_turnover_aud": 1000000.0} | ORB is our only line with consistently positive net. I0007 produced 0 trades because a 30-minute window cannot finish before a 10:35 rank un | $316, 6 tr, t 1.06 |  |  | failed: 6 trades (< 15); did not beat the best yardstick ($1,255) |
+| I0009 | AI: Only trade stocks that fell 6% or more today on a price-sensitive results, guidance, contract or clinical announcement.  | I0005 (buying large post-announcement drops) went 8/10 with t 1.52. The mechanical widening in I0006 failed, likely because it let in genuin | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.02 (N=8); did not beat the best yardstick ($284) |
+| I0010 | AI: Trade only stocks gapping up 3%+ at the open on a price-sensitive announcement lodged that morning, with turnover over A | Catalyst ORB is our only repeatable edge (yardstick A, $1,274, t 0.86). Every tightening by price filters (I0007, I0008) cut the trade count | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.07 (N=10); did not beat the best yardstick ($55) |
+| I0011 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": false, "min_react_pct": 4.0, "hold_days": 10, "stop_pct": 10.0, "min_turnover_aud": 1000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Post-earnings drift is best documented after hard numbers (results and guidance), mainly on the long side and over more than 5 days. Yardsti | $-1,262, 8 tr, t -1.38 |  |  | failed: lost $1,262 after costs; 8 trades (< 15); t -1.38 < bar 1.15 (N=14); did not beat the best yardstick ($655) |
+| I0012 | AI: Guardrails: (1) No stop-entry breakouts before 10:15 AEST. Require a 5m close beyond the level. (2) Minimum position $2k | This targets today's concrete failure modes: early whipsaw, the 2-share fee sink, stop slippage in thin names, and a naked overnight positio | $-746, 12 tr, t -2.68 |  |  | failed: lost $746 after costs; 12 trades (< 15); t -2.68 < bar 1.09 (N=11); did not beat the best yardstick ($1,043) |
+| I0013 | AI: ORDER HYGIENE: Before any exit, flatten or MOC order, read the live position qty and working orders in the same wake. Si | Two ops failures today cost more attention than any trade: an accidental overnight S3F80 short from an unconditional MOC, and four wakes spe | $-302, 10 tr, t -0.89 |  |  | failed: lost $302 after costs; 10 trades (< 15); t -0.89 < bar 1.15 (N=14); did not beat the best yardstick ($416) |
+| I0014 | AI: Before any entry, state: (1) round-trip cost = 2*max(6.60, fee%) + 0.1% slippage; reject if (target-entry)*qty < 3x that | All four of today's losses came from avoidable process failures: fee-blind tight stops, stops inside the noise range, trading against the sp | $74, 3 tr, t 0.15 |  |  | failed: 3 trades (< 15); t 0.15 < bar 1.16 (N=15); did not beat the best yardstick ($907) |
+| I0015 | AI: Before any news-based thesis, read the item timestamp. If it isn't marked today/this session, say 'stale' and propose no | Today 4 wakes of specialist proposals were built on a stale takeover item. The one taken trade was stopped just past an obvious OR low with  | $356, 16 tr, t 0.52 |  |  | failed: t 0.52 < bar 1.18 (N=16); did not beat the best yardstick ($427) |
+| I0016 | AI: Fee gate: skip if expected gross reward < 3x round-trip fees; min position $3k. Ignore rvol before 10:10 (tiny sample in | This encodes today's observations (fees at 2x net P&L, inflated early rvol, the successful VWAP pullback, the flat late chase in SD41B, SC34 | $-380, 9 tr, t -1.23 |  |  | failed: lost $380 after costs; 9 trades (< 15); t -1.23 < bar 1.21 (N=19); did not beat the best yardstick ($907) |
+| I0017 | AI: Stops: keep the initial stop at the structure level (VWAP or pullback low) until price reaches +1R, and never move to br | Four of today's five closed trades lost part of their edge to execution rules: the SD3F2 breakeven clip, same-day trail fills on S7DFC and S |  |  |  | queued:  |
+| I0018 | AI: Stop management: never raise a stop to breakeven before price is +1R in favour. A breakeven stop = entry +/- round-trip  | SA39F lost money on a winning-direction trade because the stop was tightened to raw entry on a small ticket. Fees are a large share of resul |  |  |  | queued:  |
+| I0019 | AI: Before ending any wake: (1) every open position must have a live protective stop in working_orders; day-TIF brackets exp | Today's mistakes were execution errors, not signal errors: an unprotected overnight position, a mis-typed order, a stray cancel, and a late  |  |  |  | queued:  |
+| I0020 | AI: PRE-FLIGHT every entry order: (1) read last price; if a limit is marketable (buy limit >= last, sell limit <= last), tre | The SC1B6 loss came from a stale resting short that filled above its own stop and was stopped out immediately. A cheap hygiene rule prevents |  |  |  | queued:  |
+| I0021 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": false, "min_open_rvol": 0.0, "min_turnover_aud": 2000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | ORB is our only positive family, but every stricter ORB variant starved itself of trades (0 and 6). This goes the other way: drop the cataly | $-276, 23 tr, t -0.47 |  |  | failed: lost $276 after costs; t -0.47 < bar 1.23 (N=21); did not beat the best yardstick ($828) |
+| I0022 | hod_mom {"from": "13:30", "last_entry": "15:15", "min_rvol": 2.0, "min_chg_pct": 3.0, "lookback": 90, "min_turnover_aud": 3000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | This targets a different time of day, not a tweak of I0001. Intraday momentum into the close is documented across markets (Gao et al.): stoc | $282, 9 tr, t 1.44 |  |  | failed: 9 trades (< 15); did not beat the best yardstick ($583) |
+| I0023 | hod_mom {"from": "13:00", "last_entry": "15:15", "min_rvol": 1.5, "min_chg_pct": 2.0, "lookback": 60, "min_turnover_aud": 2000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Afternoon new-high momentum (I0022) had the best t so far (1.44) but only 9 trades. The known intraday-momentum effect says late-session tre | $-782, 42 tr, t -0.80 |  |  | failed: lost $782 after costs; t -0.80 < bar 1.25 (N=23); did not beat the best yardstick ($956) |
+| I0024 | vwap_rev {"stretch_pct": 2.0, "stop_pct": 1.0, "from": "13:00", "last_entry": "15:30", "min_turnover_aud": 50000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | The session is new ground: only afternoon, only mega-liquid ASX50-type names, where spreads are ~0.02-0.05% so costs are mostly the fixed fe | $-903, 11 tr, t -1.49 |  |  | failed: lost $903 after costs; 11 trades (< 15); t -1.49 < bar 1.25 (N=23); did not beat the best yardstick ($1,300) |
+| I0025 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 1000000.0, "allow_short": false, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | Catalyst-driven ORB is the only family with a positive edge, but it trades too rarely to clear the rising t-bar, and the no-catalyst version | $-368, 14 tr, t -0.62 |  |  | failed: lost $368 after costs; 14 trades (< 15); t -0.62 < bar 1.26 (N=24); did not beat the best yardstick ($1,200) |
+| I0026 | hod_mom {"from": "12:30", "last_entry": "15:15", "min_rvol": 2.0, "min_chg_pct": 3.0, "lookback": 90, "min_turnover_aud": 2000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | I0022 (long-only, chg>=3%, after 13:30) had the best t of any idea (1.44) but only 9 trades, and I0023 failed by adding shorts and looser fi | $428, 27 tr, t 0.59 |  |  | failed: t 0.59 < bar 1.28 (N=26); did not beat the best yardstick ($1,054) |
+| I0027 | gap_fade {"min_gap_pct": 2.0, "max_gap_pct": 6.0, "enter_after": 30, "stop_mult": 0.75, "min_turnover_aud": 10000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | I0004 faded both directions in thinner names, which mixed hard-to-borrow shorts with longs. Here we only buy no-news gap-downs in liquid nam | $-2,579, 42 tr, t -3.68 |  |  | failed: lost $2,579 after costs; t -3.68 < bar 1.28 (N=26); did not beat the best yardstick ($64); did not beat the old rules ($-1,076) |
+| I0028 | orb {"window": 30, "rank_at": "10:35", "min_gap_pct": 2.0, "need_catalyst": false, "min_open_rvol": 0.0, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | I0027, which bought no-news 2-6% gaps in liquid names after 30 minutes, was our strongest result in either direction: t -3.68 over 42 trades | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.29 (N=28); did not beat the best yardstick ($1,324) |
+| I0029 | hod_mom {"from": "13:30", "last_entry": "15:15", "min_rvol": 2.0, "min_chg_pct": 2.0, "lookback": 90, "min_turnover_aud": 2000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | I0022 was the only idea to clear the t-bar (1.44), but it made just 9 trades. This keeps its long-only, after-13:30 new-high setup and lower | $-1,662, 34 tr, t -2.20 |  |  | failed: lost $1,662 after costs; t -2.20 < bar 1.29 (N=28); did not beat the best yardstick ($1,300); did not beat the old rules ($-1,485) |
+| I0030 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": true, "min_react_pct": 4.0, "hold_days": 3, "stop_pct": 6.0, "min_turnover_aud": 10000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Every drift test so far was long-only in small caps, where the spread eats the move. Post-earnings drift is strongest on the downside, and t | $-80, 9 tr, t -0.18 |  |  | failed: lost $80 after costs; 9 trades (< 15); t -0.18 < bar 1.30 (N=30); did not beat the best yardstick ($1,300) |
+| I0031 | hod_mom {"from": "13:30", "last_entry": "15:15", "min_rvol": 2.0, "min_chg_pct": 3.0, "lookback": 90, "min_turnover_aud": 1000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | I0022 has the best t in the log (1.44), but only 9 trades. Its failed variants loosened the % move (I0029) or started earlier (I0026), which | $-214, 14 tr, t -0.57 |  |  | failed: lost $214 after costs; 14 trades (< 15); t -0.57 < bar 1.30 (N=30); did not beat the best yardstick ($694) |
+| I0032 | vwap_rev {"stretch_pct": 3.0, "stop_pct": 2.0, "from": "10:30", "last_entry": "14:00", "min_turnover_aud": 20000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Large-cap VWAP reversion was the only non-ORB rules test with positive net (I0002: +$404, 28 trades), while the afternoon version lost. Taki | $-1,067, 25 tr, t -0.94 |  |  | failed: lost $1,067 after costs; t -0.94 < bar 1.31 (N=31); did not beat the best yardstick ($512) |
+| I0033 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 2, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | Catalyst ORB with the first-30-minute direction filter is our best yardstick (t 1.26, just under the bar). Capping at the top 2 ranked names | $851, 9 tr, t 2.33 |  |  | failed: 9 trades (< 15); did not beat the best yardstick ($1,324) |
+| I0034 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.5, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | The first-30-minute direction filter is the only thing that has lifted ORB's t (yardstick 1.26; I0033 reached t 2.33 but on only 9 trades).  | $-468, 13 tr, t -1.18 |  |  | failed: lost $468 after costs; 13 trades (< 15); t -1.18 < bar 1.33 (N=34); did not beat the best yardstick ($581) |
+| I0035 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": false, "min_open_rvol": 0.0, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | Fading no-news gaps in liquid names lost badly and consistently. I0027 bought gap-downs in >A$10M names and lost $2,579 at t -3.68 with a 29 | $-326, 10 tr, t -0.75 |  |  | failed: lost $326 after costs; 10 trades (< 15); t -0.75 < bar 1.33 (N=34); did not beat the best yardstick ($694) |
+| I0036 | vwap_rev {"stretch_pct": 2.5, "stop_pct": 2.0, "from": "11:00", "last_entry": "15:00", "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "first30", "close_volume_cap": 0.0} | The two-sided VWAP stretch in liquid names (I0002) was the only vwap_rev variant that made money, while long-only lost (I0032). This suggest | $-894, 14 tr, t -1.27 |  |  | failed: lost $894 after costs; 14 trades (< 15); t -1.27 < bar 1.33 (N=35); did not beat the best yardstick ($867) |
+| I0037 | hod_mom {"from": "12:00", "last_entry": "15:00", "min_rvol": 2.0, "min_chg_pct": 3.0, "lookback": 90, "min_turnover_aud": 2000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "first30", "close_volume_cap": 0.0} | Afternoon long HOD breaks on stocks already up 3% or more were the only positive hod_mom pocket (I0026: +$428, 59% wins over 27 trades; I002 | $-909, 14 tr, t -2.50 |  |  | failed: lost $909 after costs; 14 trades (< 15); t -2.50 < bar 1.34 (N=36); did not beat the best yardstick ($971) |
+| I0038 | orb {"window": 30, "rank_at": "10:35", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | The ASX opens in staggered letter groups from 10:00 to about 10:09, so a 15-minute range gives S-Z codes only about 6 minutes of real tradin | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.34 (N=37); did not beat the best yardstick ($1,455) |
+| I0039 | drift {"types": ["contract", "exploration", "clinical", "acquisition"], "direction": "with", "allow_short": false, "min_react_pct": 8.0, "hold_days": 2, "stop_pct": 10.0, "min_turnover_aud": 2000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Every drift test so far has used results and guidance (analyst-covered news that is priced fast) or the against direction. Retail-driven att | $-202, 7 tr, t -0.79 |  |  | failed: lost $202 after costs; 7 trades (< 15); t -0.79 < bar 1.35 (N=38); did not beat the best yardstick ($953) |
+| I0040 | hod_mom {"from": "12:30", "last_entry": "15:00", "min_rvol": 2.0, "min_chg_pct": 3.0, "lookback": 90, "min_turnover_aud": 5000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Long-only afternoon HOD results improve as liquidity rises: A$1M lost, A$2M made +$428 on 27 trades. Raising the floor to A$5M cuts spread a | $47, 11 tr, t 0.12 |  |  | failed: 11 trades (< 15); t 0.12 < bar 1.35 (N=39); did not beat the best yardstick ($828) |
+| I0041 | orb {"window": 30, "rank_at": "10:45", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | The 30-minute opening range has never actually been tested: I0007, I0028 and I0038 all produced 0 trades with rank_at 10:35. That looks like | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.36 (N=40); did not beat the best yardstick ($669) |
+| I0042 | hod_mom {"from": "10:45", "last_entry": "12:30", "min_rvol": 3.0, "min_chg_pct": 4.0, "lookback": 30, "min_turnover_aud": 2000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Every hod_mom test so far started at 12:00 or later, so the late-morning window is untested. It catches stocks in play that trend after the  | $498, 13 tr, t 0.80 |  |  | failed: 13 trades (< 15); t 0.80 < bar 1.36 (N=41); did not beat the best yardstick ($1,129) |
+| I0043 | hod_mom {"from": "10:30", "last_entry": "12:30", "min_rvol": 3.0, "min_chg_pct": 3.0, "lookback": 30, "min_turnover_aud": 2000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Early heavy-volume high-of-day breaks are the only non-ORB signal that has made money: I0042 made +$498 on 13 trades and I0026 made +$427, w | $-1,002, 34 tr, t -0.86 |  |  | failed: lost $1,002 after costs; t -0.86 < bar 1.37 (N=42); did not beat the best yardstick ($956) |
+| I0044 | hod_mom {"from": "10:30", "last_entry": "12:30", "min_rvol": 3.0, "min_chg_pct": 4.0, "lookback": 30, "min_turnover_aud": 1000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Early, strong, long-only HOD momentum (I0042) made +$498 with a 69% win rate but only 13 trades. Adding shorts and a 3% threshold (I0043) br | $-157, 17 tr, t -0.25 |  |  | failed: lost $157 after costs; t -0.25 < bar 1.37 (N=43); did not beat the best yardstick ($224) |
+| I0045 | drift {"types": ["results", "guidance", "contract", "acquisition", "exploration", "clinical"], "direction": "with", "allow_short": false, "min_react_pct": 6.0, "hold_days": 1, "stop_pct": 8.0, "min_turnover_aud": 1000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none"} | Multi-day drift decays: 5 days made only $163, 10 days lost $1,262, and 'against' failed. That suggests any post-announcement continuation i | $-148, 16 tr, t -0.29 |  |  | failed: lost $148 after costs; t -0.29 < bar 1.38 (N=44); did not beat the best yardstick ($64) |
+| I0046 | gap_fade {"min_gap_pct": 5.0, "max_gap_pct": 15.0, "enter_after": 15, "stop_mult": 0.5, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | This tests a different population from I0027: large no-news gaps of 5-15% in small and mid caps, faded on both sides. Speculative spikes wit | $-572, 22 tr, t -0.94 |  |  | failed: lost $572 after costs; t -0.94 < bar 1.38 (N=45); did not beat the best yardstick ($828) |
+| I0047 | drift {"types": ["results", "guidance"], "direction": "against", "allow_short": false, "min_react_pct": 5.0, "hold_days": 3, "stop_pct": 8.0, "min_turnover_aud": 5000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Every 'with' drift test failed, most with win rates of 12-31%, and the 'against' direction has never been run as rules. Liquid ASX names oft | $-315, 4 tr, t -1.41 |  |  | failed: lost $315 after costs; 4 trades (< 15); t -1.41 < bar 1.38 (N=46); did not beat the best yardstick ($777) |
+| I0048 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.0, "need_catalyst": false, "min_open_rvol": 4.0, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | The published stocks-in-play ORB edge comes from ranking by opening relative volume, not by gap size or a headline tag, and we have never te | $200, 12 tr, t 0.61 |  |  | failed: 12 trades (< 15); t 0.61 < bar 1.39 (N=47) |
+| I0049 | orb {"window": 5, "rank_at": "10:15", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | The 5-minute ORB on stocks in play is the best-documented form of this setup (Zarattini et al.). An earlier entry catches more of the cataly | $-847, 26 tr, t -1.14 |  |  | failed: lost $847 after costs; t -1.14 < bar 1.39 (N=48); did not beat the best yardstick ($584) |
+| I0050 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 2, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | I0033 (max_trades 2 plus A$1M turnover) hit t 2.33 with an 89% win rate but only 9 trades. This keeps the A$500k turnover of the best yardst | $-305, 7 tr, t -0.86 |  |  | failed: lost $305 after costs; 7 trades (< 15); t -0.86 < bar 1.39 (N=49); did not beat the best yardstick ($867) |
+| I0051 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 6.0, "regime": "none", "close_volume_cap": 0.0} | cost_multiple has never been varied in 49 ideas, and yardstick A (catalyst ORB, 64 trades) is the only base with positive net. Doubling the  | $262, 9 tr, t 0.78 |  |  | failed: 9 trades (< 15); t 0.78 < bar 1.40 (N=50); did not beat the best yardstick ($1,273) |
+| I0052 | drift {"types": ["results", "guidance", "acquisition", "contract"], "direction": "with", "allow_short": false, "min_react_pct": 5.0, "hold_days": 10, "stop_pct": 12.0, "min_turnover_aud": 2000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Post-announcement drift in the literature plays out over weeks, not 1-5 days. Every drift test so far held 1-5 days, where noise and the fix | $256, 5 tr, t 0.57 |  |  | failed: 5 trades (< 15); t 0.57 < bar 1.40 (N=51); did not beat the best yardstick ($1,223) |
+| I0053 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": true, "min_react_pct": 3.0, "hold_days": 5, "stop_pct": 7.0, "min_turnover_aud": 5000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Post-earnings drift is strongest for negative surprises, and the log's drift tests were mostly long-only or too strict to reach 15 trades (I | $-83, 13 tr, t -0.13 |  |  | failed: lost $83 after costs; 13 trades (< 15); t -0.13 < bar 1.41 (N=52); did not beat the best yardstick ($1,300) |
+| I0054 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": false, "min_open_rvol": 0.0, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | The code can already run this nearly free version of the continuation thesis. I0027 (gap-down fades, t -3.68) and I0046 (gap-up fades, 31% w | $-697, 26 tr, t -1.39 |  |  | failed: lost $697 after costs; t -1.39 < bar 1.41 (N=53); did not beat the best yardstick ($848); did not beat the old rules ($-693) |
+| I0055 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": true, "min_react_pct": 4.0, "hold_days": 10, "stop_pct": 10.0, "min_turnover_aud": 1000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Post-earnings drift is a multi-week effect, and the only positive drift variant (I0052, 10-day hold, 4 of 5 winners) failed on sample size.  | $276, 8 tr, t 0.38 |  |  | failed: 8 trades (< 15); t 0.38 < bar 1.41 (N=54); did not beat the best yardstick ($325) |
+| I0056 | hod_mom {"from": "10:45", "last_entry": "13:30", "min_rvol": 3.0, "min_chg_pct": 4.0, "lookback": 30, "min_turnover_aud": 2000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 4.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | The only hod_mom pocket that made money was long-only with strong morning volume and a big move (I0042: +$498, 69% win rate, but only 13 tra | $99, 12 tr, t 0.16 |  |  | failed: 12 trades (< 15); t 0.16 < bar 1.42 (N=55); did not beat the best yardstick ($694) |
+| I0057 | hod_mom {"from": "11:00", "last_entry": "14:30", "min_rvol": 2.0, "min_chg_pct": 3.0, "lookback": 60, "min_turnover_aud": 2000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "index", "close_volume_cap": 0.0} | Long-only hod_mom with chg >= 3% has been the only non-ORB rule set to show positive net (I0022 +$282, I0026 +$428, I0042 +$498). Its losses | $-1,902, 41 tr, t -2.09 |  |  | failed: lost $1,902 after costs; t -2.09 < bar 1.42 (N=56); did not beat the best yardstick ($1,219); did not beat the old rules ($-1,827) |
+| I0058 | AI: Before any entry: (1) Round-trip fees + spread must be <1/3 of target distance; max 2 new entries/day. (2) Resting pullb | Codifies today's failures: adverse pullback fill, day-2 chase, a stop parked next to the close overnight, a hallucinated position in the not |  |  |  | queued:  |
+| I0059 | close_strength {"min_chg_pct": 3.0, "min_rvol": 2.5, "near_high_pct": 1.0, "direction": "with", "hold_days": 1, "stop_pct": 4.0, "min_turnover_aud": 5000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.1} | This holding period and signal have not been tried. Heavy-volume names that close at their high (or low) often carry unfinished institutiona | $-155, 2 tr, t -1.51 |  |  | failed: lost $155 after costs; 2 trades (< 15); t -1.51 < bar 1.43 (N=59); did not beat the best yardstick ($64) |
+| I0060 | index_revert {"from": "11:00", "last_entry": "15:00", "min_resid_pct": 2.5, "stop_mult": 0.5, "min_turnover_aud": 20000000.0, "no_news": true, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none"} | This family has not been tested. A large-cap stock that moves 2.5% or more away from the index with no announcement is usually being pushed  | $-285, 61 tr, t -0.27 |  |  | failed: lost $285 after costs; t -0.27 < bar 1.43 (N=59); did not beat the best yardstick ($345) |
+| I0061 | close_strength {"direction": "against", "min_chg_pct": 4.0, "min_rvol": 1.5, "near_high_pct": 2.0, "hold_days": 1, "stop_pct": 3.0, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.2} | Closing-auction price pressure tends to reverse overnight. Strong closers pushed up by auction demand often give some back at the next open. | $-740, 19 tr, t -1.21 |  |  | failed: lost $740 after costs; t -1.21 < bar 1.43 (N=61); did not beat the best yardstick ($1,165) |
+| I0062 | pullback {"from": "10:45", "last_entry": "14:00", "min_chg_pct": 4.0, "min_rvol": 2.5, "band_pct": 0.5, "lookback": 15, "min_turnover_aud": 3000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none"} | Pullback is the only family never tested. Breakout entries (hod_mom, orb without a catalyst) keep losing because they buy extension and pay  | $-1,839, 38 tr, t -1.97 |  |  | failed: lost $1,839 after costs; t -1.97 < bar 1.43 (N=61); did not beat the best yardstick ($976) |
+| I0063 | close_strength {"direction": "with", "min_chg_pct": 3.0, "min_rvol": 2.0, "near_high_pct": 1.5, "hold_days": 1, "stop_pct": 4.0, "min_turnover_aud": 3000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | The fade version (I0061) lost $740 at t -1.21, which hints that strong closers keep going overnight. The only 'with' test (I0059) had just 2 | $-558, 11 tr, t -0.96 |  |  | failed: lost $558 after costs; 11 trades (< 15); t -0.96 < bar 1.44 (N=62); did not beat the best yardstick ($252) |
+| I0064 | index_revert {"from": "13:00", "last_entry": "15:15", "min_resid_pct": 4.0, "stop_mult": 0.5, "min_turnover_aud": 10000000.0, "no_news": false, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none"} | Buying afternoon strength keeps losing: late hod_mom (I0029 t -2.2, I0057 t -2.1) and pullback (I0062 t -1.97, 16% win rate). So an afternoo | $-2,135, 54 tr, t -3.22 |  |  | failed: lost $2,135 after costs; t -3.22 < bar 1.44 (N=63); did not beat the best yardstick ($583); did not beat the old rules ($-498) |
+| I0065 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 2.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | Yardstick A (catalyst ORB, 64 trades) is our only consistently positive setup. The published stocks-in-play ORB work puts most of the edge i | $125, 21 tr, t 0.13 |  |  | failed: t 0.13 < bar 1.44 (N=64); did not beat the best yardstick ($581) |
+| I0066 | hod_mom {"from": "10:30", "last_entry": "13:00", "min_rvol": 1.5, "min_chg_pct": 2.0, "lookback": 60, "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Every hod_mom test so far used small caps (A$1-5M turnover), where breakouts fail. This tests the same momentum signal the log suggests (I00 | $-1,448, 34 tr, t -1.92 |  |  | failed: lost $1,448 after costs; t -1.92 < bar 1.44 (N=65); did not beat the best yardstick ($1,441) |
+| I0067 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 5, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | The first30 regime filter gives the best t in the log (1.26), but trade counts keep falling below 15. Cutting max_trades to 2 made that wors | $-243, 26 tr, t -0.37 |  |  | failed: lost $243 after costs; t -0.37 < bar 1.45 (N=66); did not beat the best yardstick ($308) |
+| I0068 | gap_fade {"min_gap_pct": 2.0, "max_gap_pct": 6.0, "enter_after": 30, "stop_mult": 1.0, "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "12:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Only one gap_fade has been logged (I0046, small-cap 5-15% gaps, tight stop). In liquid large caps, moderate no-news gaps are mostly the open | $-792, 47 tr, t -1.00 |  |  | failed: lost $792 after costs; t -1.00 < bar 1.45 (N=67); did not beat the best yardstick ($976) |
+| I0069 | drift {"types": ["results", "guidance", "contract", "acquisition", "exploration", "clinical"], "direction": "against", "allow_short": false, "min_react_pct": 6.0, "hold_days": 2, "stop_pct": 10.0, "min_turnover_aud": 1000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | Every drift 'with' variant has been flat to negative, so news reactions on the ASX look fully priced or over-priced rather than under-reacte | $-545, 13 tr, t -1.27 |  |  | failed: lost $545 after costs; 13 trades (< 15); t -1.27 < bar 1.46 (N=69); did not beat the best yardstick ($1,219) |
+| I0070 | index_revert {"from": "10:30", "last_entry": "13:30", "min_resid_pct": 3.0, "stop_mult": 1.0, "min_turnover_aud": 30000000.0, "no_news": true, "allow_short": true, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none"} | I0060 was the closest thing to break-even on a large sample (61 trades, 52% wins), and I0064 showed that with-news and late divergences tren | $-1,685, 40 tr, t -2.34 |  |  | failed: lost $1,685 after costs; t -2.34 < bar 1.46 (N=69); did not beat the best yardstick ($655) |
+| I0071 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": false, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | The catalyst ORB is the only family that has made money, and this is a one-change diagnostic that tests only its long side. Most catalyst sm | $428, 13 tr, t 0.50 |  |  | failed: 13 trades (< 15); t 0.50 < bar 1.46 (N=70); did not beat the best yardstick ($550) |
+| I0072 | gap_fade {"min_gap_pct": 2.0, "max_gap_pct": 8.0, "enter_after": 15, "stop_mult": 1.0, "min_turnover_aud": 10000000.0, "allow_short": false, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | This tests only buying no-news gap-downs in liquid names, where overnight US and sector selling creates a known liquidity-provision rebound; | $-473, 42 tr, t -0.49 |  |  | failed: lost $473 after costs; t -0.49 < bar 1.46 (N=71); did not beat the best yardstick ($1,300) |
+| I0073 | close_strength {"direction": "against", "allow_short": false, "min_chg_pct": 4.0, "min_rvol": 1.5, "near_high_pct": 2.0, "hold_days": 1, "stop_pct": 4.0, "min_turnover_aud": 10000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.1, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | This tests only the long side of the overnight liquidity-provision reversal: buy liquid heavy intraday losers in the closing auction and sel | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.46 (N=72); did not beat the best yardstick ($1,219) |
+| I0074 | index_revert {"from": "11:00", "last_entry": "14:00", "min_resid_pct": 3.0, "stop_mult": 2.0, "min_turnover_aud": 20000000.0, "no_news": true, "allow_short": true, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none"} | Fading liquid stocks lost badly (I0064 t -3.22, I0070 t -2.34), but so did chasing them (I0066), and win rates of 33-40% point to stops plac | $-1,091, 41 tr, t -3.28 |  |  | failed: lost $1,091 after costs; t -3.28 < bar 1.46 (N=73); did not beat the best yardstick ($1,276) |
+| I0075 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 2000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | ORB with a catalyst plus the first30 filter is the only setup with a positive t (1.26). Raising the turnover floor from A$0.5M to A$2M shoul | $160, 14 tr, t 0.45 |  |  | failed: 14 trades (< 15); t 0.45 < bar 1.47 (N=74); did not beat the best yardstick ($1,219) |
+| I0076 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 3.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "close_volume_cap": 0.0} | Among the ORB yardsticks, the index-direction filter keeps one of the higher t-stats (1.07). Requiring a bigger news gap and an earlier cuto | $670, 20 tr, t 1.22 |  |  | failed: t 1.22 < bar 1.47 (N=75); did not beat the best yardstick ($1,324) |
+| I0077 | AI: Before any buy-stop above the high of day: (1) the time must be 10:30 or later, or the opening range must be at least 15 | This encodes today's four failure modes: early high-of-day triggers, correlated stacking, fees and slippage understating risk, and uncovered |  |  |  | queued:  |
+| I0078 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 3.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | ORB is the only family with positive t. Its two best runs were the first30 regime (t 1.26) and the 3% gap with an 11:00 cutoff (I0076, t 1.2 | $-653, 11 tr, t -1.39 |  |  | failed: lost $653 after costs; 11 trades (< 15); t -1.39 < bar 1.47 (N=77); did not beat the best yardstick ($669) |
+| I0079 | vwap_rev {"stretch_pct": 3.0, "stop_pct": 1.5, "from": "13:30", "last_entry": "15:30", "min_turnover_aud": 10000000.0, "allow_short": false, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "exit": "close", "trail_pct": 0.0, "regime": "none", "close_volume_cap": 0.0} | This is an untested time window: late-day, long-only buys of liquid stocks stretched 3% below VWAP, exiting in the closing auction. Benchmar | $-1,071, 25 tr, t -0.93 |  |  | failed: lost $1,071 after costs; t -0.93 < bar 1.48 (N=78); did not beat the best yardstick ($446) |
+| I0080 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 3.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "close_volume_cap": 0.0} | I0076 (gap>=3%, $1M turnover, index regime) was the closest near-miss in the log: t 1.22, +$670 on 20 trades. Its only binding constraint lo | $61, 19 tr, t 0.10 |  |  | failed: t 0.10 < bar 1.48 (N=79); did not beat the best yardstick ($345) |
+| I0081 | new family: index_follow: the mirror image of index_revert. From 11:00 to 14:30, in liquid stocks (turnover >= $20M) with no announc | (recovered: refused by the fingerprint bug) |  |  |  | built: built as a rules family; tested as I0092 |
+| I0082 | new family: exdiv_runup: buy ASX200 stocks paying a franked dividend of at least 2% (grossed-up yield for that dividend) in the open | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0083 | new family: sympathy: from 10:30 to 12:30, find a 'leader'. That is a stock with a price-sensitive announcement today, up or down at | (recovered: refused by the fingerprint bug) |  |  |  | built: built as a rules family; tested as I0093 |
+| I0084 | new family: overnight_lead: before the open, compute the overnight move of a US or futures proxy for each sector: gold futures or GD | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0085 | new family: intraday_momentum_close: At 15:30 compute the 'early signal' = the ASX200 return from the prior close to 10:30 (overnigh | (recovered: refused by the fingerprint bug) |  |  |  | built: built as a rules family; tested as I0094 |
+| I0086 | new family: placement_support: Detect a trading halt followed by a capital-raising announcement (placement or SPP) at a discount. Af | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0087 | new family: insider_buy: parse Appendix 3Y (Change of Director's Interest) notices lodged after 16:10 or before 10:00. The trigger i | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0088 | new family: close_weakness_rebound: at 15:58, find stocks with 20-day average turnover of at least $5M and no announcement that day. | (recovered: refused by the fingerprint bug) |  |  |  | built: built as a rules family; tested as I0095 |
+| I0089 | new family: index_rebal_reversal: use S&P/ASX 200 and 300 quarterly rebalance notices, announced on the first Friday of Mar/Jun/Sep/ | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0090 | new family: exdate_open_reversal: on the ex-dividend date, look at ASX200 stocks whose dividend is at least 1.5% of the prior close. | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0091 | new family: squeeze_drift: take the drift family's 'results' and 'guidance' announcements and add a filter on ASIC's daily short-pos | (recovered: refused by the fingerprint bug) |  |  |  | needs_build:  |
+| I0092 | index_revert {"direction": "follow"} | built from I0081: index_follow: the mirror image of index_revert. From 11:00 to 14:30, in liquid stocks (turnover >= $20M) with no announcem | $-1,135, 54 tr, t -1.01 |  |  | failed: lost $1,135 after costs; t -1.01 < bar 1.49 (N=83); did not beat the best yardstick ($694); did not beat the old rules ($-890) |
+| I0093 | sympathy {} | built from I0083: sympathy: from 10:30 to 12:30, find a 'leader'. That is a stock with a price-sensitive announcement today, up or down at l | $-887, 22 tr, t -0.92 |  |  | failed: lost $887 after costs; t -0.92 < bar 1.49 (N=83); did not beat the best yardstick ($591); did not beat the old rules ($-665) |
+| I0094 | index_momentum {} | built from I0085: intraday_momentum_close: At 15:30 compute the 'early signal' = the ASX200 return from the prior close to 10:30 (overnight  | $-1,114, 65 tr, t -4.91 |  |  | failed: lost $1,114 after costs; t -4.91 < bar 1.49 (N=83); did not beat the best yardstick ($64); did not beat the old rules ($-1,076) |
+| I0095 | close_strength {"pick": "weak"} | built from I0088: close_weakness_rebound: at 15:58, find stocks with 20-day average turnover of at least $5M and no announcement that day. E | $-2,361, 8 tr, t -1.24 |  |  | failed: lost $2,361 after costs; 8 trades (< 15); t -1.24 < bar 1.49 (N=83); did not beat the best yardstick ($581); did not beat the old rules ($-1 |
+| I0096 | orb {"window": 30, "rank_at": "10:45", "min_gap_pct": 3.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 2, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "close_volume_cap": 0.0} | ORB is our only family with positive yardsticks, and its best variant (I0076: gap >= 3%, catalyst, index regime) reached t 1.22. Every ORB t | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.49 (N=85); did not beat the best yardstick ($583) |
+| I0097 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": false, "min_react_pct": 5.0, "hold_days": 10, "stop_pct": 10.0, "min_turnover_aud": 5000000.0, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | Post-earnings drift is best documented for real earnings surprises in liquid names. The default drift test was diluted by noisy exploration, | $376, 5 tr, t 0.74 |  |  | failed: 5 trades (< 15); t 0.74 < bar 1.49 (N=85); did not beat the best yardstick ($1,455) |
+| I0098 | new family: high52_breakout: at 15:55, screen stocks with 20-day average turnover >= $5M and no price-sensitive announcement today o | The 52-week-high anchoring effect (George & Hwang) is a news-free, multi-day continuation effect, and none of our ideas has tested it; every |  |  |  | needs_build:  |
+| I0099 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 1000000.0, "allow_short": false, "max_trades": 3, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "close_volume_cap": 0.0} | This combines the only three features that have helped ORB so far: long-only (I0071, +$428), the index regime filter, and a last entry of 11 | $-20, 9 tr, t -0.06 |  |  | failed: lost $20 after costs; 9 trades (< 15); t -0.06 < bar 1.49 (N=87); did not beat the best yardstick ($976) |
+| I0100 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": false, "min_react_pct": 4.0, "hold_days": 5, "stop_pct": 8.0, "min_turnover_aud": 1500000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | Post-earnings drift is the best-documented announcement effect, and it is long-biased on the ASX. I0097 (results/guidance, long-only) won 4  | $-389, 12 tr, t -0.51 |  |  | failed: lost $389 after costs; 12 trades (< 15); t -0.51 < bar 1.49 (N=87); did not beat the best yardstick ($655) |
+| I0101 | new family: day2_continuation: Day 1 is the setup. The stock has a price-sensitive announcement (results, guidance, acquisition or c | Every existing family trades either the catalyst day itself (orb, hod_mom) or a blind next-open entry (drift). Requiring day-2 confirmation  |  |  |  | needs_build:  |
+| I0102 | index_momentum {"vehicle": "BHP,CBA", "risk_pct": 0.6, "stop_pct": 1.0, "threshold_pct": 0.6, "at": "15:30", "max_trades": 2, "allow_short": true, "cost_multiple": 0.0, "regime": "none", "close_volume_cap": 0.0, "exit": "close", "trail_pct": 0.0, "last_entry": "11:30"} | I0094's 4.6% win rate looks like a fee problem, not a signal problem. At 0.2% risk across 5 names each order is only about $5k, so the $6.60 | $-89, 14 tr, t -0.87 |  |  | failed: lost $89 after costs; 14 trades (< 15); t -0.87 < bar 1.50 (N=88); did not beat the best yardstick ($550) |
+| I0103 | new family: intraday_news_momentum: react to price-sensitive announcements released DURING market hours (10:30-14:30), not before th | Every news family so far keys off the open or the next day. Mid-session releases in ASX small and mid caps hit thinner attention (lunch, few |  |  |  | needs_build:  |
+| I0104 | new family: weekly_reversal: every Friday at 15:55, rank ASX300 stocks with 20-day average turnover of at least $5M by their 5-day r | Short-term (1-week) reversal of no-news, liquidity-driven selloffs is one of the most robust equity anomalies. Our intraday reversion tests  |  |  |  | needs_build:  |
+| I0105 | pullback {"from": "10:45", "last_entry": "13:30", "min_chg_pct": 4.0, "min_rvol": 2.5, "band_pct": 0.4, "lookback": 20, "min_turnover_aud": 3000000.0, "allow_short": false, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "exit": "close", "trail_pct": 0.0} | The pullback family has not appeared in the log, and its entry is the missing piece of our only positive yardstick (ORB on in-play names). B | $-849, 29 tr, t -1.40 |  |  | failed: lost $849 after costs; t -1.40 < bar 1.50 (N=90); did not beat the best yardstick ($635) |
+| I0106 | close_strength {"pick": "strong", "direction": "with", "allow_short": false, "min_chg_pct": 4.0, "min_rvol": 2.5, "near_high_pct": 0.5, "hold_days": 1, "stop_pct": 4.0, "min_turnover_aud": 3000000.0, "close_volume_cap": 0.05, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "last_entry": "11:30"} | Stocks that close right at the day's high on heavy volume show buying the day could not fill, so they tend to gap up the next morning. Requi | $608, 4 tr, t 1.15 |  |  | failed: 4 trades (< 15); t 1.15 < bar 1.50 (N=90); did not beat the best yardstick ($1,200) |
+| I0107 | new family: failed_orb_reversal: take stocks in play (a price-sensitive announcement, a gap of at least 3%, turnover of at least $3M | ORB on in-play names is our only positive yardstick, and it is weak (t 0.86). Its losing half is the failed breakout. A breakout that fully  |  |  |  | needs_build:  |
+| I0108 | orb {"window": 5, "rank_at": "10:20", "min_gap_pct": 1.0, "need_catalyst": true, "min_open_rvol": 3.0, "min_turnover_aud": 1000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | ORB with a catalyst is still our only positive family, but every variant so far has filtered on gap size and none on opening relative volume | $-304, 13 tr, t -0.67 |  |  | failed: lost $304 after costs; 13 trades (< 15); t -0.67 < bar 1.50 (N=92); did not beat the best yardstick ($325) |
+| I0109 | hod_mom {"from": "13:00", "last_entry": "15:00", "min_rvol": 3.0, "min_chg_pct": 3.0, "lookback": 60, "min_turnover_aud": 5000000.0, "allow_short": true, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "close_volume_cap": 0.0} | A stock that holds its gain through the ASX lunch lull and then makes a new 60-min high on 3x volume after 13:00 points to continuing instit | $-230, 1 tr, t -1.00 |  |  | failed: lost $230 after costs; 1 trades (< 15); t -1.00 < bar 1.50 (N=92); did not beat the best yardstick ($584) |
+| I0110 | new family: substantial_holder_accumulation: parse Form 603 (becoming a substantial holder) and Form 604 (change of interest) notice | An institution that crosses or adds to a 5% stake on market is usually still working a larger order, and that price pressure should continue |  |  |  | needs_build:  |
+| I0111 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 3.0, "need_catalyst": false, "min_open_rvol": 5.0, "min_turnover_aud": 2000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | Stocks-in-play ORB is still the lab's best edge. Since I0071, every ORB tweak has failed on fewer than 15 trades because the catalyst tag st | $-73, 24 tr, t -0.11 |  |  | failed: lost $73 after costs; t -0.11 < bar 1.51 (N=94); did not beat the best yardstick ($1,276) |
+| I0112 | drift {"types": ["results", "guidance"], "direction": "against", "allow_short": false, "min_react_pct": 5.0, "hold_days": 3, "stop_pct": 8.0, "min_turnover_aud": 10000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | Continuation after results has shown nothing on the ASX (C t=0.09, I0097 small, I0100 negative), which hints that liquid names overshoot rat | $-480, 10 tr, t -0.79 |  |  | failed: lost $480 after costs; 10 trades (< 15); t -0.79 < bar 1.51 (N=94); did not beat the best yardstick ($308) |
+| I0113 | new family: auction_dislocation_revert: after each close, compare the closing single price auction (CSPA) price with the last contin | Auction prints driven by passive liquidity demand carry temporary price impact that tends to revert. This is a flow-driven effect with no ov |  |  |  | needs_build:  |
+| I0114 | close_strength {"pick": "strong", "direction": "with", "allow_short": false, "min_chg_pct": 3.0, "min_rvol": 2.0, "near_high_pct": 0.5, "hold_days": 1, "stop_pct": 4.0, "min_turnover_aud": 3000000.0, "close_volume_cap": 0.05, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "last_entry": "11:30"} | I0106 is the only recent test with a clearly positive sign: 4 of 4 winners and +$608 when the fill is capped at 5% of the closing auction. R | $-766, 16 tr, t -0.81 |  |  | failed: lost $766 after costs; t -0.81 < bar 1.51 (N=96); did not beat the best yardstick ($1,223) |
+| I0115 | gap_fade {"min_gap_pct": 2.5, "max_gap_pct": 8.0, "stop_mult": 0.5, "enter_after": 15, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 2, "last_entry": "11:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "close_volume_cap": 0.0} | Recent tests have not covered gap_fade. The index regime restricts it to liquid no-news gaps that go against the market's direction, which a | $-747, 34 tr, t -0.70 |  |  | failed: lost $747 after costs; t -0.70 < bar 1.51 (N=96); did not beat the best yardstick ($550) |
+| I0116 | new family: calendar_basket: a calendar long in a basket of the 5 largest ASX20 names with turnover of at least $100M, or STW/IOZ if | Every intraday idea is being eaten by costs. Turn-of-month and pre-holiday returns are among the most persistent documented calendar effects |  |  |  | needs_build:  |
+| I0117 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 2.0, "need_catalyst": true, "min_open_rvol": 0.0, "min_turnover_aud": 500000.0, "allow_short": true, "max_trades": 5, "last_entry": "12:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | Default ORB is our only positive result ($1,274, t 0.86). Every tightening so far dropped trades below 15 and lost the edge, so this goes th | $351, 36 tr, t 0.46 |  |  | failed: t 0.46 < bar 1.51 (N=97); did not beat the best yardstick ($512) |
+| I0118 | new family: block_selldown_rebound: detect overnight secondary block trades (sell-downs by existing holders, not capital raisings),  | Block sell-downs create non-informational price pressure: the discount pays buyers to absorb inventory, and the price tends to recover once  |  |  |  | needs_build:  |
+| I0119 | new family: contraction_breakout: universe is stocks with 20-day average turnover of at least $10M and no price-sensitive announceme | Volatility clusters: after compression in a liquid no-news name, range expansion is more likely (the Crabel NR7 effect). The tight prior-day |  |  |  | needs_build:  |
+| I0120 | AI: Cost gate: reject any proposal whose target move x qty < 4x (2x brokerage + spread cost). Merge same-code same-side prop | Fees ($171.60) exceed the run's net result. Duplicate small tickets and blind re-submits are the controllable leaks seen today. |  |  |  | queued:  |
+| I0121 | new family: china_open_lead: trade new information that arrives during the ASX session from China's markets. China's cash equity ope | This is new price discovery during the session, not the overnight gap that was already tried. ASX materials names are known to track the Chi |  |  |  | needs_build:  |
+| I0122 | new family: results_runup: this family targets the earnings announcement premium. Use the scheduled half-year and full-year results  | Frazzini-Lamont and later studies find stocks earn abnormal returns in the days before scheduled earnings, as attention and buying build. Th |  |  |  | needs_build:  |
+| I0123 | vwap_rev {"stretch_pct": 3.5, "stop_pct": 2.0, "from": "11:00", "last_entry": "14:30", "min_turnover_aud": 20000000.0, "allow_short": false, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "exit": "close", "trail_pct": 0.0, "close_volume_cap": 0.0} | This buys only very liquid names that are stretched 3.5% below VWAP while the index is rising, so the drop is a stock-specific liquidity ove | $-331, 8 tr, t -0.34 |  |  | failed: lost $331 after costs; 8 trades (< 15); t -0.34 < bar 1.52 (N=99); did not beat the best yardstick ($308) |
+| I0124 | new family: rsi2_trend_dip: a daily, liquid-only mean-reversion family (Connors RSI(2) style). Universe: ASX200 stocks with 20-day a | Every intraday family keeps losing to fixed fees and spread on moves under 2%. A 1-5 day hold captures a 2-4% snap-back that is larger than  |  |  |  | needs_build:  |
+| I0125 | new family: cross_listed_parity: for ASX lines of dual-listed or CDI companies (RMD, NEM, JHX, SQ2, RIO vs RIO plc, NWS vs NWSA, wit | During ASX hours the primary market is closed, so ASX-line prices are set by thin local flow. FX and futures give a live fair value. Diverge |  |  |  | needs_build:  |
+| I0126 | gap_fade {"min_gap_pct": 3.0, "max_gap_pct": 10.0, "stop_mult": 0.75, "enter_after": 30, "min_turnover_aud": 5000000.0, "allow_short": false, "max_trades": 2, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0} | Past gap_fade tests mixed longs with borrow-constrained shorts and an index filter. Buying only no-news gap-downs, after the staggered open  | $-641, 25 tr, t -0.76 |  |  | failed: lost $641 after costs; t -0.76 < bar 1.52 (N=100); did not beat the best yardstick ($655) |
+| I0127 | hod_mom {"from": "10:30", "last_entry": "12:00", "min_rvol": 3.0, "min_chg_pct": 4.0, "lookback": 30, "min_turnover_aud": 3000000.0, "allow_short": false, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "index", "exit": "close", "trail_pct": 0.0, "close_volume_cap": 0.0} | ORB is our only family with positive net. This buys the second leg of the same in-play stocks: a new high after 10:30, on 3x volume, with th | $-1,097, 16 tr, t -1.19 |  |  | failed: lost $1,097 after costs; t -1.19 < bar 1.52 (N=102); did not beat the best yardstick ($655) |
+| I0128 | close_strength {"pick": "strong", "direction": "with", "allow_short": false, "min_chg_pct": 4.0, "min_rvol": 2.5, "near_high_pct": 1.0, "hold_days": 3, "stop_pct": 6.0, "min_turnover_aud": 3000000.0, "close_volume_cap": 0.0, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "last_entry": "11:30"} | The strict strong-closer screen (I0106) went 4 for 4 (+$608), but the overnight gap is too small to beat fees; the looser I0114 with a 1-day | $-477, 3 tr, t -2.12 |  |  | failed: lost $477 after costs; 3 trades (< 15); t -2.12 < bar 1.52 (N=102); did not beat the best yardstick ($591) |
+| I0129 | new family: news_pop_timed_exit: use the same universe and entry as orb (a price-sensitive announcement, a gap of at least 2%, turno | ASX small- and mid-cap news pops tend to peak in the first 60-90 minutes and then bleed into the close. So the ORB edge (win rate around 61% |  |  |  | needs_build:  |
+| I0130 | close_strength {"pick": "strong", "direction": "against", "allow_short": true, "min_chg_pct": 3.0, "min_rvol": 2.0, "near_high_pct": 1.0, "hold_days": 1, "stop_pct": 3.0, "min_turnover_aud": 3000000.0, "close_volume_cap": 0.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "last_entry": "11:30"} | Buying strong closers has lost money every time: I0114 lost $766 (t -0.81), I0128 lost $477 and I0095 lost $2,361. Stocks with large intrada | $253, 11 tr, t 0.50 |  |  | failed: 11 trades (< 15); t 0.50 < bar 1.52 (N=104); did not beat the best yardstick ($828) |
+| I0131 | drift {"types": ["results", "guidance"], "direction": "with", "allow_short": true, "min_react_pct": 5.0, "hold_days": 5, "stop_pct": 8.0, "min_turnover_aud": 5000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | Every results/guidance drift test so far was long-only (I0097, I0100, I0112), but drift after bad news is documented as stronger than after  | $355, 11 tr, t 0.80 |  |  | failed: 11 trades (< 15); t 0.80 < bar 1.52 (N=104); did not beat the best yardstick ($953) |
+| I0132 | new family: orb_retest: use the same universe and opening range as orb (a price-sensitive announcement, a gap of at least 2%, turnov | ORB is the only setup with a positive edge ($1,274 over 64 trades), but its stop-order entries pay the spread plus slippage into momentum. A |  |  |  | needs_build:  |
+| I0133 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.5, "need_catalyst": false, "min_open_rvol": 3.0, "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 2, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | Opening-range breakouts work best in 'stocks in play' picked by unusual opening volume, and here that screen runs only on very liquid names. | $793, 10 tr, t 2.06 |  |  | failed: 10 trades (< 15); did not beat the best yardstick ($953) |
+| I0134 | index_revert {"from": "13:30", "last_entry": "15:30", "min_resid_pct": 3.0, "stop_mult": 0.75, "min_turnover_aud": 20000000.0, "no_news": true, "direction": "revert", "allow_short": true, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "close_volume_cap": 0.0} | A large-cap stock that has drifted 3% or more from the index by the afternoon, with no news, usually reflects one big order being worked. Th | $-1,124, 40 tr, t -1.81 |  |  | failed: lost $1,124 after costs; t -1.81 < bar 1.53 (N=106); did not beat the best yardstick ($1,455) |
+| I0135 | new family: pair_spread_revert: fixed pairs of economically linked ASX large caps: NAB/WBC, ANZ/WBC, CBA/NAB, BHP/RIO, RIO/FMG, WOW/ | Intraday divergence between close substitutes with no news is mostly order-flow noise. The paired hedge strips out the sector and market mov |  |  |  | needs_build:  |
+| I0136 | index_revert {"direction": "follow", "from": "12:00", "last_entry": "15:00", "min_resid_pct": 3.0, "stop_mult": 0.5, "min_turnover_aud": 20000000.0, "no_news": true, "allow_short": true, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "close_volume_cap": 0.0} | I0134 fading no-news divergences in liquid names lost $1,124 at t -1.81 over 40 trades, a significant sign that these residuals keep going ( | $-280, 40 tr, t -0.21 |  |  | failed: lost $280 after costs; t -0.21 < bar 1.53 (N=109); did not beat the best yardstick ($777) |
+| I0137 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.0, "need_catalyst": false, "min_open_rvol": 2.5, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | I0133 had the best t in the log (2.06, 70% wins, +$793) and failed only on sample size (10 trades). Lowering the gap to 1%, turnover to $10M | $395, 8 tr, t 1.26 |  |  | failed: 8 trades (< 15); t 1.26 < bar 1.53 (N=109); did not beat the best yardstick ($655) |
+| I0138 | close_strength {"pick": "weak", "direction": "against", "allow_short": false, "min_chg_pct": 4.0, "min_rvol": 2.0, "near_high_pct": 1.0, "hold_days": 1, "stop_pct": 4.0, "min_turnover_aud": 5000000.0, "close_volume_cap": 0.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "exit": "close", "trail_pct": 0.0, "last_entry": "11:30"} | Liquid stocks that close near their low after heavy selling tend to reverse overnight: the liquidity provider is paid, and this rides the kn | $0, 0 tr, t 0.00 |  |  | failed: lost $-0 after costs; 0 trades (< 15); t 0.00 < bar 1.53 (N=109); did not beat the best yardstick ($655) |
+| I0139 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.5, "need_catalyst": false, "min_open_rvol": 3.0, "min_turnover_aud": 5000000.0, "allow_short": true, "max_trades": 3, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | The only positive results in the log are liquid-name ORBs gated by first-30-minute direction: I0133 ($20M turnover) had t 2.06 but 10 trades | $144, 13 tr, t 0.35 |  |  | failed: 13 trades (< 15); t 0.35 < bar 1.53 (N=111); did not beat the best yardstick ($1,165) |
+| I0140 | sympathy {"from": "10:30", "last_entry": "12:30", "leader_min_chg_pct": 5.0, "leader_min_rvol": 3.0, "leader_min_turnover_aud": 5000000.0, "peer_max_move_frac": 0.33, "stop_pct": 2.0, "min_turnover_aud": 3000000.0, "allow_short": true, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "exit": "close", "trail_pct": 0.0} | The sympathy family has not been tested in recent rounds, so this widens the search rather than tweaking a failed idea. The lead-lag literat | $-746, 22 tr, t -1.24 |  |  | failed: lost $746 after costs; t -1.24 < bar 1.53 (N=111); did not beat the best yardstick ($1,273) |
+| I0141 | new family: price_query_fade: parse ASX 'Price Query' and 'Aware Letter' responses, known as speeding tickets. Keep only responses w | An ASX price query is a regulator-forced public confirmation that a speculative spike has no information behind it. That makes it a clean tr |  |  |  | needs_build:  |
+| I0142 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.0, "need_catalyst": false, "min_open_rvol": 2.0, "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | Liquid-name ORB gated by the first-30-minute direction is the only recent positive pocket (I0133 +$793, t 2.06, but 10 trades; I0137 t 1.26, | $766, 16 tr, t 1.36 |  |  | failed: t 1.36 < bar 1.54 (N=113); did not beat the best yardstick ($1,219) |
+| I0143 | drift {"types": ["acquisition", "contract"], "direction": "with", "allow_short": false, "min_react_pct": 4.0, "hold_days": 5, "stop_pct": 8.0, "min_turnover_aud": 2000000.0, "max_trades": 3, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "none", "close_volume_cap": 0.0, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | Recent drift tests used only results and guidance, and 'with' was mildly positive (I0131 t 0.8). Material contract wins and acquisitions are | $-385, 6 tr, t -0.99 |  |  | failed: lost $385 after costs; 6 trades (< 15); t -0.99 < bar 1.54 (N=113); did not beat the best yardstick ($583) |
+| I0144 | new family: tax_loss_rebound: this targets Australia's 30 June financial year end. On the last 5 trading days of June, rank ASX300 s | Tax-loss selling into 30 June, followed by a July rebound, is a documented ASX effect with a clear forced-seller cause. It is a once-a-year  |  |  |  | needs_build:  |
+| I0145 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.0, "need_catalyst": false, "min_open_rvol": 3.0, "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | This is the only lead with a positive t after costs: a no-catalyst ORB on liquid names, aligned with first30. I0133 (rvol 3, gap 1.5) made $ | $-99, 7 tr, t -0.37 |  |  | failed: lost $99 after costs; 7 trades (< 15); t -0.37 < bar 1.54 (N=115); did not beat the best yardstick ($584) |
+| I0146 | index_momentum {"at": "15:30", "threshold_pct": 0.5, "vehicle": "BHP,CBA,CSL,NAB,WBC,ANZ,WES,MQG", "stop_pct": 0.8, "risk_pct": 0.3, "max_trades": 8, "cost_multiple": 0.0, "regime": "none", "close_volume_cap": 0.0, "allow_short": true, "last_entry": "11:30", "exit": "close", "trail_pct": 0.0} | Intraday momentum (the first half-hour predicts the last half-hour, per Gao et al.) is a well-documented market-level effect. It comes from  | $-562, 48 tr, t -2.61 |  |  | failed: lost $562 after costs; t -2.61 < bar 1.54 (N=115); did not beat the best yardstick ($1,441) |
+| I0147 | new family: day2_orb: universe = stocks that had a price-sensitive announcement YESTERDAY. Yesterday's close-to-close move must be a | Day-one news ORB gets crowded, and the drift family holds through overnight noise. Day-two continuation of a strong, high-volume news close  |  |  |  | needs_build:  |
+| I0148 | orb {"window": 15, "rank_at": "10:25", "min_gap_pct": 1.0, "need_catalyst": false, "min_open_rvol": 2.0, "min_turnover_aud": 10000000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:00", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | Liquid, no-catalyst ORB with the first30 filter is the only run of ideas that keeps posting positive t: I0133 (t 2.06), I0142 (t 1.36) and I | $34, 11 tr, t 0.09 |  |  | failed: 11 trades (< 15); t 0.09 < bar 1.54 (N=117); did not beat the best yardstick ($512) |
+| I0149 | pullback {"from": "10:45", "last_entry": "14:00", "min_chg_pct": 4.0, "min_rvol": 3.0, "band_pct": 0.4, "lookback": 15, "min_turnover_aud": 5000000.0, "allow_short": true, "max_trades": 2, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "exit": "close", "trail_pct": 0.0, "close_volume_cap": 0.0} | Chasing extremes (hod_mom I0109/I0127) keeps failing, and gap/VWAP fades do too. Entering the same strong, heavy-volume stocks on their firs | $-517, 5 tr, t -0.73 |  |  | failed: lost $517 after costs; 5 trades (< 15); t -0.73 < bar 1.54 (N=117); did not beat the best yardstick ($252) |
+| I0150 | new family: intraday_news_breakout: universe = price-sensitive announcements lodged DURING the session, from 10:30 to 14:30 (resumpt | The only proven edge in the log is continuation after price-sensitive news, and the ORB family only sees news lodged before the open. Midday |  |  |  | needs_build:  |
+| I0151 | orb {"window": 30, "rank_at": "10:40", "min_gap_pct": 1.0, "need_catalyst": false, "min_open_rvol": 2.0, "min_turnover_aud": 20000000.0, "allow_short": true, "max_trades": 3, "last_entry": "12:30", "exit": "close", "trail_pct": 0.0, "risk_pct": 1.0, "cost_multiple": 3.0, "regime": "first30", "close_volume_cap": 0.0} | Liquid no-catalyst ORB with the first30 filter is the only area with repeated positive t (I0133 t 2.06, I0142 t 1.36), but it keeps failing  |  |  |  | queued:  |
+| I0152 | new family: high52_breakout: universe = ASX200 stocks with 20-day average turnover >= $10M. Exclude any stock with a price-sensitive | The 52-week-high anchoring effect (George and Hwang) is a documented, persistent drift. Buyers anchor on the old high, so breakouts on volum |  |  |  | needs_build:  |
+| I0153 | new family: macro_release_drift: ABS releases come out at 11:30 AEST during the session: labour force, the monthly CPI indicator, qu | Macro surprises diffuse into equities slowly, as known post-announcement drift in rate-sensitive stocks. On the ASX they land mid-session, s |  |  |  | needs_build:  |
