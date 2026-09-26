@@ -1071,7 +1071,7 @@ def telegram_text(data_dir, day: date, pbs) -> str:
         return head + "\nNo journal was written for this day."
     where = Path("data") / "arena" / "journal" / day.isoformat()
     return "\n".join(
-        [head, *[f"- {escape(x)}" for x in lines],
+        [head, *[f"- {escape(x, quote=False)}" for x in lines],
          f"Written only: no agent reads it during the 10-day test. One file per book in "
          f"{escape(str(where))}."]  # fmt: skip
     )
@@ -1090,5 +1090,5 @@ def report_block(data_dir, day: date, pbs) -> str:
                 "run; arena_evening.log says why).")  # fmt: skip
     return "\n".join(
         ["<b>Journal - the day's lessons</b> (written only: no agent reads it during the test)"]
-        + [f"- {escape(x)}" for x in lines]
+        + [f"- {escape(x, quote=False)}" for x in lines]
     )
