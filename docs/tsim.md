@@ -92,11 +92,39 @@ are the account (cash, leverage 1x, borrowable list), costs, no future data, and
 writes, 58k cache reads, 16k output), 222 s thinking, 4.2 minutes wall. The brief's estimate was
 ~200k per day.
 
-Disguise before the knowledge cutoff (1 Jul 2026): one alias and one hidden price factor per
-stock for the whole run, volumes divided by the same factor (so dollar values are real), "Day N
-(weekday)" dates, headlines reduced to generic words. Measured, not assumed:
-`asxbot lab sim contamination RUN_ID` asks the model to name the codes and date from what it
-was shown; a day where it can is contaminated and excluded.
+Disguise before the knowledge cutoff (1 Jul 2026) - the AI only (plain-code traders see the
+market as it was): one alias and one hidden price factor (0.25-4x) per stock for the whole run,
+volumes divided by the same factor (so dollar values are real), "Day N" dates with no weekday,
+headlines reduced to generic words with no calendar (years, day numbers, months, FY/1H/Q
+periods removed). Measured, not assumed: `asxbot lab sim contamination RUN_ID` asks the model
+to name the codes and date from the pre-open packet it saw; a day where it names a code among
+the aliases or the date within 3 days is contaminated and excluded. First probe (26 Sep, the
+first disguise): 2 of 5 days' dates named exactly and 2 stocks named - so the calendar was
+stripped and the price factor widened. Second probe: no stock named, 1 of 4 days within 3 days
+(reporting-season clues), other guesses years off.
+
+Sampled runs: when the next simulated day is not the next trading session, everything held is
+closed at the day's close (auction impact and brokerage paid) and working orders are cancelled,
+and the trader is told so in advance - otherwise a position would jump weeks of unsimulated
+market. Practice samples are blocks of consecutive sessions.
+
+## 4b. The AI trading team (`team.py`)
+
+Rick, 26 Sep: "build the AI trader as a team of agents working in parallel, not one". Same
+simulator, tools, costs and wake-ups as the single AI trader, so the two are measured on the
+same days (`asxbot lab sim compare RUN_A RUN_B`). Each wake: READERS (Sonnet 5, one per new
+price-sensitive announcement, in parallel) -> SCANNER (Sonnet 5: the plain-code scans and the
+readers' notes -> a watchlist of stocks in play, re-run at most every 10 minutes or on news) ->
+five SPECIALISTS in parallel (Sonnet 5: opening range, momentum, mean reversion, news/catalyst,
+multi-day; each proposes trades in its own style with entry, stop, target, size, confidence) ->
+the DECISION-MAKER (Opus 5.5 high: chooses, sizes, manages, sets alerts; the only one that places
+orders) -> the RISK MANAGER (Opus 5.5 high: vetoes or cuts every order that adds risk, including
+orders left for tomorrow; code enforces it). After the close the decision-maker writes the journal
+and the RESEARCHER (Opus 5.5 high) writes lessons for tomorrow and proposes new strategy ideas,
+registered in the search (`team-researcher`) to be tested. The clock advances by the slowest agent
+of each stage. Budget guard: 18 wakes a day. Measured on its first day: ~170 calls, ~210k Opus
+and ~850k Sonnet tokens, 16-18 minutes wall, about 5x the single agent's API-equivalent cost -
+almost all of it the specialists re-reading the watchlist each wake.
 
 ## 5. Rules-only traders (`rules.py`)
 
