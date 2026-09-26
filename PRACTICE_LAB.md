@@ -124,3 +124,11 @@ On Rick's PC (26 Sep): the search's cache is rebuilt from the history into
 of ideas tried carries on at N = 72 and `run` tries only ideas added after them. Never rewrite
 or delete it: it sets the bar every later idea must clear. `report` rebuilds the report with
 blank summary sections unless `--summary/--next/--checks` are given.
+
+The PC's history is not the cloud's any more (26 Sep, 21:30): STW, VAS and the index were
+fetched back to 25 Feb, so the index-fund timing ideas (X01-X03) have their data, the index
+filter has warm-up before 26 Mar, and the search reads STW/VAS as tradeable in every window
+(it lists stocks by their history folders). Re-run on practice only, for information and NOT
+logged: 54 of the 72 ideas match the cloud trade for trade; 18 differ (C01, C04-C06, L03, R04,
+W05 through the index filter; K01-K03, K05, W01-W04 by one or two STW/VAS trades; X01-X03 now
+run and lose: -401, -194, -228). No verdict changes. The recorded results stay the cloud's.
