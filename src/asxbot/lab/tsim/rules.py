@@ -118,8 +118,11 @@ class RuleTrader(Trader):
         qty = math.floor(self.equity(v) * self.p["risk_pct"] / 100 / risk_ps)
         # what the account can carry at 1x its leverage, less what is already out
         acct = v.b.acct
-        room = acct.equity(v.m.last) * acct.leverage - acct.gross(v.m.last) - (
-            v.b.working_open_value())
+        room = (
+            acct.equity(v.m.last) * acct.leverage
+            - acct.gross(v.m.last)
+            - (v.b.working_open_value())
+        )
         room -= getattr(self, "_reserved", 0.0)  # entries already sized in this same call
         qty = min(qty, math.floor(max(0.0, room) * 0.98 / ref))
         cap = self.p["close_volume_cap"]
@@ -480,7 +483,171 @@ class Drift(RuleTrader):
         return None
 
 
-FAMILIES = {c.family: c for c in (ORB, GapFade, VwapRev, HodMomentum, Drift)}
+class CloseStrength(RuleTrader):
+    """The overnight effect: stocks that close strong (near the high of the day, up on heavy
+    volume) are bought in the closing auction and sold in the next opening auction - or, with
+    direction "against", the strongest are shorted for the gap back. Stop: a stop-market from
+    the open at `stop_pct`."""
+
+    family = "close_strength"
+    defaults = {"min_chg_pct": 3.0, "min_rvol": 2.0, "near_high_pct": 1.0, "direction": "with",
+                "hold_days": 1, "stop_pct": 3.0, "max_trades": 3,
+                "min_turnover_aud": 2_000_000.0}  # fmt: skip
+
+    def __init__(self, params=None, name=None):
+        super().__init__(params, name)
+        self.state = {"keep_held": {}}
+
+    def pre_open(self, v, ctx):
+        self._reserved = 0.0
+        acts = []
+        held = self.state["keep_held"]
+        for code in list(held):
+            held[code] += 1
+            p = v.b.acct.positions.get(code)
+            if p is None:
+                del held[code]
+                continue
+            if held[code] >= int(self.p["hold_days"]):
+                # the opening auction: a market order sent before 09:59 joins it
+                acts.append({"op": "place", "code": code, "side": "sell" if p.qty > 0 else "cover",
+                             "qty": abs(p.qty), "type": "market",
+                             "why": "close_strength: out in the opening auction"})  # fmt: skip
+                del held[code]
+        return Decision(actions=acts) if acts else None
+
+    def on_bar(self, v, slot):
+        if slot != CONTINUOUS_END_SLOT - 3:  # 15:57: choose, send to the closing auction
+            return []
+        news = v.news_codes()
+        cands = []
+        for code, b in v.m.bars.items():
+            if (v.m.turnover(code) or 0) < self.p["min_turnover_aud"] or not (b.v[:slot] > 0).any():
+                continue
+            chg, rv = v.change_pct(code), v.rvol(code)
+            if chg is None or rv is None or chg < self.p["min_chg_pct"] or rv < self.p["min_rvol"]:
+                continue
+            hi = float(np.nanmax(b.h[: slot + 1]))
+            last = float(b.c[slot]) if b.v[slot] > 0 else v.m.last(code)
+            if not last or (hi - last) / hi * 100 > self.p["near_high_pct"]:
+                continue
+            cands.append((rv, code, last, code in news))
+        cands.sort(reverse=True)
+        acts = []
+        for _rv, code, last, _n in cands[: int(self.p["max_trades"])]:
+            side = "buy" if self.p["direction"] == "with" else "short"
+            stop = last * (1 - self.p["stop_pct"] / 100) if side == "buy" else last * (
+                1 + self.p["stop_pct"] / 100)  # fmt: skip
+            plan = Plan(code, side, None, stop, f"closed strong (+{v.change_pct(code):.1f}%)")
+            a = self.enter(v, plan)
+            if a:
+                a["type"] = "moc"
+                a["attach"] = {"stop": stop, "tif": "gtc"}
+                acts.append(a)
+                self.state["keep_held"][code] = 0
+        return acts
+
+
+class Pullback(RuleTrader):
+    """The first pullback in a stock in play: up at least `min_chg_pct` on heavy relative volume,
+    it dips to VWAP (within `band_pct`) and a bar closes back above the prior bar's high - buy,
+    stop under the pullback's low, target the high of the day, flat at the close."""
+
+    family = "pullback"
+    defaults = {"from": "10:45", "last_entry": "14:30", "min_chg_pct": 3.0, "min_rvol": 2.0,
+                "band_pct": 0.5, "lookback": 15, "min_turnover_aud": 2_000_000.0}  # fmt: skip
+
+    def on_bar(self, v, slot):
+        hh, mm = self.p["from"].split(":")
+        if v.m.now.time() < time(int(hh), int(mm)) or self.past_last_entry(v):
+            return []
+        if len(self.taken) >= self.p["max_trades"] or slot < 2:
+            return []
+        from asxbot.lab.tsim.tools import _vwap
+
+        acts = []
+        for code, b in v.m.bars.items():
+            if code in self.taken or b.v[slot] <= 0 or b.v[slot - 1] <= 0:
+                continue
+            if (v.m.turnover(code) or 0) < self.p["min_turnover_aud"]:
+                continue
+            chg, rv = v.change_pct(code), v.rvol(code)
+            if chg is None or rv is None or chg < self.p["min_chg_pct"] or rv < self.p["min_rvol"]:
+                continue
+            vw = _vwap(b, slot + 1)
+            lb = int(self.p["lookback"])
+            low = float(np.nanmin(b.l[max(0, slot - lb) : slot + 1]))
+            if not vw or low > vw * (1 + self.p["band_pct"] / 100):
+                continue  # no dip to VWAP in the lookback
+            if not (b.c[slot] > vw and b.c[slot] > b.h[slot - 1]):
+                continue  # no turn back up yet
+            hod = float(np.nanmax(b.h[: slot + 1]))
+            if hod <= b.c[slot]:
+                continue
+            plan = Plan(code, "buy", None, low, f"pullback to VWAP in a +{chg:.1f}% stock",
+                        target=hod)  # fmt: skip
+            a = self.enter(v, plan)
+            if a:
+                acts.append(a)
+            if len(self.taken) >= self.p["max_trades"]:
+                break
+        return acts
+
+
+class IndexRevert(RuleTrader):
+    """A liquid stock that has moved far from the index today with no news (the residual move,
+    stock minus index, beyond `min_resid_pct`) is faded toward the index: long a laggard, short a
+    leader where shortable. Stop at `stop_mult` x the residual beyond entry; target VWAP."""
+
+    family = "index_revert"
+    defaults = {"from": "11:00", "last_entry": "15:00", "min_resid_pct": 3.0, "stop_mult": 0.5,
+                "min_turnover_aud": 10_000_000.0, "no_news": True}  # fmt: skip
+
+    def on_bar(self, v, slot):
+        hh, mm = self.p["from"].split(":")
+        if v.m.now.time() < time(int(hh), int(mm)) or self.past_last_entry(v):
+            return []
+        if len(self.taken) >= self.p["max_trades"]:
+            return []
+        idx = v.m.index_move_pct()
+        if idx is None:
+            return []
+        news = v.news_codes() if self.p["no_news"] else {}
+        from asxbot.lab.tsim.tools import _vwap
+
+        acts = []
+        for code, b in v.m.bars.items():
+            if code in self.taken or code in news or b.v[slot] <= 0:
+                continue
+            if (v.m.turnover(code) or 0) < self.p["min_turnover_aud"]:
+                continue
+            chg = v.change_pct(code)
+            if chg is None:
+                continue
+            resid = chg - idx
+            if abs(resid) < self.p["min_resid_pct"]:
+                continue
+            last = float(b.c[slot])
+            dist = last * abs(resid) / 100 * self.p["stop_mult"]
+            vw = _vwap(b, slot + 1)
+            if resid < 0:
+                plan = Plan(code, "buy", None, last - dist, f"lagging the index by {resid:.1f}%",
+                            target=vw if vw and vw > last else None)  # fmt: skip
+            else:
+                plan = Plan(code, "short", None, last + dist, f"leading the index by {resid:.1f}%",
+                            target=vw if vw and vw < last else None)  # fmt: skip
+            a = self.enter(v, plan)
+            if a:
+                acts.append(a)
+            if len(self.taken) >= self.p["max_trades"]:
+                break
+        return acts
+
+
+FAMILIES = {
+    c.family: c
+    for c in (ORB, GapFade, VwapRev, HodMomentum, Drift, CloseStrength, Pullback, IndexRevert)
+}
 
 
 def make(spec: dict) -> RuleTrader:

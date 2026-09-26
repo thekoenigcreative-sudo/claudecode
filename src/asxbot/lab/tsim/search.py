@@ -248,7 +248,10 @@ def research_packet(cfg) -> str:
         "FAMILY NOTES: orb = stocks in play opening-range breakout; gap_fade = fade a no-news "
         "opening gap; vwap_rev = buy a stretch below VWAP; hod_mom = new high of day on heavy "
         "volume; drift = hold days after a price-sensitive announcement (headline types: "
-        "results, guidance, acquisition, contract, exploration, clinical, ...).",
+        "results, guidance, acquisition, contract, exploration, clinical, ...); close_strength = "
+        "buy strong closers in the closing auction, sell in the next opening auction (or fade "
+        "them); pullback = first pullback to VWAP in a strong stock; index_revert = fade a "
+        "liquid stock's no-news divergence from the index.",
     ]
     yard = store.read_json(lab_dir(cfg) / "yardsticks.json", {}) or {}
     if yard:
