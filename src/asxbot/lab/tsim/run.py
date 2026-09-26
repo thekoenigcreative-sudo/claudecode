@@ -319,6 +319,8 @@ def make_trader(spec: dict, *, journal: Journal, cfg=None, ask=None, log_dir=Non
             max_wakes_per_day=int(spec.get("max_wakes_per_day") or conf.get("max_wakes_per_day")
                                   or 18),
             register_ideas=bool(spec.get("register_ideas", True)),
+            specialists_every_min=spec.get("specialists_every_min", conf.get(
+                "specialists_every_min", 20)),
         )  # fmt: skip
     raise ValueError(f"unknown trader kind {kind!r}")
 
