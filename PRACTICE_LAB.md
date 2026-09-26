@@ -103,3 +103,14 @@ usage stop for agent calls.
 - The evening report gains a Practice Lab scoreboard section (top variants in shadow against the
   frozen bots, variants tried, the leader's distance from WINNER.md).
 - A weekly summary on Sunday evening (Trader chat, via the Foreman).
+
+## 7. The proper trading simulator (26 Sep 2026, docs/tsim.md)
+
+Rick, 26 Sep: "i dont feel the simulator is a proper simulator". Built alongside the time machine
+in `src/asxbot/lab/tsim` (CLOUD_BRIEF.md): the whole universe minute by minute, a simulated
+broker the AI trader works itself (market/limit/stop/stop-limit/trailing/on-close, shorts,
+brackets, auctions, volume-capped fills, spread, slippage, commission per broker), the AI
+trader (Opus 5.5 high, its own alerts and wake-ups, journal, continuity), rules-only yardsticks,
+the never-ending strategy search, and a fidelity check against every live paper-test day. It
+gets the first half of every lab tick. The time machine stays for calibration (E, decisions)
+and rules-only variants of the live playbooks.
