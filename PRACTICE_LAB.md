@@ -143,3 +143,9 @@ trader (Opus 5.5 high, its own alerts and wake-ups, journal, continuity), rules-
 the never-ending strategy search, and a fidelity check against every live paper-test day. It
 gets the first half of every lab tick. The time machine stays for calibration (E, decisions)
 and rules-only variants of the live playbooks.
+
+On Rick's PC (27 Sep): its idea registry was seeded from the cloud's research log, so its count
+carries on at N = 15 (a count separate from the rules-only search's 72: they are different
+engines, and neither's bar counts the other's ideas). Its log is `reports/tsim_research_log.md`.
+A run now stops only between whole days - at the tick's end, or when the budget stops a call
+(LEARNINGS #33) - and resumes next tick. While Rick has the lab paused, none of it runs.
