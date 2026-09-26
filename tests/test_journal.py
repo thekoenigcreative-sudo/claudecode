@@ -261,6 +261,13 @@ def test_the_day_trader_agents_setups_and_trades_from_its_side(cfg, day_on_the_b
     assert "not the agent" in moved
     text = "\n".join(J.facts_lines(f))
     assert "brokerage 13.20 + slippage" in text and "(in the fill prices)" in text
+    # the day trader's limit and size are code's; the agent only confirms (25 Sep: it called
+    # the rule's 1% limit its own error)
+    assert reg["limit_by"].startswith("set by code: the frozen rule's 1.0% through")
+    assert "the agent only confirmed" in text
+    assert J.limit_setter(arena.playbook("asx_announcements_v2"), "agent").startswith(
+        "the agent's own limit")
+    assert J.limit_setter(arena.playbook("asx_daytrader"), "bot").startswith("set by the frozen")
     took, skipped = f["setups_decided"]
     assert took["ticker"] == "REG" and took["decision"] == "took"
     assert took["why"] == "REG shows stock-specific weakness"  # its own words, prefix dropped

@@ -273,10 +273,10 @@ def _slippage(orders) -> tuple[float, bool]:
     return total, known
 
 
-def book_trades(acct, day: date, data_dir) -> list[dict]:
+def book_trades(acct, day: date, data_dir, limit_by: str = "") -> list[dict]:
     """Every round trip opened or closed on `day`: entry, exits, the initial stop, R and
     every cost. R is the net result over the initial risk (entry to the entry order's stop,
-    times the shares)."""
+    times the shares). `limit_by` says who set the entry's limit and size."""
     from asxbot.arena.scoreboard import round_trips
 
     iso = day.isoformat()
@@ -313,7 +313,7 @@ def book_trades(acct, day: date, data_dir) -> list[dict]:
             "r_net": round(t.net / risk, 2) if risk else None,
             "r_gross": round(t.gross / risk, 2) if risk else None,
             "entry_order": entry.order_id if entry else None,
-            "entry_limit": entry.limit if entry else None,
+            "entry_limit": entry.limit if entry else None, "limit_by": limit_by,
             "decided": _hhmm(entry.decided_at) if entry else "",
             "entry_reason": _clip(entry.reason if entry else ""),
             "model": entry.model if entry else "",
@@ -515,13 +515,25 @@ def v2_rule_bot(data_dir, day: date) -> dict:
 # --------------------------------------------------------------------------
 # one book's facts
 # --------------------------------------------------------------------------
+def limit_setter(pb, kind: str) -> str:
+    """Who set a book's entry limit, size and stop - so a journal never takes the credit or
+    the blame for code's work (25 Sep: the agent called the day trader's 1% limit its error)."""
+    if kind == "bot":
+        return "set by the frozen rule, as was the size"
+    if pb.key == "asx_daytrader":
+        slack = (pb.raw.get("entry") or {}).get("limit_slack_pct", 1.0)
+        return (f"set by code: the frozen rule's {slack}% through the last price, as were the "
+                "size and the stop; the agent only confirmed")
+    return "the agent's own limit, size and stop, within the limits"
+
+
 def book_facts(cfg, arena, pb, kind: str, day: date, minutes=None) -> dict:
     from asxbot.arena.minutes import MinuteBars
     from asxbot.arena.report import partial_day, test_day
 
     minutes = minutes or MinuteBars(cfg.data_dir)
     acct = arena.account(pb, kind)
-    trades = book_trades(acct, day, cfg.data_dir)
+    trades = book_trades(acct, day, cfg.data_dir, limit_setter(pb, kind))
     f = {
         "day": day.isoformat(), "weekday": f"{day:%a}", "account": acct.name,
         "playbook": pb.key, "title": pb.title, "kind": kind, "test": test_day(pb, day),
@@ -546,7 +558,7 @@ def book_facts(cfg, arena, pb, kind: str, day: date, minutes=None) -> dict:
     if kind == "agent":
         f["decisions"] = max(f["decisions"], len(trades))
         bot = arena.account(pb, "bot")
-        bt = book_trades(bot, day, cfg.data_dir)
+        bt = book_trades(bot, day, cfg.data_dir, limit_setter(pb, "bot"))
         keep = ("ticker", "side", "opened", "closed", "entry", "exit", "net", "r_net",
                 "entry_reason")
         f["yardstick"] = {"account": bot.name, "result": book_result(arena.store, bot, day, bt),
@@ -584,7 +596,8 @@ def agent_brief(facts: dict, pb) -> str:
         "is hindsight: the plain price path before costs and without trade management. Costs "
         "are brokerage (fees) plus slippage, which is inside the fill prices and shown as its "
         "own figure on each trade. Stop moves (breakeven at +1R, the trail) and the 15:50 "
-        "close-out are code's trade management, not your decisions. Setups and "
+        "close-out are code's trade management, not your decisions; each trade says who set "
+        "its limit and size - judge yourself only on what was yours. Setups and "
         "stocks listed as nobody's decision were never yours to decide (too stale, no data, or "
         "you could not be asked): mention them only as the system's facts. Under 450 words.\n\n"
         "This journal is written only: during the test it is never shown to you or any agent "
@@ -811,7 +824,8 @@ def _trade_lines(trades: list[dict]) -> list[str]:
                                                   else " (part unknown)")  # fmt: skip
         out.append(
             f"- {t['ticker']} {t['side']} {t['qty']}: decided {t.get('decided')}, limit "
-            f"{t.get('entry_limit')}; in {t['entry']} at {t['opened']}, out {t['exit']} "
+            f"{t.get('entry_limit')}" + (f" ({t['limit_by']})" if t.get("limit_by") else "")
+            + f"; in {t['entry']} at {t['opened']}, out {t['exit']} "
             f"({state}); stop {t['initial_stop']} (risk ${t['risk_aud']}); gross after "
             f"slippage {t['gross']:+.2f}, net {t['net']:+.2f} ({r}); costs "
             f"{t.get('costs_all_in', t['fees']):.2f} = brokerage {t['fees']:.2f} + slippage "
