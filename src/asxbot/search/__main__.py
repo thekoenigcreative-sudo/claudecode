@@ -44,10 +44,17 @@ def data_note(m, s) -> str:
             )  # fmt: skip
 
 
+def _read(x: str) -> str:
+    """A report text given inline, or as @path to a file."""
+    if x.startswith("@"):
+        return Path(x[1:]).read_text(encoding="utf-8").strip()
+    return x
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m asxbot.search")
-    ap.add_argument("command", choices=["build", "check", "run", "sealed", "report", "all",
-                                        "synthetic"])  # fmt: skip
+    ap.add_argument("command", choices=["build", "check", "run", "sealed", "diagnose", "report",
+                                        "all", "synthetic"])  # fmt: skip
     ap.add_argument("--history")
     ap.add_argument("--data")
     ap.add_argument("--workers", type=int, default=4)
@@ -55,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", help="synthetic: the folder to write")
     ap.add_argument("--summary", default="", help="report: the plain-English summary")
     ap.add_argument("--next", default="", help="report: what the AI trader should try next")
+    ap.add_argument("--checks", default="", help="report: the checks on the engine and data")
     a = ap.parse_args(argv)
 
     if a.command == "synthetic":
@@ -80,12 +88,20 @@ def main(argv: list[str] | None = None) -> int:
         s.run(a.only.split(",") if a.only else None)
     if a.command in ("sealed", "all") and s:
         s.sealed()
+    if a.command in ("diagnose", "all") and s:
+        from asxbot.search import diagnostics
+
+        diagnostics.run(s)
     if a.command in ("report", "all"):
         from asxbot.search import report
 
         tried = s.tried() if s else []
+        diag = {}
+        if s and (s.dir / "diagnostics.json").exists():
+            diag = json.loads((s.dir / "diagnostics.json").read_text(encoding="utf-8"))
         meta = {"date": datetime.now().strftime("%Y-%m-%d"), "data_note": data_note(m, s),
-                "summary": a.summary, "next": a.next}  # fmt: skip
+                "summary": _read(a.summary), "next": _read(a.next), "checks": _read(a.checks),
+                "diagnostics": diag}  # fmt: skip
         log, rep = report.write(REPO, tried, meta)
         print(f"wrote {log}\nwrote {rep}")
     return 0

@@ -103,3 +103,17 @@ usage stop for agent calls.
 - The evening report gains a Practice Lab scoreboard section (top variants in shadow against the
   frozen bots, variants tried, the leader's distance from WINNER.md).
 - A weekly summary on Sunday evening (Trader chat, via the Foreman).
+
+## 7. The rules-only search (26 Sep 2026, CLOUD_BRIEF_SEARCH.md)
+
+`src/asxbot/search` runs many plain-code ideas cheaply on the same windows (TUNE = practice,
+VALIDATE = check, LOCKED sealed through `lab/splits.py`) and judges them with the lab's own gates
+(`lab/score.py`) and WINNER.md's locked-test criteria. It is a separate engine from the time
+machine: whole days of 1-minute bars as arrays, so setups the frozen playbooks do not have
+(stocks in play, multi-day drift, rotations) can be tried without touching a playbook. Ideas are
+registered in `search/ideas.py` before they run; every try is logged in
+`data/search/tried.jsonl` and counted in the check-set bar. Results: `reports/research_log.md`
+and `reports/cloud_rules_search_<date>.md`.
+
+    set ASXBOT_HISTORY_DIR=<the IBKR history folder>   (default: the lab's own cache)
+    python -m asxbot.search all

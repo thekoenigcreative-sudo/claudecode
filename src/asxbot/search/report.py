@@ -19,11 +19,16 @@ def _money(x) -> str:
     return "-" if x is None else f"{x:+,.0f}"
 
 
-def _row(r: dict) -> str:
+def _row(r: dict, diag: dict) -> str:
     pr, ck = r.get("practice") or {}, r.get("check") or {}
     lk = r.get("locked") or {}
+    cheap = (diag.get("cheapest_broker_practice") or {}).get(r["id"]) or {}
+    turn = pr.get("turnover") or 0
+    raw = pr.get("raw_pnl")
+    raw_pct = f"{raw / turn * 100:+.2f}%" if turn and raw is not None else "-"
     return (f"| {r['id']} | {r['family']} | {_params(r['params'])} | "
-            f"{pr.get('trades', '-')} | {_money(pr.get('pnl'))} | "
+            f"{pr.get('trades', '-')} | {raw_pct} | {_money(pr.get('raw_pnl'))} | "
+            f"{_money(pr.get('pnl'))} | {_money(cheap.get('pnl'))} | "
             f"{_money(pr.get('vs_baseline'))} | "
             f"{ck.get('trades', '-')} | {_money(ck.get('pnl'))} | "
             f"{'-' if ck.get('t_stat') is None else format(ck['t_stat'], '.2f')} | "
@@ -116,7 +121,7 @@ def report(tried: list[dict], meta: dict) -> str:
         "",
         f"**{SURVIVORSHIP}**",
         "",
-        "## In one paragraph",
+        "## In short",
         "",
         meta.get("summary", ""),
         "",
@@ -124,6 +129,8 @@ def report(tried: list[dict], meta: dict) -> str:
         "",
         meta.get("data_note", ""),
         "",
+        *(["## Checks on the engine and the data", "", meta["checks"], ""]
+          if meta.get("checks") else []),
         "## Costs used (fixed before any idea ran)",
         "",
         *[f"- Brokerage, {b.name}: {b.pct}% of value, min A${b.minimum:.2f} per order. "
@@ -145,10 +152,15 @@ def report(tried: list[dict], meta: dict) -> str:
         f"{reached[('finalist', 'sealed')]}. Given the sealed test: {reached[('sealed',)]}. "
         f"Passed it: **{len(passed)}**.",
         "",
-        "| Idea | Family | Changes | Practice trades | Practice P&L | vs frozen bot | "
+        "Practice = TUNE (26 Mar-30 Jun), check = VALIDATE (1 Jul-14 Aug), sealed = LOCKED "
+        "(17 Aug-25 Sep). Raw = the price move before any cost (what the idea would make if "
+        "trading were free), per trade as a share of the money traded, and in dollars.",
+        "",
+        "| Idea | Family | Changes | Practice trades | Raw move / trade | Practice raw $ | "
+        "Practice P&L (IBKR) | Practice P&L (cheapest API broker) | vs frozen bot | "
         "Check trades | Check P&L | Check t | Sealed P&L | Verdict |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
-        *[_row(r) for r in rows],
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        *[_row(r, meta.get("diagnostics") or {}) for r in rows],
         "",
         "## What passed",
         "",
@@ -160,6 +172,25 @@ def report(tried: list[dict], meta: dict) -> str:
     else:
         lines.append("Nothing passed. No strategy in this search has shown an edge after costs "
                      "that survived the practice split, the check set and the sealed test.")
+    info = (meta.get("diagnostics") or {}).get("info_check") or {}
+    if info:
+        lines += ["", "## Near-misses on the check set (information only - they stay failed)", "",
+                  "These made money on practice with 20+ trades but were stopped only because "
+                  "they did not beat the frozen rule bot on the same days. Their check-set "
+                  "result is shown so the next session knows whether the edge held; it cannot "
+                  "promote them.", "",
+                  "| Idea | Check trades | Check P&L | Check t | Raw $ |",
+                  "|---|---:|---:|---:|---:|"]  # fmt: skip
+        for k, v in info.items():
+            lines.append(f"| {k} | {v['trades']} | {_money(v['pnl'])} | {v['t_stat']} | "
+                         f"{_money(v.get('raw_pnl'))} |")  # fmt: skip
+    fb = (meta.get("diagnostics") or {}).get("frozen_bots") or {}
+    if fb:
+        lines += ["", "## The frozen rule bots on the same windows (the bar to beat)", ""]
+        for k, v in fb.items():
+            name = {"daytrader": "day trader v1", "v2": "announcements v2"}[k.split(":")[0]]
+            lines.append(f"- {name}, {k.split(':')[1]}: {v['trades']} trades, "
+                         f"{_money(v['pnl'])} after costs (the arena's cost model).")  # fmt: skip
     lines += ["", "## For the AI trader (the other cloud session)", "", meta.get("next", ""), ""]
     lines += ["## Every idea, in full", "", "See reports/research_log.md.", ""]
     return "\n".join(lines)

@@ -94,7 +94,9 @@ def test_the_scan_sees_the_modules_that_start_processes():
     assert {"agents.py", "selfcheck.py", "arena_evening.pyw", "arena_warmup.pyw"} <= names
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only (CREATE_NO_WINDOW / UNC / taskkill)")
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows-only (CREATE_NO_WINDOW / UNC / taskkill)"
+)
 @pytest.mark.parametrize("fn, target", [(proc.run, "run"), (proc.popen, "Popen")])
 def test_every_child_gets_create_no_window(monkeypatch, fn, target):
     seen = {}
