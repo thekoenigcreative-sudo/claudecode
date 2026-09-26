@@ -228,7 +228,20 @@ def test_place_order_hours_enforced_outside_sim(cfg):
         )
 
 
-def test_max_open_and_per_day(cfg):
+def test_max_open_and_per_day(cfg, monkeypatch):
+    """The event log's wall clock is pinned to 15:00 Sydney the day after NOON, when UTC has
+    moved on to NOON's next day too. That is when the deploy's suite failed on 26 Sep (DID NOT
+    RAISE on the per-day limit): the fill was stamped in UTC and counted on the UTC date. Left
+    on the real clock this test only caught that bug at some hours of the week."""
+    import asxbot.log as L
+
+    class NextAfternoon(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            t = NOON + timedelta(hours=27)
+            return t.astimezone(tz) if tz else t.replace(tzinfo=None)
+
+    monkeypatch.setattr(L, "datetime", NextAfternoon)
     sc = _scanner(cfg)
     lim = _limits(cfg)
     lim.max_open_positions = 1
