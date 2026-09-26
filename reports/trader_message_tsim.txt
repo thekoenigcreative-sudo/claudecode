@@ -1,0 +1,9 @@
+The new trading simulator is built and running in the Practice Lab.
+
+What's now running: every night and weekend (market closed only), the AI trader - Opus 5.5 - trades a real account in a proper simulation of the ASX: every stock minute by minute, the news as it was released, its own orders, stops and alerts, real costs (IBKR's brokerage, the spread, slippage). Alongside it, a search that keeps inventing and testing strategies, cheap rules-only ones first, and only puts the AI on the ones that already look promising. Every idea is logged, winners and losers.
+
+Each live paper day is also checked against the simulator, so we know it matches what really happens.
+
+Your first scoreboard comes Sunday evening with the lab's weekly summary: the AI trader against the simple strategies and the old rules, plus the answer to "does the AI's choosing rescue the day trader's setups?".
+
+Nothing goes near real money; only a strategy that passes WINNER.md in full comes to you, and you decide.
