@@ -178,6 +178,10 @@ def run(
             continue
         m = Market(d, hist, inputs.codes, _ann_window(ann, d), summ, shortable)
         view = TraderView(m, sb, anon, journal, reader=_reader(cfg, d, disguise))
+        if cfg is not None:
+            from asxbot.arena.replay_ibkr import _daily_until
+
+            view.daily_store = lambda c, day: _daily_until(cfg, c, day)
         if hasattr(trader, "bind_alerts"):
             trader.bind_alerts(book, anon)
         r = run_day(m, sb, trader, book, view, nights=nights_until_next(d, days))

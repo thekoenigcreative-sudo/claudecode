@@ -151,13 +151,30 @@ def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_
     return {**out, "cached": False}
 
 
+DECISION_KEYS = (
+    "look",
+    "orders",
+    "alerts",
+    "journal",
+    "lessons",
+    "watchlist",
+    "proposals",
+    "verdicts",
+    "ideas",
+    "codes",
+    "category",
+    "next_wake",
+    "clear_alerts",
+)
+
+
 def parse_json(text: str) -> dict | None:
-    """The last JSON object in a reply (the model may think aloud before it)."""
+    """The reply's decision: the LAST top-level JSON object that carries a decision's keys (26
+    Sep: a reply held the decision and then an imitation tool acknowledgement,
+    {"ok": true, "note": ...}; taking the last object threw the decision away), else the last
+    object."""
     s = text.strip()
-    if s.startswith("```"):
-        s = s.strip("`")
-        s = s[s.find("{") :] if "{" in s else s
-    best = None
+    objs = []
     depth, start, in_str, esc = 0, None, False, False
     for i, ch in enumerate(s):
         if in_str:
@@ -178,7 +195,12 @@ def parse_json(text: str) -> dict | None:
             depth -= 1
             if depth == 0 and start is not None:
                 try:
-                    best = json.loads(s[start : i + 1])
+                    o = json.loads(s[start : i + 1])
+                    if isinstance(o, dict):
+                        objs.append(o)
                 except ValueError:
                     pass
-    return best if isinstance(best, dict) else None
+    for o in reversed(objs):
+        if any(k in o for k in DECISION_KEYS):
+            return o
+    return objs[-1] if objs else None

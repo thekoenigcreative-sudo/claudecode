@@ -30,6 +30,9 @@ class TraderView:
         self.anon = anon
         self.journal = journal  # tsim.journal.Journal or None
         self.reader = reader  # callable(announcement row) -> dict | None (post-cutoff only)
+        # callable(code, day) -> daily OHLCV DataFrame ending before `day` (the price store),
+        # for history older than the minute cache (it starts 26 Mar 2026)
+        self.daily_store = None
         self._usual: dict[str, np.ndarray | None] = {}
 
     # ------------------------------------------------------------ helpers
@@ -233,8 +236,18 @@ class TraderView:
 
     def daily(self, code: str, n: int = 20) -> dict:
         a = self.anon
-        s = self.m.summaries.before(code, self.m.day, max(1, min(int(n), 120))) if (
-            self.m.summaries) else None  # fmt: skip
+        n = max(1, min(int(n), 120))
+        s = self.m.summaries.before(code, self.m.day, n) if self.m.summaries else None
+        if (s is None or len(s) < n) and self.daily_store is not None:
+            older = self.daily_store(code, self.m.day)
+            if older is not None and len(older):
+                older = older.reset_index()
+                older["day"] = pd.to_datetime(older.iloc[:, 0]).dt.date.astype(str)
+                first = s["day"].min() if s is not None and len(s) else "9999"
+                older = older[older["day"] < first][["day", "open", "high", "low", "close",
+                                                      "volume"]]  # fmt: skip
+                s = pd.concat([older, s], ignore_index=True) if s is not None else older
+                s = s.tail(n)
         if s is None or not len(s):
             return {"code": a.alias(code), "days": []}
         rows = []

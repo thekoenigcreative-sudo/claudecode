@@ -207,7 +207,7 @@ def test_disguise_keeps_dollar_values_and_round_trips(mkt):
     al = a.alias("AAA")
     assert al != "AAA" and a.real(al) == "AAA"
     f = a.factor("AAA")
-    assert 0.5 <= f <= 2.0
+    assert 0.25 <= f <= 4.0
     shown_px, shown_qty = a.price("AAA", 10.0), 1_000
     real_qty = a.shares_to_real("AAA", shown_qty)
     assert real_qty * 10.0 == pytest.approx(shown_qty * shown_px, rel=0.01)
@@ -443,3 +443,12 @@ def test_the_team_runs_its_stages_in_parallel_and_the_risk_manager_vetoes(mkt, t
     codes = {o.code for o in b.acct.orders.values()}
     assert codes == {"AAA"}  # BBB was vetoed
     assert r.calls >= 8 and "opus:output" in r.usage and "sonnet:output" in r.usage
+
+
+def test_the_disguise_hides_the_calendar():
+    """26 Sep: the probe named the date from '31 March 2026' left in a headline and the weekday."""
+    a = RunAnon("salt", [D1])
+    h = a.headline("Quarterly Activities Report for quarter ended 31 March 2026 - FY26 Q3")
+    assert "2026" not in h and "31" not in h and "March" not in h and "FY26" not in h
+    assert "12%" in a.headline("12% dividend increase")
+    assert "(" not in a.date(D1) and "Tue" not in a.date(D1)

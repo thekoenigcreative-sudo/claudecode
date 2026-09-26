@@ -59,7 +59,9 @@ class RunAnon:
         return self._real.get(alias)
 
     def factor(self, code: str) -> float:
-        return 0.5 + int(self._h(code)[8:12], 16) / 0xFFFF * 1.5
+        """0.25x to 4x, log-uniform (26 Sep: at 0.5-2x the model still named stocks from their
+        price level)."""
+        return 4.0 ** (2 * int(self._h(code)[8:12], 16) / 0xFFFF - 1)
 
     def price(self, code: str, x):
         return None if x is None else round(float(x) * self.factor(code), 4)
@@ -78,10 +80,29 @@ class RunAnon:
         return int(round(int(real) / self.factor(code)))
 
     def date(self, d: date) -> str:
-        return f"Day {self.day_no.get(d, '?')} ({d:%a})"
+        # no weekday: with the reporting season it let the model name the date (26 Sep probe)
+        return f"Day {self.day_no.get(d, '?')}"
 
     def headline(self, h: str) -> str:
-        return self._words.headline(h)
+        """Generic announcement words only (lab/anon.VOCAB), percentages and small numbers
+        kept; no names and no calendar: years, day numbers, months and reporting periods
+        ("31 March 2026", "FY26", "1H26", "Q3") are removed."""
+        from asxbot.lab.anon import VOCAB
+
+        h = re.sub(r"\b(19|20)\d\d\b", " ", h or "")
+        h = re.sub(r"\b(FY|CY|[12]H|H[12]|Q[1-4])\s?'?\d{0,4}\b", " ", h, flags=re.I)
+        h = re.sub(r"\b\d{1,2}(st|nd|rd|th)?\s+(?=(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|"
+                   r"Dec))", " ", h, flags=re.I)  # fmt: skip
+        out: list[str] = []
+        for w in re.findall(r"\d+(?:\.\d+)?%|[A-Za-z0-9][A-Za-z0-9'\-]*|[&:()/,.\-]", h):
+            if w.lower() in VOCAB or re.fullmatch(r"\d+(\.\d+)?%|[&:()/,.\-]", w):
+                out.append(w)
+            elif re.fullmatch(r"\d{1,3}(\.\d+)?", w) and not re.match(
+                    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", w):  # fmt: skip
+                out.append(w)
+            elif not out or out[-1] != "[name]":
+                out.append("[name]")
+        return " ".join(out)
 
     def text(self, s: str) -> str:
         """Codes in free text replaced by their aliases; ISO dates removed."""
