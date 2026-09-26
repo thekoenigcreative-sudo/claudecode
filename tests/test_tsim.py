@@ -606,3 +606,12 @@ def test_the_cheaper_team_reruns_specialists_only_when_something_changed(mkt, tm
         return n["spec"]
 
     assert run(20) < run(None)
+
+
+def test_two_different_new_families_are_not_repeats(tmp_path):
+    from asxbot.lab.tsim import search
+
+    cfg = _Cfg(tmp_path)
+    a = search.register(cfg, {"kind": "new_family", "describe": "insider buying"}, "r", "t")
+    b = search.register(cfg, {"kind": "new_family", "describe": "index rebalance"}, "r", "t")
+    assert a and b and a["fp"] != b["fp"]

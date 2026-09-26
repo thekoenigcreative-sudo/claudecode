@@ -100,7 +100,7 @@ def save_idea(cfg, idea: dict) -> None:
 
 
 def fingerprint(spec: dict) -> str:
-    keep = {k: spec.get(k) for k in ("kind", "family", "params", "addendum")}
+    keep = {k: spec.get(k) for k in ("kind", "family", "params", "addendum", "describe")}
     return hashlib.sha1(json.dumps(keep, sort_keys=True).encode()).hexdigest()[:12]
 
 
