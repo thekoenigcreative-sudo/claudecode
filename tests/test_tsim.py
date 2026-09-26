@@ -383,3 +383,16 @@ def test_only_the_ai_is_disguised_and_rules_orders_are_not_refused(tmp_path, mon
     refused = [r["error"] for d in out["days"] for r in d["rejected"]]
     assert not [e for e in refused if "unknown code" in e] and s["n_trades_all"] > 0
     assert not refused  # entries sized in one call leave room for each other
+
+
+def test_the_index_is_live_without_volume(mkt):
+    """IBKR's index bars carry no volume; the index must still move (regime filters, the AI's
+    'index today', the up/down-day split all read it)."""
+    root, summ = mkt
+    bars = {s: (8000 + s, 8000 + s, 8000 + s, 8000 + s, 0) for s in range(373)}
+    write_day(root, "^AXJO", D1, bars)
+    s2 = Summaries(root.parent / "summ2")
+    s2.build(History(root), ["^AXJO"], workers=1)
+    m = Market(D1, History(root), ["AAA"], None, s2)
+    m.now = slot_time(D1, 100) + timedelta(seconds=30)
+    assert m.index is not None and m.index_move_pct() is not None

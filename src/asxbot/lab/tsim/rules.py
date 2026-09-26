@@ -110,9 +110,8 @@ class RuleTrader(Trader):
         qty = math.floor(self.equity(v) * self.p["risk_pct"] / 100 / risk_ps)
         # what the account can carry at 1x its leverage, less what is already out
         acct = v.b.acct
-        room = acct.equity(v.m.last) * acct.leverage - acct.gross(v.m.last) - sum(
-            o.remaining * (o.limit or o.stop or v.m.last(o.code) or 0)
-            for o in acct.working() if not o.reduce_only)  # fmt: skip
+        room = acct.equity(v.m.last) * acct.leverage - acct.gross(v.m.last) - (
+            v.b.working_open_value())
         room -= getattr(self, "_reserved", 0.0)  # entries already sized in this same call
         qty = min(qty, math.floor(max(0.0, room) * 0.98 / ref))
         cap = self.p["close_volume_cap"]

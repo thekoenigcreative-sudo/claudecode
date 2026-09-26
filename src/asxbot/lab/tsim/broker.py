@@ -271,11 +271,7 @@ class SimBroker:
         opens = (buy and held >= 0) or (not buy and held <= 0)
         if opens and not reduce_only and ref > 0:
             eq = self.acct.equity(self.price)
-            working_open = sum(
-                o.remaining * (o.limit or o.stop or self.price(o.code) or 0)
-                for o in self.acct.working()
-                if not o.reduce_only
-            )
+            working_open = self.working_open_value()
             if self.acct.gross(self.price) + working_open + qty * ref > eq * self.acct.leverage:
                 raise OrderRejected(
                     f"not enough buying power: equity ${eq:,.0f} x leverage "
@@ -297,6 +293,20 @@ class SimBroker:
         self.acct.orders[o.id] = o
         self._event("placed", o, at)
         return o
+
+    def opens(self, o: Order) -> bool:
+        """Does this working order add exposure (rather than reduce a position held)?"""
+        if o.reduce_only:
+            return False
+        held = self._held(o.code)
+        return (o.buy and held >= 0) or (not o.buy and held <= 0)
+
+    def working_open_value(self) -> float:
+        return sum(
+            o.remaining * (o.limit or o.stop or self.price(o.code) or 0)
+            for o in self.acct.working()
+            if self.opens(o)
+        )
 
     def modify(self, order_id: str, at: datetime, **changes) -> Order:
         o = self.acct.orders.get(order_id)

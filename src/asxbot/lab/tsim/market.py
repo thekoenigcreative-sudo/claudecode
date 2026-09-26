@@ -128,6 +128,9 @@ def to_grid(code: str, day: date, df: pd.DataFrame | None) -> DayBars | None:
     l[slots] = sub["low"].to_numpy(dtype=float)
     c[slots] = sub["close"].to_numpy(dtype=float)
     v[slots] = vol
+    if code == INDEX:
+        # the index has no volume in IBKR's bars: a bar with a price is a live index value
+        v[slots] = np.where(np.isfinite(o[slots]), np.maximum(vol, 1.0), 0.0)
     # A bar with no volume is not a trade (IBKR's placeholder rows): price blanked.
     dead = v <= 0
     o[dead] = h[dead] = l[dead] = c[dead] = np.nan
