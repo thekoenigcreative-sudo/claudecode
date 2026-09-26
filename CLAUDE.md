@@ -9,7 +9,7 @@ Rules for every session:
 - Broker mode is `sim` unless I change it myself. Live mode needs `broker: live` in `config.yaml` AND `LIVE_TRADING_CONFIRMED=yes` in `.env`.
 - Orders only through `place_order`: plain code, hard limits. Real money: my approval on every call. Fake-money arena (ARENA.md): the AI agent trades on its own within the same limits. The agent never decides an order was approved, placed or filled — only the broker's returned order ID and fill count.
 - Label every yfinance result "plumbing test — not a go/no-go".
-- No AI classification of historical announcements.
+- No AI classification of historical announcements. The Practice Lab (26 Sep; PRACTICE_LAB.md) asks the agent about the past only on days after the models' knowledge cutoff (1 Jul 2026), or anonymised before it; raw pre-cutoff answers exist only to MEASURE contamination and never score anything. WINNER.md (fixed before the search) decides when Rick is asked "trial it with real money?" - never edit its numbers after a result; the locked test (17 Aug-25 Sep) is sealed in code.
 - Announcement collector: low volume, cached, paced. If access is refused, stop and fall back to price/volume signals.
 - Secrets only in `.env` (gitignored). Bulky data only in `data/` (gitignored).
 - Test each stage before the next; commit after each working stage.
