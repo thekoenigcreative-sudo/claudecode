@@ -15,8 +15,9 @@ after the close). The strategy search runs on its own, proposing and testing ide
 has passed WINNER.md, and nothing is close.** The best simple yardstick (stocks-in-play opening
 range breakout with a market-direction filter) made money on both test windows but not enough to
 be more than luck. The old day-trader rules lost again, and **the AI's choosing does not rescue
-them (E)**. The single AI trader lost money on its first 10 practice days; **the team did better
-than the single agent on the same days** but costs about 5x as much to run.
+them (E)**. The single AI trader lost money on its first 10 practice days; **the team beat the single
+agent on one 10-day sample and lost on another** (over 20 days: team -$123, single -$553) and costs
+about 5x as much to run.
 
 ## What was built (src/asxbot/lab/tsim, docs/tsim.md)
 
@@ -115,9 +116,19 @@ with taking the breakouts mechanically.
 | model calls per day | 35 | 167 |
 | API-equivalent cost (10 days) | **$18** | **$90** |
 
-The team was better by $676 over these days - a first reading, not a verdict. A second pair on
-10 consecutive practice days is running (see "Still running"). Its cost is almost all the Sonnet
-specialists re-reading the watchlist on every wake; that can be cut a lot (next steps).
+**A second pair, 10 consecutive practice days (22 May - 4 Jun), current code:**
+
+| | Single agent | Team |
+|---|---|---|
+| made on the simulated days | **+$1** | **-$244** |
+| trades / winners | 19 / 42% | 16 / 31% |
+| green / red days | 5 / 5 | 3 / 7 |
+| API-equivalent cost | $20 | $95 |
+
+**Over both samples (20 days): single -$553, team -$123, for $38 vs $185.** The team won the first
+sample and lost the second: no evidence yet that it is reliably better, and as built it costs 5x.
+Its cost is almost all the Sonnet specialists re-reading the watchlist every wake; a cheaper team
+(specialists only when something changed) is built and committed but not yet measured.
 
 ### 6. The strategy search
 
