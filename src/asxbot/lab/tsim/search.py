@@ -180,6 +180,10 @@ def evaluate(cfg, spec: dict, days: list[date], run_id: str, inputs=None) -> dic
     from asxbot.lab.tsim import run as R
 
     inputs = inputs or R.prepare_inputs(cfg, days)
+    # the days are part of the run's name: a re-test on other days never resumes an old account
+    run_id = (
+        f"{run_id}_{hashlib.sha1(','.join(d.isoformat() for d in days).encode()).hexdigest()[:6]}"
+    )
     out = R.run(run_id, {k: v for k, v in spec.items() if k != "name"}, days, inputs, cfg=cfg,
                 resume=True)  # fmt: skip
     s = score(out, cfg)
