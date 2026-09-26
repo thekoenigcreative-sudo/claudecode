@@ -1,0 +1,6319 @@
+{
+ "label": "RULES-ONLY SEARCH - fake money, plain-code rules, IBKR 1-minute history. Not live, not a verdict on the AI trader.",
+ "survivorship": "Survivorship bias: the universe is today's index list applied to every past day, so the stocks that later fell out (often after falling) are missing. Results are biased upward; a loss here is a stronger negative than it looks, and a profit is weaker than it looks.",
+ "meta": {
+  "date": "2026-09-26",
+  "data_note": "IBKR 1-minute history for 540 codes and the ASX 200 index, 2026-03-26 to 2026-09-25 (129 sessions): practice (TUNE) 66 sessions, check (VALIDATE) 33, sealed (LOCKED) 30. Announcements in the archive: 405875 (73567 price-sensitive). Stock-days with a closing-auction print: 94%. Frozen rule bots for comparison: replay_ibkr_20260926_1319.json.",
+  "summary": "**No strategy passed.** I tried 72 rule ideas in 10 families: the brief's yardsticks A (stocks in play, opening-range breakout), B (announcement drift by type) and C (the regime filter and the closing-volume cap on both), then variants of them, then eight wider families. Plain code made every decision; no model was asked anything. The ideas were written into the code and committed before they ran: waves 1-3 before any real data was on the machine, waves 4-5 after the practice results only. On the practice months (26 Mar-30 Jun), 68 of the 72 lost money after costs, had too few trades, or did not beat the frozen rule bot. Three of the 68 could not run at all (no index-fund history before 11 Sep); they were re-run on an index proxy as X04-X06. The other 4 made money on practice and lost it on the check months (1 Jul-14 Aug): the two 20-day-breakout ideas and the two liquid-name breakout ideas. **Nothing reached the sealed test, so the locked 17 Aug-25 Sep window is still unspent** for a future finalist.\n\n**Why: costs, not direction.** On a $20,000 book with $4,000-5,000 positions, a same-day trade costs about 0.85% of the money traded, round trip (IBKR's $6.60 minimum each way is 0.3% on its own, plus at least a tick of spread each way). The intraday ideas' raw moves, before costs, were between -1.2% and +0.6% a trade. None of them had an edge to lose. Multi-day holds moved more (20-day breakouts +2.7% to +5% a trade on practice), but that did not survive into July-August. The best near-miss, B12 (buy after an announcement moves a stock 6% or more, hold a week), made money in both windows but is noise: its t-statistic was 0.26 and 0.35 against a bar of about 2.9, and it loses money without its best three trades in both. The cheapest broker with an API (Tiger Brokers AU, about $5.50 an order) saves about $1 an order. It turns 17 practice results positive, mostly by small amounts, and changes no verdict.\n\n**Read every number with the survivorship warning.** Today's index lists were applied to every past day, which flatters every result. Losing on that data is a stronger negative than it looks.",
+  "next": "1. **Size decides whether an intraday idea can win.** At $4,000-5,000 a position the round trip is about 0.85%. At $10,000 in the ~28 names turning over $50m+ a day it is about 0.3%. An intraday setup the AI takes needs an expected move clearly above that, and 1R under about 1% of the price is not worth a call. The rules found no raw edge in \"stocks in play\" selection by volume and catalyst alone (yardstick A's raw move: -0.6% to +0.5% a trade). The agent's judgment has to supply the edge; the setup list will not.\n2. **Where the raw moves were biggest: multi-day holds after big news reactions (6%+) and 20-day breakouts.** Neither held from April-June into July-August. The announcement type that carried the best near-miss flipped between windows (contracts +$963 on practice, -$1,570 on check). That is where an AI reader could plausibly add something a headline rule cannot: telling a contract that matters (its size against the company) from one that does not, and results against expectations. Test it only on days after the model's cutoff (VALIDATE onward), anonymised before, as PRACTICE_LAB.md says.\n3. **The frozen rule bots are a noisy bar.** Announcements v2 made +$1,736 on the practice months (carried by three trades, per the replay report) and -$248 on the check months. Day trader v1 lost -$4,607 and -$3,206. \"Beats the frozen bot\" on practice mostly measured v2's luck.\n4. **Data facts the simulator should use:** the opening auction is the OPEN of the 09:59 bar (it matched the official open on 1,174 of 1,174 stock-days; the bar also holds early continuous trades). The closing auction prints in the 16:10 bar. The staggered open does not show in the IBKR bars (every group trades from 10:00). STW and VAS history starts on 11 Sep only, so fetch index-fund history before trying any index idea for real.\n5. **Keep the sealed window for a real finalist.** It is still unspent. Every idea tried here is counted (N = 72), so the check-set bar now stands at t >= 2.92 for anything proposed next.",
+  "checks": "- **No look-ahead, on random walks.** Every family was run with its filters loosened on three synthetic markets of 80 random-walk stocks each, where nothing can be predicted by construction. Pooled across the seeds, every family's raw P&L was within 1.03 standard errors of zero. One single-seed result of +2.9 standard errors (drift, 9 trades) was traced trade by trade: the entries and exits were correct, and it disappeared when pooled.\n- **The prices are the real ones.** Daily closes built from the minute bars equal Yahoo's closes to the cent for stocks without a dividend in the window. The constant gaps for BHP, CBA and A2M are Yahoo's dividend adjustment. Minute volumes are in shares and sum to 91-98% of Yahoo's daily volume.\n- **The auctions.** The opening auction price is the OPEN of the 09:59 bar: it matched Yahoo's official open on 1,174 of 1,174 stock-days (12 codes, dividend adjustment removed). The bar's close did not (it holds some early continuous trades). This was found and fixed before any idea ran. The closing auction prints in the 16:10 bar; 94% of stock-days have one.\n- **What the closing-volume cap excluded: nothing.** C03 (yardstick A with the cap) is identical to A01, trade for trade. At $5,000 in the three most in-play names, no position came near 20% of the usual closing auction. Across all 2,499 practice trades, 9 were stuck at the close (sold at the next open and counted). The replay's stuck positions came from thinner names than these rules pick.\n- **The cheapest-broker column can be worse than IBKR's** for ideas with a minimum-R-over-costs filter (A01, A04, C01, C03, C04, A10, A12, G03, G04). Cheaper costs let more marginal setups through, so the trades differ.\n- **Re-runs, stated.** The first real-data pass was re-run from scratch to add the before-costs column, with the same ideas and rules. Three results (B06, R03, R04) moved by rounding when the daily table went from 32-bit to 64-bit numbers; no verdict changed, and the first pass's log is kept (data/search/tried_pass1_without_cost_split.jsonl). X01-X03 could not run (no index-fund history before 11 Sep). They were re-registered as X04-X06 on an index proxy and are counted twice in N.\n- **The sealed window was never opened.** No idea became a finalist, so nothing asked for the locked test and the lab's locked-run log was never written.",
+  "diagnostics": {
+   "cheapest_broker_practice": {
+    "A01": {
+     "days": 66,
+     "trades": 49,
+     "pnl": -2614.8,
+     "fees": 539.0,
+     "win_rate_pct": 28.6,
+     "avg_r": -0.313,
+     "t_stat": -2.954,
+     "worst_day": -271.95,
+     "max_drawdown_pct": 13.07,
+     "green_days": 9,
+     "red_days": 26,
+     "pnl_without_top3": -3208.07,
+     "top3_share_of_gross_pct": 51.3,
+     "up_days": {
+      "n": 27,
+      "pnl": -729.98
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1884.82
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -1122.84,
+     "costs": 1491.96,
+     "turnover": 189300.16,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 1992.44
+    },
+    "A02": {
+     "days": 66,
+     "trades": 52,
+     "pnl": -989.57,
+     "fees": 572.0,
+     "win_rate_pct": 42.3,
+     "avg_r": -0.107,
+     "t_stat": -1.161,
+     "worst_day": -264.12,
+     "max_drawdown_pct": 6.22,
+     "green_days": 14,
+     "red_days": 24,
+     "pnl_without_top3": -1543.03,
+     "top3_share_of_gross_pct": 31.7,
+     "up_days": {
+      "n": 27,
+      "pnl": 577.27
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1566.84
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 563.65,
+     "costs": 1553.22,
+     "turnover": 200365.53,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3617.67
+    },
+    "A03": {
+     "days": 66,
+     "trades": 50,
+     "pnl": -612.35,
+     "fees": 550.0,
+     "win_rate_pct": 42.0,
+     "avg_r": -0.061,
+     "t_stat": -0.677,
+     "worst_day": -264.12,
+     "max_drawdown_pct": 5.75,
+     "green_days": 15,
+     "red_days": 22,
+     "pnl_without_top3": -1339.55,
+     "top3_share_of_gross_pct": 44.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 498.12
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1110.47
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 809.27,
+     "costs": 1421.62,
+     "turnover": 182263.8,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3994.89
+    },
+    "A04": {
+     "days": 66,
+     "trades": 49,
+     "pnl": -2622.24,
+     "fees": 539.0,
+     "win_rate_pct": 30.6,
+     "avg_r": -0.315,
+     "t_stat": -2.949,
+     "worst_day": -271.95,
+     "max_drawdown_pct": 13.11,
+     "green_days": 9,
+     "red_days": 26,
+     "pnl_without_top3": -3215.51,
+     "top3_share_of_gross_pct": 52.0,
+     "up_days": {
+      "n": 27,
+      "pnl": -729.98
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1892.26
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -1130.29,
+     "costs": 1491.95,
+     "turnover": 189300.16,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 1985.0
+    },
+    "A05": {
+     "days": 66,
+     "trades": 34,
+     "pnl": -2044.58,
+     "fees": 374.0,
+     "win_rate_pct": 23.5,
+     "avg_r": -0.339,
+     "t_stat": -2.725,
+     "worst_day": -271.95,
+     "max_drawdown_pct": 11.09,
+     "green_days": 7,
+     "red_days": 22,
+     "pnl_without_top3": -2582.07,
+     "top3_share_of_gross_pct": 67.5,
+     "up_days": {
+      "n": 27,
+      "pnl": -531.11
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1513.47
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -1046.43,
+     "costs": 998.15,
+     "turnover": 126778.36,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2562.66
+    },
+    "B01": {
+     "days": 66,
+     "trades": 23,
+     "pnl": 169.19,
+     "fees": 253.0,
+     "win_rate_pct": 47.8,
+     "avg_r": null,
+     "t_stat": 0.146,
+     "worst_day": -770.95,
+     "max_drawdown_pct": 4.41,
+     "green_days": 13,
+     "red_days": 14,
+     "pnl_without_top3": -1174.03,
+     "top3_share_of_gross_pct": 63.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 932.79
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -763.6
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 873.98,
+     "costs": 704.77,
+     "turnover": 91908.47,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1566.74
+    },
+    "B02": {
+     "days": 66,
+     "trades": 18,
+     "pnl": 1026.68,
+     "fees": 198.0,
+     "win_rate_pct": 55.6,
+     "avg_r": null,
+     "t_stat": 0.815,
+     "worst_day": -304.53,
+     "max_drawdown_pct": 2.34,
+     "green_days": 19,
+     "red_days": 17,
+     "pnl_without_top3": -517.58,
+     "top3_share_of_gross_pct": 61.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 1607.0
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -580.32
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1554.02,
+     "costs": 527.33,
+     "turnover": 71918.57,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -709.25
+    },
+    "B03": {
+     "days": 66,
+     "trades": 13,
+     "pnl": -362.25,
+     "fees": 143.0,
+     "win_rate_pct": 53.8,
+     "avg_r": null,
+     "t_stat": -0.252,
+     "worst_day": -407.64,
+     "max_drawdown_pct": 7.6,
+     "green_days": 20,
+     "red_days": 21,
+     "pnl_without_top3": -1138.01,
+     "top3_share_of_gross_pct": 65.8,
+     "up_days": {
+      "n": 27,
+      "pnl": 1643.9
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2006.15
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 26.18,
+     "costs": 388.43,
+     "turnover": 51928.9,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -2098.18
+    },
+    "B04": {
+     "days": 66,
+     "trades": 2,
+     "pnl": -212.31,
+     "fees": 22.0,
+     "win_rate_pct": 0.0,
+     "avg_r": null,
+     "t_stat": -0.534,
+     "worst_day": -137.4,
+     "max_drawdown_pct": 1.35,
+     "green_days": 1,
+     "red_days": 7,
+     "pnl_without_top3": -0.01,
+     "top3_share_of_gross_pct": null,
+     "up_days": {
+      "n": 27,
+      "pnl": 182.24
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -394.55
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -151.92,
+     "costs": 60.38,
+     "turnover": 7978.0,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1948.24
+    },
+    "B05": {
+     "days": 66,
+     "trades": 21,
+     "pnl": -249.78,
+     "fees": 231.0,
+     "win_rate_pct": 61.9,
+     "avg_r": null,
+     "t_stat": -0.179,
+     "worst_day": -675.14,
+     "max_drawdown_pct": 6.47,
+     "green_days": 21,
+     "red_days": 27,
+     "pnl_without_top3": -1526.47,
+     "top3_share_of_gross_pct": 53.8,
+     "up_days": {
+      "n": 27,
+      "pnl": 272.23
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -522.01
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": 490.23,
+     "costs": 740.02,
+     "turnover": 80102.96,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1985.71
+    },
+    "B06": {
+     "days": 66,
+     "trades": 11,
+     "pnl": -1147.88,
+     "fees": 121.0,
+     "win_rate_pct": 45.5,
+     "avg_r": null,
+     "t_stat": -0.748,
+     "worst_day": -933.12,
+     "max_drawdown_pct": 7.3,
+     "green_days": 17,
+     "red_days": 24,
+     "pnl_without_top3": -2078.32,
+     "top3_share_of_gross_pct": 85.9,
+     "up_days": {
+      "n": 27,
+      "pnl": 900.56
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2048.44
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -478.22,
+     "costs": 669.68,
+     "turnover": 43976.3,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -2883.81
+    },
+    "B07": {
+     "days": 66,
+     "trades": 1,
+     "pnl": -126.59,
+     "fees": 11.0,
+     "win_rate_pct": 0.0,
+     "avg_r": null,
+     "t_stat": -1.655,
+     "worst_day": -56.98,
+     "max_drawdown_pct": 0.64,
+     "green_days": 2,
+     "red_days": 8,
+     "pnl_without_top3": 0.0,
+     "top3_share_of_gross_pct": null,
+     "up_days": {
+      "n": 27,
+      "pnl": 8.14
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -134.73
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -97.68,
+     "costs": 28.91,
+     "turnover": 3996.74,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1862.52
+    },
+    "B08": {
+     "days": 66,
+     "trades": 41,
+     "pnl": -1253.56,
+     "fees": 451.0,
+     "win_rate_pct": 51.2,
+     "avg_r": null,
+     "t_stat": -0.574,
+     "worst_day": -837.62,
+     "max_drawdown_pct": 11.68,
+     "green_days": 24,
+     "red_days": 29,
+     "pnl_without_top3": -2530.25,
+     "top3_share_of_gross_pct": 33.2,
+     "up_days": {
+      "n": 27,
+      "pnl": 2412.4
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -3665.96
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": 417.37,
+     "costs": 1670.96,
+     "turnover": 161255.35,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -2989.49
+    },
+    "B09": {
+     "days": 66,
+     "trades": 1,
+     "pnl": -609.38,
+     "fees": 11.0,
+     "win_rate_pct": 0.0,
+     "avg_r": null,
+     "t_stat": -1.112,
+     "worst_day": -534.82,
+     "max_drawdown_pct": 3.13,
+     "green_days": 2,
+     "red_days": 4,
+     "pnl_without_top3": -0.01,
+     "top3_share_of_gross_pct": null,
+     "up_days": {
+      "n": 27,
+      "pnl": -553.71
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -55.67
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -571.29,
+     "costs": 38.08,
+     "turnover": 3998.99,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -2345.31
+    },
+    "C01": {
+     "days": 66,
+     "trades": 13,
+     "pnl": -534.23,
+     "fees": 143.0,
+     "win_rate_pct": 23.1,
+     "avg_r": -0.255,
+     "t_stat": -1.178,
+     "worst_day": -247.97,
+     "max_drawdown_pct": 2.67,
+     "green_days": 3,
+     "red_days": 9,
+     "pnl_without_top3": -949.94,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 86.66
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -620.89
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -150.95,
+     "costs": 383.28,
+     "turnover": 45946.16,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4073.01
+    },
+    "C02": {
+     "days": 66,
+     "trades": 17,
+     "pnl": -294.29,
+     "fees": 187.0,
+     "win_rate_pct": 35.3,
+     "avg_r": -0.116,
+     "t_stat": -1.05,
+     "worst_day": -134.94,
+     "max_drawdown_pct": 2.45,
+     "green_days": 6,
+     "red_days": 7,
+     "pnl_without_top3": -540.17,
+     "top3_share_of_gross_pct": 82.0,
+     "up_days": {
+      "n": 27,
+      "pnl": -14.49
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -279.8
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 189.62,
+     "costs": 483.91,
+     "turnover": 69134.82,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4312.95
+    },
+    "C03": {
+     "days": 66,
+     "trades": 49,
+     "pnl": -2614.8,
+     "fees": 539.0,
+     "win_rate_pct": 28.6,
+     "avg_r": -0.313,
+     "t_stat": -2.954,
+     "worst_day": -271.95,
+     "max_drawdown_pct": 13.07,
+     "green_days": 9,
+     "red_days": 26,
+     "pnl_without_top3": -3208.07,
+     "top3_share_of_gross_pct": 51.3,
+     "up_days": {
+      "n": 27,
+      "pnl": -729.98
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1884.82
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -1122.84,
+     "costs": 1491.96,
+     "turnover": 189300.16,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 1992.44
+    },
+    "C04": {
+     "days": 66,
+     "trades": 13,
+     "pnl": -534.23,
+     "fees": 143.0,
+     "win_rate_pct": 23.1,
+     "avg_r": -0.255,
+     "t_stat": -1.178,
+     "worst_day": -247.97,
+     "max_drawdown_pct": 2.67,
+     "green_days": 3,
+     "red_days": 9,
+     "pnl_without_top3": -949.94,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 86.66
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -620.89
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -150.95,
+     "costs": 383.28,
+     "turnover": 45946.16,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4073.01
+    },
+    "C05": {
+     "days": 66,
+     "trades": 15,
+     "pnl": -149.81,
+     "fees": 165.0,
+     "win_rate_pct": 60.0,
+     "avg_r": null,
+     "t_stat": -0.113,
+     "worst_day": -767.59,
+     "max_drawdown_pct": 8.88,
+     "green_days": 11,
+     "red_days": 17,
+     "pnl_without_top3": -1393.51,
+     "top3_share_of_gross_pct": 62.7,
+     "up_days": {
+      "n": 27,
+      "pnl": 611.01
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -760.82
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 465.33,
+     "costs": 615.15,
+     "turnover": 58522.81,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1885.74
+    },
+    "C06": {
+     "days": 66,
+     "trades": 1,
+     "pnl": 53.12,
+     "fees": 11.0,
+     "win_rate_pct": 100.0,
+     "avg_r": null,
+     "t_stat": 0.283,
+     "worst_day": -78.47,
+     "max_drawdown_pct": 0.51,
+     "green_days": 2,
+     "red_days": 4,
+     "pnl_without_top3": -0.0,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 180.88
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -127.76
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 70.49,
+     "costs": 17.37,
+     "turnover": 3996.65,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1682.81
+    },
+    "A06": {
+     "days": 66,
+     "trades": 42,
+     "pnl": -2045.39,
+     "fees": 462.0,
+     "win_rate_pct": 28.6,
+     "avg_r": -0.291,
+     "t_stat": -2.344,
+     "worst_day": -392.55,
+     "max_drawdown_pct": 11.02,
+     "green_days": 8,
+     "red_days": 23,
+     "pnl_without_top3": -2638.66,
+     "top3_share_of_gross_pct": 51.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 55.42
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2100.81
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -745.73,
+     "costs": 1299.66,
+     "turnover": 168572.03,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2561.85
+    },
+    "A07": {
+     "days": 66,
+     "trades": 34,
+     "pnl": -1057.92,
+     "fees": 374.0,
+     "win_rate_pct": 32.4,
+     "avg_r": -0.173,
+     "t_stat": -1.274,
+     "worst_day": -345.15,
+     "max_drawdown_pct": 8.94,
+     "green_days": 9,
+     "red_days": 18,
+     "pnl_without_top3": -1780.31,
+     "top3_share_of_gross_pct": 53.2,
+     "up_days": {
+      "n": 27,
+      "pnl": -690.72
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -367.2
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -49.42,
+     "costs": 1008.5,
+     "turnover": 128024.21,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3549.32
+    },
+    "A08": {
+     "days": 66,
+     "trades": 46,
+     "pnl": -2077.13,
+     "fees": 506.0,
+     "win_rate_pct": 30.4,
+     "avg_r": -0.269,
+     "t_stat": -2.419,
+     "worst_day": -271.95,
+     "max_drawdown_pct": 10.74,
+     "green_days": 9,
+     "red_days": 24,
+     "pnl_without_top3": -2670.4,
+     "top3_share_of_gross_pct": 51.3,
+     "up_days": {
+      "n": 27,
+      "pnl": -654.26
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1422.87
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -684.85,
+     "costs": 1392.28,
+     "turnover": 177268.92,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2530.11
+    },
+    "A09": {
+     "days": 66,
+     "trades": 94,
+     "pnl": -2506.65,
+     "fees": 1034.0,
+     "win_rate_pct": 37.2,
+     "avg_r": -0.173,
+     "t_stat": -1.786,
+     "worst_day": -396.33,
+     "max_drawdown_pct": 16.06,
+     "green_days": 19,
+     "red_days": 33,
+     "pnl_without_top3": -3577.97,
+     "top3_share_of_gross_pct": 28.7,
+     "up_days": {
+      "n": 27,
+      "pnl": -1135.43
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1371.22
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 79.15,
+     "costs": 2585.8,
+     "turnover": 380495.56,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2100.59
+    },
+    "A10": {
+     "days": 66,
+     "trades": 24,
+     "pnl": -1417.71,
+     "fees": 264.0,
+     "win_rate_pct": 29.2,
+     "avg_r": -0.311,
+     "t_stat": -2.439,
+     "worst_day": -247.97,
+     "max_drawdown_pct": 7.09,
+     "green_days": 6,
+     "red_days": 15,
+     "pnl_without_top3": -1753.94,
+     "top3_share_of_gross_pct": 73.2,
+     "up_days": {
+      "n": 27,
+      "pnl": -574.49
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -843.22
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -865.37,
+     "costs": 552.34,
+     "turnover": 86621.2,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3189.53
+    },
+    "A11": {
+     "days": 66,
+     "trades": 50,
+     "pnl": -648.19,
+     "fees": 550.0,
+     "win_rate_pct": 42.0,
+     "avg_r": -0.067,
+     "t_stat": -0.736,
+     "worst_day": -264.12,
+     "max_drawdown_pct": 5.75,
+     "green_days": 15,
+     "red_days": 22,
+     "pnl_without_top3": -1339.55,
+     "top3_share_of_gross_pct": 43.2,
+     "up_days": {
+      "n": 27,
+      "pnl": 462.28
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1110.47
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 773.41,
+     "costs": 1421.6,
+     "turnover": 182263.8,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3959.05
+    },
+    "A12": {
+     "days": 66,
+     "trades": 75,
+     "pnl": -1915.59,
+     "fees": 825.0,
+     "win_rate_pct": 32.0,
+     "avg_r": -0.262,
+     "t_stat": -2.256,
+     "worst_day": -310.87,
+     "max_drawdown_pct": 10.16,
+     "green_days": 13,
+     "red_days": 27,
+     "pnl_without_top3": -2532.64,
+     "top3_share_of_gross_pct": 42.6,
+     "up_days": {
+      "n": 27,
+      "pnl": -304.39
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1611.2
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -351.35,
+     "costs": 1564.24,
+     "turnover": 196676.87,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2691.65
+    },
+    "B10": {
+     "days": 66,
+     "trades": 41,
+     "pnl": -2035.14,
+     "fees": 451.0,
+     "win_rate_pct": 43.9,
+     "avg_r": null,
+     "t_stat": -0.786,
+     "worst_day": -1082.22,
+     "max_drawdown_pct": 14.43,
+     "green_days": 26,
+     "red_days": 26,
+     "pnl_without_top3": -3475.65,
+     "top3_share_of_gross_pct": 38.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 2112.59
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -4147.73
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -367.55,
+     "costs": 1667.61,
+     "turnover": 159994.64,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3771.07
+    },
+    "B11": {
+     "days": 66,
+     "trades": 44,
+     "pnl": -1276.53,
+     "fees": 484.0,
+     "win_rate_pct": 47.7,
+     "avg_r": -0.087,
+     "t_stat": -0.65,
+     "worst_day": -756.73,
+     "max_drawdown_pct": 10.19,
+     "green_days": 24,
+     "red_days": 28,
+     "pnl_without_top3": -2553.22,
+     "top3_share_of_gross_pct": 33.3,
+     "up_days": {
+      "n": 27,
+      "pnl": 1753.61
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -3030.14
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": 462.65,
+     "costs": 1739.22,
+     "turnover": 173231.11,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3012.46
+    },
+    "B12": {
+     "days": 66,
+     "trades": 25,
+     "pnl": 542.6,
+     "fees": 275.0,
+     "win_rate_pct": 56.0,
+     "avg_r": null,
+     "t_stat": 0.29,
+     "worst_day": -585.06,
+     "max_drawdown_pct": 5.47,
+     "green_days": 24,
+     "red_days": 25,
+     "pnl_without_top3": -569.6,
+     "top3_share_of_gross_pct": 43.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 1117.61
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -575.01
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1646.16,
+     "costs": 1103.58,
+     "turnover": 98573.07,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1193.33
+    },
+    "B13": {
+     "days": 66,
+     "trades": 28,
+     "pnl": -1433.02,
+     "fees": 308.0,
+     "win_rate_pct": 42.9,
+     "avg_r": null,
+     "t_stat": -0.69,
+     "worst_day": -1003.12,
+     "max_drawdown_pct": 12.23,
+     "green_days": 23,
+     "red_days": 25,
+     "pnl_without_top3": -3044.93,
+     "top3_share_of_gross_pct": 59.7,
+     "up_days": {
+      "n": 27,
+      "pnl": 1242.55
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2675.57
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": -373.88,
+     "costs": 1059.17,
+     "turnover": 111740.73,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3168.95
+    },
+    "B14": {
+     "days": 66,
+     "trades": 45,
+     "pnl": 600.28,
+     "fees": 495.0,
+     "win_rate_pct": 51.1,
+     "avg_r": null,
+     "t_stat": 0.272,
+     "worst_day": -767.59,
+     "max_drawdown_pct": 8.62,
+     "green_days": 24,
+     "red_days": 31,
+     "pnl_without_top3": -1521.38,
+     "top3_share_of_gross_pct": 38.5,
+     "up_days": {
+      "n": 27,
+      "pnl": 2481.57
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1881.29
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": 2328.26,
+     "costs": 1728.03,
+     "turnover": 177175.24,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1135.65
+    },
+    "B15": {
+     "days": 66,
+     "trades": 30,
+     "pnl": -1669.34,
+     "fees": 330.0,
+     "win_rate_pct": 43.3,
+     "avg_r": null,
+     "t_stat": -0.956,
+     "worst_day": -894.69,
+     "max_drawdown_pct": 12.14,
+     "green_days": 19,
+     "red_days": 31,
+     "pnl_without_top3": -2946.03,
+     "top3_share_of_gross_pct": 42.1,
+     "up_days": {
+      "n": 27,
+      "pnl": 1529.46
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -3198.8
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -661.57,
+     "costs": 1007.81,
+     "turnover": 119641.15,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3405.27
+    },
+    "G01": {
+     "days": 66,
+     "trades": 77,
+     "pnl": -2296.84,
+     "fees": 847.0,
+     "win_rate_pct": 35.1,
+     "avg_r": -0.369,
+     "t_stat": -2.428,
+     "worst_day": -406.32,
+     "max_drawdown_pct": 12.15,
+     "green_days": 13,
+     "red_days": 30,
+     "pnl_without_top3": -2870.32,
+     "top3_share_of_gross_pct": 30.5,
+     "up_days": {
+      "n": 27,
+      "pnl": -1117.86
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1178.98
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": 156.43,
+     "costs": 2453.27,
+     "turnover": 340032.69,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2310.4
+    },
+    "G02": {
+     "days": 66,
+     "trades": 21,
+     "pnl": -42.82,
+     "fees": 231.0,
+     "win_rate_pct": 47.6,
+     "avg_r": -0.038,
+     "t_stat": -0.095,
+     "worst_day": -137.01,
+     "max_drawdown_pct": 1.53,
+     "green_days": 7,
+     "red_days": 9,
+     "pnl_without_top3": -587.86,
+     "top3_share_of_gross_pct": 70.7,
+     "up_days": {
+      "n": 27,
+      "pnl": -394.51
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 351.69
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 576.22,
+     "costs": 619.04,
+     "turnover": 93484.7,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4564.42
+    },
+    "G03": {
+     "days": 66,
+     "trades": 85,
+     "pnl": -2678.04,
+     "fees": 935.0,
+     "win_rate_pct": 29.4,
+     "avg_r": -2.161,
+     "t_stat": -2.804,
+     "worst_day": -404.02,
+     "max_drawdown_pct": 13.87,
+     "green_days": 14,
+     "red_days": 29,
+     "pnl_without_top3": -3333.76,
+     "top3_share_of_gross_pct": 38.5,
+     "up_days": {
+      "n": 27,
+      "pnl": -557.58
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2120.46
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": -78.22,
+     "costs": 2599.82,
+     "turnover": 367438.46,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 1929.2
+    },
+    "L01": {
+     "days": 66,
+     "trades": 130,
+     "pnl": -3517.1,
+     "fees": 1430.0,
+     "win_rate_pct": 23.8,
+     "avg_r": -0.447,
+     "t_stat": -5.848,
+     "worst_day": -234.96,
+     "max_drawdown_pct": 17.59,
+     "green_days": 8,
+     "red_days": 42,
+     "pnl_without_top3": -3875.79,
+     "top3_share_of_gross_pct": 36.2,
+     "up_days": {
+      "n": 27,
+      "pnl": -1418.27
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2098.83
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": 1361.83,
+     "costs": 4878.93,
+     "turnover": 606394.09,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 1090.14
+    },
+    "L02": {
+     "days": 66,
+     "trades": 51,
+     "pnl": -1519.15,
+     "fees": 561.0,
+     "win_rate_pct": 19.6,
+     "avg_r": -0.707,
+     "t_stat": -3.513,
+     "worst_day": -186.24,
+     "max_drawdown_pct": 7.6,
+     "green_days": 7,
+     "red_days": 27,
+     "pnl_without_top3": -1853.51,
+     "top3_share_of_gross_pct": 70.6,
+     "up_days": {
+      "n": 27,
+      "pnl": -827.38
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -691.77
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 412.41,
+     "costs": 1931.56,
+     "turnover": 244915.21,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3088.09
+    },
+    "L03": {
+     "days": 66,
+     "trades": 47,
+     "pnl": -1057.5,
+     "fees": 517.0,
+     "win_rate_pct": 31.9,
+     "avg_r": -0.385,
+     "t_stat": -2.554,
+     "worst_day": -183.25,
+     "max_drawdown_pct": 5.29,
+     "green_days": 5,
+     "red_days": 12,
+     "pnl_without_top3": -1404.7,
+     "top3_share_of_gross_pct": 68.1,
+     "up_days": {
+      "n": 27,
+      "pnl": -344.03
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -713.47
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 662.27,
+     "costs": 1719.77,
+     "turnover": 223033.42,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 3549.74
+    },
+    "R01": {
+     "days": 66,
+     "trades": 228,
+     "pnl": -12487.43,
+     "fees": 2508.0,
+     "win_rate_pct": 32.0,
+     "avg_r": null,
+     "t_stat": -3.961,
+     "worst_day": -1014.0,
+     "max_drawdown_pct": 63.06,
+     "green_days": 17,
+     "red_days": 39,
+     "pnl_without_top3": -13558.68,
+     "top3_share_of_gross_pct": 14.8,
+     "up_days": {
+      "n": 27,
+      "pnl": -1637.0
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -10850.43
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -4385.58,
+     "costs": 8101.9,
+     "turnover": 910382.94,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -14223.36
+    },
+    "R02": {
+     "days": 66,
+     "trades": 91,
+     "pnl": -1698.52,
+     "fees": 1001.0,
+     "win_rate_pct": 46.2,
+     "avg_r": null,
+     "t_stat": -0.516,
+     "worst_day": -1236.16,
+     "max_drawdown_pct": 16.89,
+     "green_days": 28,
+     "red_days": 28,
+     "pnl_without_top3": -3894.88,
+     "top3_share_of_gross_pct": 27.2,
+     "up_days": {
+      "n": 27,
+      "pnl": 3601.36
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -5299.88
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1391.57,
+     "costs": 3090.1,
+     "turnover": 363088.04,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3434.45
+    },
+    "R03": {
+     "days": 66,
+     "trades": 75,
+     "pnl": -5904.62,
+     "fees": 825.0,
+     "win_rate_pct": 30.7,
+     "avg_r": null,
+     "t_stat": -3.266,
+     "worst_day": -734.02,
+     "max_drawdown_pct": 30.59,
+     "green_days": 10,
+     "red_days": 40,
+     "pnl_without_top3": -6723.14,
+     "top3_share_of_gross_pct": 35.1,
+     "up_days": {
+      "n": 27,
+      "pnl": -1285.21
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -4619.41
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -2880.51,
+     "costs": 3024.15,
+     "turnover": 299623.35,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -7640.55
+    },
+    "R04": {
+     "days": 66,
+     "trades": 90,
+     "pnl": -3387.41,
+     "fees": 990.0,
+     "win_rate_pct": 37.8,
+     "avg_r": null,
+     "t_stat": -1.503,
+     "worst_day": -1014.0,
+     "max_drawdown_pct": 19.86,
+     "green_days": 7,
+     "red_days": 18,
+     "pnl_without_top3": -4412.37,
+     "top3_share_of_gross_pct": 25.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 1406.69
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -4794.1
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -330.12,
+     "costs": 3057.29,
+     "turnover": 359243.7,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -5123.34
+    },
+    "K01": {
+     "days": 66,
+     "trades": 35,
+     "pnl": 2756.3,
+     "fees": 385.0,
+     "win_rate_pct": 57.1,
+     "avg_r": 0.247,
+     "t_stat": 1.265,
+     "worst_day": -495.34,
+     "max_drawdown_pct": 6.04,
+     "green_days": 24,
+     "red_days": 22,
+     "pnl_without_top3": 7.39,
+     "top3_share_of_gross_pct": 53.6,
+     "up_days": {
+      "n": 27,
+      "pnl": 1238.76
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 1517.54
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 3729.65,
+     "costs": 973.33,
+     "turnover": 139658.75,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": 1020.37
+    },
+    "K02": {
+     "days": 66,
+     "trades": 22,
+     "pnl": 3749.21,
+     "fees": 242.0,
+     "win_rate_pct": 63.6,
+     "avg_r": 0.534,
+     "t_stat": 1.947,
+     "worst_day": -530.23,
+     "max_drawdown_pct": 6.16,
+     "green_days": 28,
+     "red_days": 18,
+     "pnl_without_top3": 1369.22,
+     "top3_share_of_gross_pct": 46.3,
+     "up_days": {
+      "n": 27,
+      "pnl": 2819.9
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 929.31
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 4358.15,
+     "costs": 608.89,
+     "turnover": 87731.17,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": 2013.28
+    },
+    "D01": {
+     "days": 65,
+     "trades": 9,
+     "pnl": -292.67,
+     "fees": 99.0,
+     "win_rate_pct": 44.4,
+     "avg_r": -0.271,
+     "t_stat": -0.698,
+     "worst_day": -234.79,
+     "max_drawdown_pct": 1.62,
+     "green_days": 4,
+     "red_days": 4,
+     "pnl_without_top3": -600.67,
+     "top3_share_of_gross_pct": 99.1,
+     "up_days": {
+      "n": 27,
+      "pnl": -86.72
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -205.95
+     },
+     "stuck_at_close": 0,
+     "gaps": 1,
+     "raw_pnl": 15.95,
+     "costs": 308.62,
+     "turnover": 40246.78,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -2028.6
+    },
+    "D02": {
+     "days": 65,
+     "trades": 5,
+     "pnl": 53.15,
+     "fees": 55.0,
+     "win_rate_pct": 60.0,
+     "avg_r": 0.047,
+     "t_stat": 0.154,
+     "worst_day": -234.79,
+     "max_drawdown_pct": 1.17,
+     "green_days": 3,
+     "red_days": 2,
+     "pnl_without_top3": -249.93,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 230.25
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -177.1
+     },
+     "stuck_at_close": 0,
+     "gaps": 1,
+     "raw_pnl": 277.39,
+     "costs": 224.24,
+     "turnover": 23998.85,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1682.78
+    },
+    "A13": {
+     "days": 66,
+     "trades": 38,
+     "pnl": 395.37,
+     "fees": 418.0,
+     "win_rate_pct": 47.4,
+     "avg_r": 0.028,
+     "t_stat": 0.333,
+     "worst_day": -288.42,
+     "max_drawdown_pct": 4.79,
+     "green_days": 12,
+     "red_days": 16,
+     "pnl_without_top3": -751.15,
+     "top3_share_of_gross_pct": 42.8,
+     "up_days": {
+      "n": 27,
+      "pnl": 720.71
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -325.34
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1237.01,
+     "costs": 841.64,
+     "turnover": 308646.46,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 5002.61
+    },
+    "A14": {
+     "days": 66,
+     "trades": 38,
+     "pnl": 334.46,
+     "fees": 418.0,
+     "win_rate_pct": 47.4,
+     "avg_r": 0.02,
+     "t_stat": 0.292,
+     "worst_day": -288.42,
+     "max_drawdown_pct": 4.79,
+     "green_days": 12,
+     "red_days": 16,
+     "pnl_without_top3": -751.15,
+     "top3_share_of_gross_pct": 41.5,
+     "up_days": {
+      "n": 27,
+      "pnl": 659.8
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -325.34
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1176.07,
+     "costs": 841.61,
+     "turnover": 308646.46,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4941.7
+    },
+    "L04": {
+     "days": 66,
+     "trades": 7,
+     "pnl": -38.22,
+     "fees": 77.0,
+     "win_rate_pct": 42.9,
+     "avg_r": -0.036,
+     "t_stat": -0.201,
+     "worst_day": -151.73,
+     "max_drawdown_pct": 0.96,
+     "green_days": 3,
+     "red_days": 3,
+     "pnl_without_top3": -235.14,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": -13.6
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -24.62
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 134.64,
+     "costs": 172.86,
+     "turnover": 69853.31,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4569.02
+    },
+    "G04": {
+     "days": 66,
+     "trades": 23,
+     "pnl": -92.76,
+     "fees": 253.0,
+     "win_rate_pct": 52.2,
+     "avg_r": -0.066,
+     "t_stat": -0.114,
+     "worst_day": -230.48,
+     "max_drawdown_pct": 3.66,
+     "green_days": 7,
+     "red_days": 9,
+     "pnl_without_top3": -1014.88,
+     "top3_share_of_gross_pct": 73.2,
+     "up_days": {
+      "n": 27,
+      "pnl": -751.12
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 658.36
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 790.13,
+     "costs": 882.89,
+     "turnover": 161858.01,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4514.48
+    },
+    "B16": {
+     "days": 66,
+     "trades": 22,
+     "pnl": -1489.91,
+     "fees": 242.0,
+     "win_rate_pct": 36.4,
+     "avg_r": null,
+     "t_stat": -0.827,
+     "worst_day": -782.32,
+     "max_drawdown_pct": 9.85,
+     "green_days": 19,
+     "red_days": 23,
+     "pnl_without_top3": -2618.47,
+     "top3_share_of_gross_pct": 67.8,
+     "up_days": {
+      "n": 27,
+      "pnl": 512.64
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2002.55
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": -761.13,
+     "costs": 728.77,
+     "turnover": 87753.71,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3225.84
+    },
+    "B17": {
+     "days": 66,
+     "trades": 46,
+     "pnl": -1807.55,
+     "fees": 506.0,
+     "win_rate_pct": 37.0,
+     "avg_r": null,
+     "t_stat": -0.819,
+     "worst_day": -1028.84,
+     "max_drawdown_pct": 11.17,
+     "green_days": 23,
+     "red_days": 24,
+     "pnl_without_top3": -3427.11,
+     "top3_share_of_gross_pct": 41.3,
+     "up_days": {
+      "n": 27,
+      "pnl": 844.54
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -2652.09
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -83.49,
+     "costs": 1724.04,
+     "turnover": 179673.57,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3543.48
+    },
+    "B18": {
+     "days": 66,
+     "trades": 9,
+     "pnl": 92.67,
+     "fees": 99.0,
+     "win_rate_pct": 55.6,
+     "avg_r": null,
+     "t_stat": 0.062,
+     "worst_day": -479.9,
+     "max_drawdown_pct": 4.25,
+     "green_days": 11,
+     "red_days": 15,
+     "pnl_without_top3": -815.02,
+     "top3_share_of_gross_pct": 85.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 1336.68
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1244.01
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 475.62,
+     "costs": 382.97,
+     "turnover": 53916.52,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1643.26
+    },
+    "B19": {
+     "days": 66,
+     "trades": 30,
+     "pnl": 194.41,
+     "fees": 330.0,
+     "win_rate_pct": 56.7,
+     "avg_r": null,
+     "t_stat": 0.081,
+     "worst_day": -1078.49,
+     "max_drawdown_pct": 9.9,
+     "green_days": 29,
+     "red_days": 22,
+     "pnl_without_top3": -1312.53,
+     "top3_share_of_gross_pct": 46.1,
+     "up_days": {
+      "n": 27,
+      "pnl": 1566.75
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1372.34
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1559.12,
+     "costs": 1364.74,
+     "turnover": 118536.31,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1541.52
+    },
+    "K03": {
+     "days": 66,
+     "trades": 22,
+     "pnl": 719.2,
+     "fees": 242.0,
+     "win_rate_pct": 59.1,
+     "avg_r": 0.102,
+     "t_stat": 0.441,
+     "worst_day": -549.59,
+     "max_drawdown_pct": 5.66,
+     "green_days": 16,
+     "red_days": 15,
+     "pnl_without_top3": -954.13,
+     "top3_share_of_gross_pct": 63.9,
+     "up_days": {
+      "n": 27,
+      "pnl": -128.3
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 847.5
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1345.11,
+     "costs": 625.93,
+     "turnover": 87664.5,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1016.73
+    },
+    "K04": {
+     "days": 66,
+     "trades": 16,
+     "pnl": 1692.3,
+     "fees": 176.0,
+     "win_rate_pct": 56.2,
+     "avg_r": 0.332,
+     "t_stat": 1.273,
+     "worst_day": -431.43,
+     "max_drawdown_pct": 3.64,
+     "green_days": 25,
+     "red_days": 20,
+     "pnl_without_top3": -297.65,
+     "top3_share_of_gross_pct": 64.9,
+     "up_days": {
+      "n": 27,
+      "pnl": 805.65
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 886.65
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 2145.58,
+     "costs": 453.25,
+     "turnover": 63754.46,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -43.63
+    },
+    "W01": {
+     "days": 66,
+     "trades": 47,
+     "pnl": 532.0,
+     "fees": 517.0,
+     "win_rate_pct": 40.4,
+     "avg_r": null,
+     "t_stat": 0.169,
+     "worst_day": -932.19,
+     "max_drawdown_pct": 9.85,
+     "green_days": 31,
+     "red_days": 25,
+     "pnl_without_top3": -3486.92,
+     "top3_share_of_gross_pct": 53.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 2471.47
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1939.47
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1915.92,
+     "costs": 1383.91,
+     "turnover": 222610.73,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1203.93
+    },
+    "W02": {
+     "days": 66,
+     "trades": 47,
+     "pnl": -1488.82,
+     "fees": 517.0,
+     "win_rate_pct": 36.2,
+     "avg_r": null,
+     "t_stat": -0.353,
+     "worst_day": -1146.19,
+     "max_drawdown_pct": 17.2,
+     "green_days": 22,
+     "red_days": 33,
+     "pnl_without_top3": -4101.61,
+     "top3_share_of_gross_pct": 40.4,
+     "up_days": {
+      "n": 27,
+      "pnl": 4649.71
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -6138.53
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 21.09,
+     "costs": 1509.91,
+     "turnover": 222750.48,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -3224.75
+    },
+    "W03": {
+     "days": 66,
+     "trades": 19,
+     "pnl": -628.77,
+     "fees": 209.0,
+     "win_rate_pct": 47.4,
+     "avg_r": null,
+     "t_stat": -0.198,
+     "worst_day": -906.69,
+     "max_drawdown_pct": 14.72,
+     "green_days": 21,
+     "red_days": 25,
+     "pnl_without_top3": -3338.48,
+     "top3_share_of_gross_pct": 65.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 4449.17
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -5077.94
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -79.81,
+     "costs": 548.92,
+     "turnover": 89928.74,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -2364.7
+    },
+    "W04": {
+     "days": 66,
+     "trades": 20,
+     "pnl": -2913.01,
+     "fees": 220.0,
+     "win_rate_pct": 30.0,
+     "avg_r": null,
+     "t_stat": -0.855,
+     "worst_day": -1169.79,
+     "max_drawdown_pct": 18.63,
+     "green_days": 19,
+     "red_days": 27,
+     "pnl_without_top3": -4651.91,
+     "top3_share_of_gross_pct": 74.9,
+     "up_days": {
+      "n": 27,
+      "pnl": 3275.77
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -6188.78
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -2188.28,
+     "costs": 724.68,
+     "turnover": 94822.51,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -4648.94
+    },
+    "W05": {
+     "days": 66,
+     "trades": 16,
+     "pnl": 240.76,
+     "fees": 176.0,
+     "win_rate_pct": 43.8,
+     "avg_r": null,
+     "t_stat": 0.125,
+     "worst_day": -808.1,
+     "max_drawdown_pct": 7.56,
+     "green_days": 11,
+     "red_days": 9,
+     "pnl_without_top3": -1381.4,
+     "top3_share_of_gross_pct": 75.8,
+     "up_days": {
+      "n": 27,
+      "pnl": 160.32
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 80.44
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 673.92,
+     "costs": 433.14,
+     "turnover": 75822.14,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -1495.17
+    },
+    "V01": {
+     "days": 66,
+     "trades": 72,
+     "pnl": -2474.12,
+     "fees": 792.0,
+     "win_rate_pct": 36.1,
+     "avg_r": -0.336,
+     "t_stat": -2.702,
+     "worst_day": -401.18,
+     "max_drawdown_pct": 12.37,
+     "green_days": 11,
+     "red_days": 27,
+     "pnl_without_top3": -3132.8,
+     "top3_share_of_gross_pct": 27.4,
+     "up_days": {
+      "n": 27,
+      "pnl": -1196.4
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -1277.72
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -292.04,
+     "costs": 2182.08,
+     "turnover": 712890.66,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 2133.12
+    },
+    "V02": {
+     "days": 66,
+     "trades": 13,
+     "pnl": -179.19,
+     "fees": 143.0,
+     "win_rate_pct": 53.8,
+     "avg_r": -0.137,
+     "t_stat": -0.437,
+     "worst_day": -146.69,
+     "max_drawdown_pct": 2.74,
+     "green_days": 6,
+     "red_days": 5,
+     "pnl_without_top3": -717.57,
+     "top3_share_of_gross_pct": 88.8,
+     "up_days": {
+      "n": 27,
+      "pnl": -117.42
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -61.77
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 236.84,
+     "costs": 416.03,
+     "turnover": 129693.18,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4428.05
+    },
+    "B20": {
+     "days": 66,
+     "trades": 10,
+     "pnl": -2778.06,
+     "fees": 110.0,
+     "win_rate_pct": 30.0,
+     "avg_r": null,
+     "t_stat": -1.206,
+     "worst_day": -921.3,
+     "max_drawdown_pct": 16.58,
+     "green_days": 12,
+     "red_days": 21,
+     "pnl_without_top3": -3411.17,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": 1536.27
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -4314.33
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -2213.27,
+     "costs": 564.8,
+     "turnover": 99906.95,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": -4513.99
+    },
+    "K05": {
+     "days": 66,
+     "trades": 11,
+     "pnl": 2899.18,
+     "fees": 121.0,
+     "win_rate_pct": 81.8,
+     "avg_r": 0.499,
+     "t_stat": 1.444,
+     "worst_day": -412.97,
+     "max_drawdown_pct": 3.34,
+     "green_days": 19,
+     "red_days": 23,
+     "pnl_without_top3": -245.67,
+     "top3_share_of_gross_pct": 88.8,
+     "up_days": {
+      "n": 27,
+      "pnl": 1388.23
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 1510.95
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 3215.43,
+     "costs": 316.25,
+     "turnover": 72523.26,
+     "baseline_pnl_same_days": 1735.93,
+     "vs_baseline": 1163.25
+    },
+    "X04": {
+     "days": 66,
+     "trades": 15,
+     "pnl": -219.78,
+     "fees": 165.0,
+     "win_rate_pct": 20.0,
+     "avg_r": -0.167,
+     "t_stat": -2.73,
+     "worst_day": -46.75,
+     "max_drawdown_pct": 1.1,
+     "green_days": 3,
+     "red_days": 12,
+     "pnl_without_top3": -236.63,
+     "top3_share_of_gross_pct": 100.0,
+     "up_days": {
+      "n": 27,
+      "pnl": -219.78
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": 0.0
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 28.1,
+     "costs": 247.88,
+     "turnover": 131606.5,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4426.16
+    },
+    "X05": {
+     "days": 66,
+     "trades": 6,
+     "pnl": -57.6,
+     "fees": 66.0,
+     "win_rate_pct": 66.7,
+     "avg_r": -0.107,
+     "t_stat": -0.544,
+     "worst_day": -87.34,
+     "max_drawdown_pct": 0.44,
+     "green_days": 4,
+     "red_days": 2,
+     "pnl_without_top3": -119.48,
+     "top3_share_of_gross_pct": 85.5,
+     "up_days": {
+      "n": 27,
+      "pnl": 29.74
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -87.34
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 41.8,
+     "costs": 99.4,
+     "turnover": 53014.3,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4549.64
+    },
+    "X06": {
+     "days": 66,
+     "trades": 8,
+     "pnl": -125.6,
+     "fees": 88.0,
+     "win_rate_pct": 0.0,
+     "avg_r": -0.181,
+     "t_stat": -2.665,
+     "worst_day": -32.27,
+     "max_drawdown_pct": 0.63,
+     "green_days": 0,
+     "red_days": 8,
+     "pnl_without_top3": -96.18,
+     "top3_share_of_gross_pct": null,
+     "up_days": {
+      "n": 27,
+      "pnl": 0.0
+     },
+     "down_days": {
+      "n": 38,
+      "pnl": -125.6
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 6.0,
+     "costs": 131.6,
+     "turnover": 69271.1,
+     "baseline_pnl_same_days": -4607.24,
+     "vs_baseline": 4494.84
+    }
+   },
+   "info_check": {
+    "B01": {
+     "days": 33,
+     "trades": 36,
+     "pnl": -66.26,
+     "fees": 475.2,
+     "win_rate_pct": 52.8,
+     "avg_r": null,
+     "t_stat": -0.042,
+     "worst_day": -682.61,
+     "max_drawdown_pct": 5.23,
+     "green_days": 10,
+     "red_days": 17,
+     "pnl_without_top3": -1424.33,
+     "top3_share_of_gross_pct": 47.5,
+     "up_days": {
+      "n": 17,
+      "pnl": 742.53
+     },
+     "down_days": {
+      "n": 16,
+      "pnl": -808.79
+     },
+     "stuck_at_close": 2,
+     "gaps": 0,
+     "raw_pnl": 1308.1,
+     "costs": 1374.35,
+     "turnover": 140784.97,
+     "baseline_pnl_same_days": -248.4,
+     "vs_baseline": 182.14
+    },
+    "B12": {
+     "days": 33,
+     "trades": 20,
+     "pnl": 921.42,
+     "fees": 264.0,
+     "win_rate_pct": 60.0,
+     "avg_r": null,
+     "t_stat": 0.349,
+     "worst_day": -871.08,
+     "max_drawdown_pct": 13.55,
+     "green_days": 18,
+     "red_days": 14,
+     "pnl_without_top3": -992.26,
+     "top3_share_of_gross_pct": 55.9,
+     "up_days": {
+      "n": 17,
+      "pnl": 2531.01
+     },
+     "down_days": {
+      "n": 16,
+      "pnl": -1609.59
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1733.51,
+     "costs": 812.12,
+     "turnover": 79901.62,
+     "baseline_pnl_same_days": -248.4,
+     "vs_baseline": 1169.82
+    },
+    "B14": {
+     "days": 33,
+     "trades": 31,
+     "pnl": -686.2,
+     "fees": 409.2,
+     "win_rate_pct": 51.6,
+     "avg_r": null,
+     "t_stat": -0.233,
+     "worst_day": -1343.16,
+     "max_drawdown_pct": 18.13,
+     "green_days": 19,
+     "red_days": 14,
+     "pnl_without_top3": -2583.87,
+     "top3_share_of_gross_pct": 53.8,
+     "up_days": {
+      "n": 17,
+      "pnl": 2815.75
+     },
+     "down_days": {
+      "n": 16,
+      "pnl": -3501.95
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 297.99,
+     "costs": 984.21,
+     "turnover": 120823.87,
+     "baseline_pnl_same_days": -248.4,
+     "vs_baseline": -437.8
+    },
+    "B19": {
+     "days": 33,
+     "trades": 20,
+     "pnl": 921.42,
+     "fees": 264.0,
+     "win_rate_pct": 60.0,
+     "avg_r": null,
+     "t_stat": 0.349,
+     "worst_day": -871.08,
+     "max_drawdown_pct": 13.55,
+     "green_days": 18,
+     "red_days": 14,
+     "pnl_without_top3": -992.26,
+     "top3_share_of_gross_pct": 55.9,
+     "up_days": {
+      "n": 17,
+      "pnl": 2531.01
+     },
+     "down_days": {
+      "n": 16,
+      "pnl": -1609.59
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": 1733.51,
+     "costs": 812.12,
+     "turnover": 79901.62,
+     "baseline_pnl_same_days": -248.4,
+     "vs_baseline": 1169.82
+    },
+    "K03": {
+     "days": 33,
+     "trades": 23,
+     "pnl": -2118.03,
+     "fees": 303.6,
+     "win_rate_pct": 52.2,
+     "avg_r": -0.286,
+     "t_stat": -1.592,
+     "worst_day": -806.15,
+     "max_drawdown_pct": 10.59,
+     "green_days": 11,
+     "red_days": 17,
+     "pnl_without_top3": -2943.83,
+     "top3_share_of_gross_pct": 66.5,
+     "up_days": {
+      "n": 17,
+      "pnl": -889.87
+     },
+     "down_days": {
+      "n": 16,
+      "pnl": -1228.16
+     },
+     "stuck_at_close": 1,
+     "gaps": 0,
+     "raw_pnl": -1306.82,
+     "costs": 811.22,
+     "turnover": 90638.99,
+     "baseline_pnl_same_days": -248.4,
+     "vs_baseline": -1869.63
+    },
+    "W01": {
+     "days": 33,
+     "trades": 28,
+     "pnl": -2037.83,
+     "fees": 369.6,
+     "win_rate_pct": 46.4,
+     "avg_r": null,
+     "t_stat": -1.089,
+     "worst_day": -798.16,
+     "max_drawdown_pct": 13.22,
+     "green_days": 16,
+     "red_days": 17,
+     "pnl_without_top3": -2692.31,
+     "top3_share_of_gross_pct": 38.6,
+     "up_days": {
+      "n": 17,
+      "pnl": 1237.2
+     },
+     "down_days": {
+      "n": 16,
+      "pnl": -3275.03
+     },
+     "stuck_at_close": 0,
+     "gaps": 0,
+     "raw_pnl": -1140.58,
+     "costs": 897.26,
+     "turnover": 132412.67,
+     "baseline_pnl_same_days": -248.4,
+     "vs_baseline": -1789.43
+    }
+   },
+   "frozen_bots": {
+    "daytrader:tune": {
+     "trades": 234,
+     "pnl": -4607.24
+    },
+    "daytrader:validate": {
+     "trades": 139,
+     "pnl": -3205.51
+    },
+    "v2:tune": {
+     "trades": 85,
+     "pnl": 1735.93
+    },
+    "v2:validate": {
+     "trades": 48,
+     "pnl": -248.4
+    }
+   }
+  }
+ },
+ "ideas_registered": 72,
+ "results": [
+  {
+   "id": "A01",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": null,
+   "params": {},
+   "reason": "Yardstick A as the brief gives it: opening-window RVOL ranks the day's stocks in play; with a catalyst, the first 5-minute range's break in the opening candle's direction often runs all day (Zarattini & Aziz 2023, US).",
+   "n_at_try": 1,
+   "tried_at": "2026-09-26T10:52:43",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 46,
+    "pnl": -2603.75,
+    "fees": 607.2,
+    "win_rate_pct": 28.3,
+    "avg_r": -0.317,
+    "t_stat": -2.869,
+    "worst_day": -274.15,
+    "max_drawdown_pct": 13.02,
+    "green_days": 9,
+    "red_days": 24,
+    "pnl_without_top3": -3190.42,
+    "top3_share_of_gross_pct": 52.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -711.46
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1892.29
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1089.27,
+    "costs": 1514.48,
+    "turnover": 178081.7,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2003.49
+   },
+   "why": [
+    "P&L after costs -2,604"
+   ],
+   "verdict": "failed practice",
+   "seconds": 12.3
+  },
+  {
+   "id": "A02",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "window": 10
+   },
+   "reason": "A 10-minute range filters the ASX's noisy first minutes after a staggered open; fewer, better-defined breaks.",
+   "n_at_try": 2,
+   "tried_at": "2026-09-26T10:52:55",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 52,
+    "pnl": -1103.97,
+    "fees": 686.4,
+    "win_rate_pct": 40.4,
+    "avg_r": -0.12,
+    "t_stat": -1.294,
+    "worst_day": -268.52,
+    "max_drawdown_pct": 6.71,
+    "green_days": 14,
+    "red_days": 24,
+    "pnl_without_top3": -1650.83,
+    "top3_share_of_gross_pct": 32.2,
+    "up_days": {
+     "n": 27,
+     "pnl": 517.87
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1621.84
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 563.65,
+    "costs": 1667.62,
+    "turnover": 200365.53,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 3503.27
+   },
+   "why": [
+    "P&L after costs -1,104"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A03",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "window": 15
+   },
+   "reason": "A 15-minute range: wider stop, fewer false breaks, lower cost per R.",
+   "n_at_try": 3,
+   "tried_at": "2026-09-26T10:52:56",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 49,
+    "pnl": -701.11,
+    "fees": 646.8,
+    "win_rate_pct": 42.9,
+    "avg_r": -0.069,
+    "t_stat": -0.776,
+    "worst_day": -268.52,
+    "max_drawdown_pct": 6.03,
+    "green_days": 15,
+    "red_days": 21,
+    "pnl_without_top3": -1421.71,
+    "top3_share_of_gross_pct": 45.3,
+    "up_days": {
+     "n": 27,
+     "pnl": 436.52
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1137.63
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 807.68,
+    "costs": 1508.79,
+    "turnover": 177288.69,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 3906.13
+   },
+   "why": [
+    "P&L after costs -701"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A04",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "exit": "trail"
+   },
+   "reason": "The brief's trailing-stop variant: keep the trend days, give back less on reversals (trail 1R once 1R up).",
+   "n_at_try": 4,
+   "tried_at": "2026-09-26T10:52:58",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 46,
+    "pnl": -2611.19,
+    "fees": 607.2,
+    "win_rate_pct": 30.4,
+    "avg_r": -0.319,
+    "t_stat": -2.865,
+    "worst_day": -274.15,
+    "max_drawdown_pct": 13.06,
+    "green_days": 9,
+    "red_days": 24,
+    "pnl_without_top3": -3197.86,
+    "top3_share_of_gross_pct": 52.9,
+    "up_days": {
+     "n": 27,
+     "pnl": -711.46
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1899.73
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1096.72,
+    "costs": 1514.47,
+    "turnover": 178081.7,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 1996.05
+   },
+   "why": [
+    "P&L after costs -2,611"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A05",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "top_k": 2
+   },
+   "reason": "Only the two most in-play stocks: if RVOL rank carries the edge, the top of the list should be better than the third.",
+   "n_at_try": 5,
+   "tried_at": "2026-09-26T10:52:59",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 33,
+    "pnl": -2098.67,
+    "fees": 435.6,
+    "win_rate_pct": 24.2,
+    "avg_r": -0.353,
+    "t_stat": -2.778,
+    "worst_day": -274.15,
+    "max_drawdown_pct": 11.31,
+    "green_days": 7,
+    "red_days": 21,
+    "pnl_without_top3": -2629.56,
+    "top3_share_of_gross_pct": 68.2,
+    "up_days": {
+     "n": 27,
+     "pnl": -568.51
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1530.16
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1048.55,
+    "costs": 1050.12,
+    "turnover": 121803.78,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2508.57
+   },
+   "why": [
+    "P&L after costs -2,099"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "B01",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "buckets": [
+     "results"
+    ],
+    "hold": 2
+   },
+   "reason": "Post-earnings drift: prices underreact to results, and a strong day-0 reaction keeps drifting (Bernard & Thomas 1989); 2-day hold.",
+   "n_at_try": 6,
+   "tried_at": "2026-09-26T10:53:00",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 23,
+    "pnl": 118.59,
+    "fees": 303.6,
+    "win_rate_pct": 43.5,
+    "avg_r": null,
+    "t_stat": 0.102,
+    "worst_day": -774.25,
+    "max_drawdown_pct": 4.48,
+    "green_days": 13,
+    "red_days": 14,
+    "pnl_without_top3": -1218.03,
+    "top3_share_of_gross_pct": 63.8,
+    "up_days": {
+     "n": 27,
+     "pnl": 922.89
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -804.3
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 873.98,
+    "costs": 755.37,
+    "turnover": 91908.47,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1617.34
+   },
+   "why": [
+    "no better than the frozen rule bot (-1,617)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.7
+  },
+  {
+   "id": "B02",
+   "family": "drift",
+   "wave": 1,
+   "parent": "B01",
+   "params": {
+    "buckets": [
+     "results"
+    ],
+    "hold": 5
+   },
+   "reason": "Results drift over a week (LEARNINGS #9: results were the only type with a pulse - a hypothesis from a slice, so it is tested here out of sample).",
+   "n_at_try": 7,
+   "tried_at": "2026-09-26T10:53:03",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 18,
+    "pnl": 987.08,
+    "fees": 237.6,
+    "win_rate_pct": 55.6,
+    "avg_r": null,
+    "t_stat": 0.783,
+    "worst_day": -306.73,
+    "max_drawdown_pct": 2.37,
+    "green_days": 19,
+    "red_days": 17,
+    "pnl_without_top3": -550.58,
+    "top3_share_of_gross_pct": 61.6,
+    "up_days": {
+     "n": 27,
+     "pnl": 1597.1
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -610.02
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1554.02,
+    "costs": 566.93,
+    "turnover": 71918.57,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -748.85
+   },
+   "why": [
+    "18 trades (fewer than 20)",
+    "no better than the frozen rule bot (-749)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.4
+  },
+  {
+   "id": "B03",
+   "family": "drift",
+   "wave": 1,
+   "parent": "B01",
+   "params": {
+    "buckets": [
+     "results"
+    ],
+    "hold": 10
+   },
+   "reason": "Results drift over two weeks: the literature's drift is slow.",
+   "n_at_try": 8,
+   "tried_at": "2026-09-26T10:53:05",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 13,
+    "pnl": -390.85,
+    "fees": 171.6,
+    "win_rate_pct": 53.8,
+    "avg_r": null,
+    "t_stat": -0.272,
+    "worst_day": -407.64,
+    "max_drawdown_pct": 7.66,
+    "green_days": 20,
+    "red_days": 21,
+    "pnl_without_top3": -1160.01,
+    "top3_share_of_gross_pct": 66.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 1631.8
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2022.65
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 26.18,
+    "costs": 417.03,
+    "turnover": 51928.9,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -2126.78
+   },
+   "why": [
+    "P&L after costs -391",
+    "13 trades (fewer than 20)",
+    "no better than the frozen rule bot (-2,127)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.5
+  },
+  {
+   "id": "B04",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "buckets": [
+     "guidance_up"
+    ],
+    "hold": 5
+   },
+   "reason": "Guidance upgrades are revisions analysts follow over days.",
+   "n_at_try": 9,
+   "tried_at": "2026-09-26T10:53:08",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 2,
+    "pnl": -216.71,
+    "fees": 26.4,
+    "win_rate_pct": 0.0,
+    "avg_r": null,
+    "t_stat": -0.544,
+    "worst_day": -137.4,
+    "max_drawdown_pct": 1.36,
+    "green_days": 1,
+    "red_days": 7,
+    "pnl_without_top3": -0.01,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 27,
+     "pnl": 178.94
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -395.65
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -151.92,
+    "costs": 64.78,
+    "turnover": 7978.0,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1952.64
+   },
+   "why": [
+    "P&L after costs -217",
+    "2 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,953)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.1
+  },
+  {
+   "id": "B05",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "buckets": [
+     "contract"
+    ],
+    "hold": 5
+   },
+   "reason": "Contract wins in small/mid caps are digested slowly by thinly-covered names.",
+   "n_at_try": 10,
+   "tried_at": "2026-09-26T10:53:08",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 21,
+    "pnl": -295.98,
+    "fees": 277.2,
+    "win_rate_pct": 61.9,
+    "avg_r": null,
+    "t_stat": -0.213,
+    "worst_day": -675.14,
+    "max_drawdown_pct": 6.66,
+    "green_days": 21,
+    "red_days": 27,
+    "pnl_without_top3": -1566.07,
+    "top3_share_of_gross_pct": 54.2,
+    "up_days": {
+     "n": 27,
+     "pnl": 257.93
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -553.91
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 490.23,
+    "costs": 786.22,
+    "turnover": 80102.96,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -2031.91
+   },
+   "why": [
+    "P&L after costs -296",
+    "no better than the frozen rule bot (-2,032)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.5
+  },
+  {
+   "id": "B06",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "buckets": [
+     "drilling"
+    ],
+    "hold": 5
+   },
+   "reason": "Drilling/assay news: retail follow-through over days in explorers.",
+   "n_at_try": 11,
+   "tried_at": "2026-09-26T10:53:08",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 11,
+    "pnl": -1172.08,
+    "fees": 145.2,
+    "win_rate_pct": 45.5,
+    "avg_r": null,
+    "t_stat": -0.763,
+    "worst_day": -935.32,
+    "max_drawdown_pct": 7.35,
+    "green_days": 17,
+    "red_days": 24,
+    "pnl_without_top3": -2095.92,
+    "top3_share_of_gross_pct": 86.2,
+    "up_days": {
+     "n": 27,
+     "pnl": 892.86
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2064.94
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -478.22,
+    "costs": 693.88,
+    "turnover": 43976.3,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -2908.01
+   },
+   "why": [
+    "P&L after costs -1,172",
+    "11 trades (fewer than 20)",
+    "no better than the frozen rule bot (-2,908)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.6
+  },
+  {
+   "id": "B07",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "buckets": [
+     "takeover"
+    ],
+    "hold": 10,
+    "react_max": 0.6
+   },
+   "reason": "Takeover news: the price sits under the offer and closes the gap as the deal firms up (merger arbitrage in miniature).",
+   "n_at_try": 12,
+   "tried_at": "2026-09-26T10:53:09",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 1,
+    "pnl": -128.79,
+    "fees": 13.2,
+    "win_rate_pct": 0.0,
+    "avg_r": null,
+    "t_stat": -1.678,
+    "worst_day": -56.98,
+    "max_drawdown_pct": 0.65,
+    "green_days": 2,
+    "red_days": 8,
+    "pnl_without_top3": 0.0,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 27,
+     "pnl": 8.14
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -136.93
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -97.68,
+    "costs": 31.11,
+    "turnover": 3996.74,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1864.72
+   },
+   "why": [
+    "P&L after costs -129",
+    "1 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,865)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.2
+  },
+  {
+   "id": "B08",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "hold": 5
+   },
+   "reason": "All the brief's types together (results, guidance up, contracts, drilling, takeovers): the broadest drift test, most trades.",
+   "n_at_try": 13,
+   "tried_at": "2026-09-26T10:53:09",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 41,
+    "pnl": -1343.76,
+    "fees": 541.2,
+    "win_rate_pct": 51.2,
+    "avg_r": null,
+    "t_stat": -0.615,
+    "worst_day": -839.82,
+    "max_drawdown_pct": 12.05,
+    "green_days": 23,
+    "red_days": 30,
+    "pnl_without_top3": -2613.85,
+    "top3_share_of_gross_pct": 33.5,
+    "up_days": {
+     "n": 27,
+     "pnl": 2383.8
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -3727.56
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 417.37,
+    "costs": 1761.16,
+    "turnover": 161255.35,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3079.69
+   },
+   "why": [
+    "P&L after costs -1,344",
+    "no better than the frozen rule bot (-3,080)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 3.8
+  },
+  {
+   "id": "B09",
+   "family": "drift",
+   "wave": 1,
+   "parent": null,
+   "params": {
+    "buckets": [
+     "guidance_down"
+    ],
+    "hold": 5,
+    "direction": "against"
+   },
+   "reason": "Guidance downgrades long only: buy the overreaction after a big fall.",
+   "n_at_try": 14,
+   "tried_at": "2026-09-26T10:53:13",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 1,
+    "pnl": -611.58,
+    "fees": 13.2,
+    "win_rate_pct": 0.0,
+    "avg_r": null,
+    "t_stat": -1.116,
+    "worst_day": -534.82,
+    "max_drawdown_pct": 3.14,
+    "green_days": 2,
+    "red_days": 4,
+    "pnl_without_top3": -0.01,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 27,
+     "pnl": -554.81
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -56.77
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -571.29,
+    "costs": 40.28,
+    "turnover": 3998.99,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -2347.51
+   },
+   "why": [
+    "P&L after costs -612",
+    "1 trades (fewer than 20)",
+    "no better than the frozen rule bot (-2,348)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.0
+  },
+  {
+   "id": "C01",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "regime": "index_ma"
+   },
+   "reason": "Longs only when the index closed above its 20-session average: breakouts fail more in a falling market.",
+   "n_at_try": 15,
+   "tried_at": "2026-09-26T10:53:13",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 10,
+    "pnl": -443.98,
+    "fees": 132.0,
+    "win_rate_pct": 30.0,
+    "avg_r": -0.209,
+    "t_stat": -0.922,
+    "worst_day": -250.17,
+    "max_drawdown_pct": 2.45,
+    "green_days": 3,
+    "red_days": 7,
+    "pnl_without_top3": -853.09,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 151.38
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -595.36
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -117.37,
+    "costs": 326.61,
+    "turnover": 34727.7,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4163.26
+   },
+   "why": [
+    "P&L after costs -444",
+    "10 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "C02",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "regime": "first30"
+   },
+   "reason": "Only in the direction of the index's first 30 minutes (the day's tone); entries wait until 10:31.",
+   "n_at_try": 16,
+   "tried_at": "2026-09-26T10:53:14",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 16,
+    "pnl": -310.98,
+    "fees": 211.2,
+    "win_rate_pct": 37.5,
+    "avg_r": -0.118,
+    "t_stat": -1.102,
+    "worst_day": -137.14,
+    "max_drawdown_pct": 2.49,
+    "green_days": 6,
+    "red_days": 6,
+    "pnl_without_top3": -550.26,
+    "top3_share_of_gross_pct": 83.4,
+    "up_days": {
+     "n": 27,
+     "pnl": -43.09
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -267.89
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 187.5,
+    "costs": 498.48,
+    "turnover": 64160.24,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4296.26
+   },
+   "why": [
+    "P&L after costs -311",
+    "16 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "C03",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "close_cap": 0.2
+   },
+   "reason": "Closing-volume cap: never hold more than 20% of the usual closing auction, so the flat-by-close exit is always absorbed (9 stuck positions in the replay).",
+   "n_at_try": 17,
+   "tried_at": "2026-09-26T10:53:15",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 46,
+    "pnl": -2603.75,
+    "fees": 607.2,
+    "win_rate_pct": 28.3,
+    "avg_r": -0.317,
+    "t_stat": -2.869,
+    "worst_day": -274.15,
+    "max_drawdown_pct": 13.02,
+    "green_days": 9,
+    "red_days": 24,
+    "pnl_without_top3": -3190.42,
+    "top3_share_of_gross_pct": 52.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -711.46
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1892.29
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1089.27,
+    "costs": 1514.48,
+    "turnover": 178081.7,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2003.49
+   },
+   "why": [
+    "P&L after costs -2,604"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "C04",
+   "family": "orb_inplay",
+   "wave": 1,
+   "parent": "A01",
+   "params": {
+    "regime": "index_ma",
+    "close_cap": 0.2
+   },
+   "reason": "Both C filters on A together.",
+   "n_at_try": 18,
+   "tried_at": "2026-09-26T10:53:17",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 10,
+    "pnl": -443.98,
+    "fees": 132.0,
+    "win_rate_pct": 30.0,
+    "avg_r": -0.209,
+    "t_stat": -0.922,
+    "worst_day": -250.17,
+    "max_drawdown_pct": 2.45,
+    "green_days": 3,
+    "red_days": 7,
+    "pnl_without_top3": -853.09,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 151.38
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -595.36
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -117.37,
+    "costs": 326.61,
+    "turnover": 34727.7,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4163.26
+   },
+   "why": [
+    "P&L after costs -444",
+    "10 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.2
+  },
+  {
+   "id": "C05",
+   "family": "drift",
+   "wave": 1,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "regime": "index_ma"
+   },
+   "reason": "Drift with the regime filter: underreaction is continued more readily in a rising market.",
+   "n_at_try": 19,
+   "tried_at": "2026-09-26T10:53:18",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 15,
+    "pnl": -182.81,
+    "fees": 198.0,
+    "win_rate_pct": 60.0,
+    "avg_r": null,
+    "t_stat": -0.138,
+    "worst_day": -767.59,
+    "max_drawdown_pct": 8.95,
+    "green_days": 11,
+    "red_days": 17,
+    "pnl_without_top3": -1419.91,
+    "top3_share_of_gross_pct": 63.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 601.11
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -783.92
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 465.33,
+    "costs": 648.15,
+    "turnover": 58522.81,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1918.74
+   },
+   "why": [
+    "P&L after costs -183",
+    "15 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,919)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 3.8
+  },
+  {
+   "id": "C06",
+   "family": "drift",
+   "wave": 1,
+   "parent": "B02",
+   "params": {
+    "buckets": [
+     "results"
+    ],
+    "hold": 5,
+    "regime": "index_ma"
+   },
+   "reason": "Results drift with the regime filter.",
+   "n_at_try": 20,
+   "tried_at": "2026-09-26T10:53:22",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 1,
+    "pnl": 50.92,
+    "fees": 13.2,
+    "win_rate_pct": 100.0,
+    "avg_r": null,
+    "t_stat": 0.271,
+    "worst_day": -78.47,
+    "max_drawdown_pct": 0.52,
+    "green_days": 2,
+    "red_days": 4,
+    "pnl_without_top3": -0.0,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 180.88
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -129.96
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 70.49,
+    "costs": 19.57,
+    "turnover": 3996.65,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1685.01
+   },
+   "why": [
+    "1 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,685)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.4
+  },
+  {
+   "id": "A06",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A01",
+   "params": {
+    "catalyst": "news"
+   },
+   "reason": "News-only catalyst: a gap without news may be flow that reverses; news is information that persists.",
+   "n_at_try": 21,
+   "tried_at": "2026-09-26T10:53:24",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 41,
+    "pnl": -2059.87,
+    "fees": 541.2,
+    "win_rate_pct": 26.8,
+    "avg_r": -0.295,
+    "t_stat": -2.305,
+    "worst_day": -396.95,
+    "max_drawdown_pct": 11.25,
+    "green_days": 8,
+    "red_days": 23,
+    "pnl_without_top3": -2646.54,
+    "top3_share_of_gross_pct": 52.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 89.34
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2149.21
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -707.66,
+    "costs": 1352.21,
+    "turnover": 163572.17,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2547.37
+   },
+   "why": [
+    "P&L after costs -2,060"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A07",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A01",
+   "params": {
+    "catalyst": "none"
+   },
+   "reason": "A control: no catalyst at all. If this does as well, the catalyst adds nothing.",
+   "n_at_try": 22,
+   "tried_at": "2026-09-26T10:53:25",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 34,
+    "pnl": -1132.72,
+    "fees": 448.8,
+    "win_rate_pct": 32.4,
+    "avg_r": -0.187,
+    "t_stat": -1.36,
+    "worst_day": -349.55,
+    "max_drawdown_pct": 9.23,
+    "green_days": 8,
+    "red_days": 19,
+    "pnl_without_top3": -1848.51,
+    "top3_share_of_gross_pct": 53.7,
+    "up_days": {
+     "n": 27,
+     "pnl": -730.32
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -402.4
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -49.42,
+    "costs": 1083.3,
+    "turnover": 128024.21,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 3474.52
+   },
+   "why": [
+    "P&L after costs -1,133"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A08",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A01",
+   "params": {
+    "min_rvol": 3.0
+   },
+   "reason": "Only truly in-play stocks (3x usual opening volume); fewer, stronger days.",
+   "n_at_try": 23,
+   "tried_at": "2026-09-26T10:53:27",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 44,
+    "pnl": -2137.4,
+    "fees": 580.8,
+    "win_rate_pct": 29.5,
+    "avg_r": -0.278,
+    "t_stat": -2.473,
+    "worst_day": -274.15,
+    "max_drawdown_pct": 11.04,
+    "green_days": 9,
+    "red_days": 22,
+    "pnl_without_top3": -2724.07,
+    "top3_share_of_gross_pct": 52.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -711.46
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1425.94
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -689.35,
+    "costs": 1448.05,
+    "turnover": 171050.32,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2469.84
+   },
+   "why": [
+    "P&L after costs -2,137"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A09",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A01",
+   "params": {
+    "shorts": true
+   },
+   "reason": "The short mirror in the ASX 200 (shortable): down-candle openings with news break down as well as up.",
+   "n_at_try": 24,
+   "tried_at": "2026-09-26T10:53:28",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 91,
+    "pnl": -2594.6,
+    "fees": 1201.2,
+    "win_rate_pct": 37.4,
+    "avg_r": -0.177,
+    "t_stat": -1.817,
+    "worst_day": -400.73,
+    "max_drawdown_pct": 16.84,
+    "green_days": 19,
+    "red_days": 32,
+    "pnl_without_top3": -3659.32,
+    "top3_share_of_gross_pct": 29.1,
+    "up_days": {
+     "n": 27,
+     "pnl": -1152.11
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1442.49
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 112.72,
+    "costs": 2707.32,
+    "turnover": 369277.1,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2012.64
+   },
+   "why": [
+    "P&L after costs -2,595"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A10",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A01",
+   "params": {
+    "min_r_over_cost": 6.0
+   },
+   "reason": "Costs eat small ranges: require 1R to be 6x the round trip, not 3x.",
+   "n_at_try": 25,
+   "tried_at": "2026-09-26T10:53:29",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 19,
+    "pnl": -1238.09,
+    "fees": 250.8,
+    "win_rate_pct": 26.3,
+    "avg_r": -0.349,
+    "t_stat": -2.221,
+    "worst_day": -250.17,
+    "max_drawdown_pct": 6.19,
+    "green_days": 5,
+    "red_days": 13,
+    "pnl_without_top3": -1567.72,
+    "top3_share_of_gross_pct": 80.1,
+    "up_days": {
+     "n": 27,
+     "pnl": -570.89
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -667.2
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -775.23,
+    "costs": 462.86,
+    "turnover": 67394.44,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 3369.15
+   },
+   "why": [
+    "P&L after costs -1,238",
+    "19 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A11",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A03",
+   "params": {
+    "window": 15,
+    "exit": "trail",
+    "trail_r": 2.0,
+    "trail_after_r": 2.0
+   },
+   "reason": "Wide range with a loose trail: let the trend days pay for the chop.",
+   "n_at_try": 26,
+   "tried_at": "2026-09-26T10:53:31",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 49,
+    "pnl": -736.95,
+    "fees": 646.8,
+    "win_rate_pct": 42.9,
+    "avg_r": -0.075,
+    "t_stat": -0.838,
+    "worst_day": -268.52,
+    "max_drawdown_pct": 6.03,
+    "green_days": 15,
+    "red_days": 21,
+    "pnl_without_top3": -1421.71,
+    "top3_share_of_gross_pct": 44.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 400.68
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1137.63
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 771.82,
+    "costs": 1508.77,
+    "turnover": 177288.69,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 3870.29
+   },
+   "why": [
+    "P&L after costs -737"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "A12",
+   "family": "orb_inplay",
+   "wave": 2,
+   "parent": "A01",
+   "params": {
+    "risk_pct": 0.5,
+    "top_k": 5
+   },
+   "reason": "Spread the same risk over more names: lower variance, same edge if it is there (costs rise per trade).",
+   "n_at_try": 27,
+   "tried_at": "2026-09-26T10:53:32",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 67,
+    "pnl": -1657.31,
+    "fees": 884.4,
+    "win_rate_pct": 31.3,
+    "avg_r": -0.259,
+    "t_stat": -2.069,
+    "worst_day": -317.47,
+    "max_drawdown_pct": 9.46,
+    "green_days": 10,
+    "red_days": 27,
+    "pnl_without_top3": -2267.76,
+    "top3_share_of_gross_pct": 45.2,
+    "up_days": {
+     "n": 27,
+     "pnl": -236.53
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1420.78
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -176.21,
+    "costs": 1481.1,
+    "turnover": 171655.82,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2949.93
+   },
+   "why": [
+    "P&L after costs -1,657"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.3
+  },
+  {
+   "id": "B10",
+   "family": "drift",
+   "wave": 2,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "entry": "open1"
+   },
+   "reason": "Enter at the next open instead of the day-0 auction: avoids paying the close's spike, sees the overnight.",
+   "n_at_try": 28,
+   "tried_at": "2026-09-26T10:53:33",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 41,
+    "pnl": -2125.34,
+    "fees": 541.2,
+    "win_rate_pct": 43.9,
+    "avg_r": null,
+    "t_stat": -0.819,
+    "worst_day": -1084.42,
+    "max_drawdown_pct": 14.79,
+    "green_days": 26,
+    "red_days": 26,
+    "pnl_without_top3": -3559.25,
+    "top3_share_of_gross_pct": 38.2,
+    "up_days": {
+     "n": 27,
+     "pnl": 2077.39
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -4202.73
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -367.55,
+    "costs": 1757.81,
+    "turnover": 159994.64,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3861.27
+   },
+   "why": [
+    "P&L after costs -2,125",
+    "no better than the frozen rule bot (-3,861)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 4.3
+  },
+  {
+   "id": "B11",
+   "family": "drift",
+   "wave": 2,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "stop_pct": 0.08
+   },
+   "reason": "An 8% stop on the daily low: cut the reversals of the reaction.",
+   "n_at_try": 29,
+   "tried_at": "2026-09-26T10:53:37",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 44,
+    "pnl": -1373.33,
+    "fees": 580.8,
+    "win_rate_pct": 47.7,
+    "avg_r": -0.094,
+    "t_stat": -0.699,
+    "worst_day": -757.83,
+    "max_drawdown_pct": 10.59,
+    "green_days": 23,
+    "red_days": 29,
+    "pnl_without_top3": -2643.42,
+    "top3_share_of_gross_pct": 33.5,
+    "up_days": {
+     "n": 27,
+     "pnl": 1722.81
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -3096.14
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 462.65,
+    "costs": 1836.02,
+    "turnover": 173231.11,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3109.26
+   },
+   "why": [
+    "P&L after costs -1,373",
+    "no better than the frozen rule bot (-3,109)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 3.6
+  },
+  {
+   "id": "B12",
+   "family": "drift",
+   "wave": 2,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "react_min": 0.06
+   },
+   "reason": "Only big reactions (6%+ against the index): stronger news, stronger drift.",
+   "n_at_try": 30,
+   "tried_at": "2026-09-26T10:53:41",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 25,
+    "pnl": 487.6,
+    "fees": 330.0,
+    "win_rate_pct": 56.0,
+    "avg_r": null,
+    "t_stat": 0.261,
+    "worst_day": -586.16,
+    "max_drawdown_pct": 5.52,
+    "green_days": 24,
+    "red_days": 25,
+    "pnl_without_top3": -618.0,
+    "top3_share_of_gross_pct": 43.7,
+    "up_days": {
+     "n": 27,
+     "pnl": 1100.01
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -612.41
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1646.16,
+    "costs": 1158.58,
+    "turnover": 98573.07,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1248.33
+   },
+   "why": [
+    "no better than the frozen rule bot (-1,248)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 4.0
+  },
+  {
+   "id": "B13",
+   "family": "drift",
+   "wave": 2,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "react_min": 0.01,
+    "react_max": 0.03
+   },
+   "reason": "Small reactions: underreaction is largest where the market barely moved.",
+   "n_at_try": 31,
+   "tried_at": "2026-09-26T10:53:45",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 28,
+    "pnl": -1494.62,
+    "fees": 369.6,
+    "win_rate_pct": 42.9,
+    "avg_r": null,
+    "t_stat": -0.718,
+    "worst_day": -1005.32,
+    "max_drawdown_pct": 12.38,
+    "green_days": 23,
+    "red_days": 25,
+    "pnl_without_top3": -3099.93,
+    "top3_share_of_gross_pct": 60.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 1221.65
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2716.27
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": -373.88,
+    "costs": 1120.77,
+    "turnover": 111740.73,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3230.55
+   },
+   "why": [
+    "P&L after costs -1,495",
+    "no better than the frozen rule bot (-3,231)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 3.9
+  },
+  {
+   "id": "B14",
+   "family": "drift",
+   "wave": 2,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "ps_only": false
+   },
+   "reason": "Include non-price-sensitive announcements of the same types (more trades).",
+   "n_at_try": 32,
+   "tried_at": "2026-09-26T10:53:49",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 45,
+    "pnl": 501.28,
+    "fees": 594.0,
+    "win_rate_pct": 51.1,
+    "avg_r": null,
+    "t_stat": 0.228,
+    "worst_day": -767.59,
+    "max_drawdown_pct": 8.74,
+    "green_days": 24,
+    "red_days": 31,
+    "pnl_without_top3": -1613.78,
+    "top3_share_of_gross_pct": 38.8,
+    "up_days": {
+     "n": 27,
+     "pnl": 2450.77
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1949.49
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 2328.26,
+    "costs": 1827.03,
+    "turnover": 177175.24,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1234.65
+   },
+   "why": [
+    "no better than the frozen rule bot (-1,235)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 7.4
+  },
+  {
+   "id": "B15",
+   "family": "drift",
+   "wave": 2,
+   "parent": "B08",
+   "params": {
+    "hold": 5,
+    "min_turnover": 5000000.0
+   },
+   "reason": "Liquid names only: costs and stuck exits fall; does the drift survive?",
+   "n_at_try": 33,
+   "tried_at": "2026-09-26T10:53:56",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 30,
+    "pnl": -1735.34,
+    "fees": 396.0,
+    "win_rate_pct": 43.3,
+    "avg_r": null,
+    "t_stat": -0.994,
+    "worst_day": -896.89,
+    "max_drawdown_pct": 12.43,
+    "green_days": 19,
+    "red_days": 31,
+    "pnl_without_top3": -3005.43,
+    "top3_share_of_gross_pct": 42.3,
+    "up_days": {
+     "n": 27,
+     "pnl": 1514.06
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -3249.4
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -661.57,
+    "costs": 1073.81,
+    "turnover": 119641.15,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3471.27
+   },
+   "why": [
+    "P&L after costs -1,735",
+    "no better than the frozen rule bot (-3,471)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 3.9
+  },
+  {
+   "id": "G01",
+   "family": "gap_fade",
+   "wave": 3,
+   "parent": null,
+   "params": {},
+   "reason": "No-news gaps down of 3%+ in liquid names are often flow, not information; buy the turn at 10:30 with a stop under the low, out at the close.",
+   "n_at_try": 34,
+   "tried_at": "2026-09-26T10:54:00",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 72,
+    "pnl": -2397.22,
+    "fees": 950.4,
+    "win_rate_pct": 31.9,
+    "avg_r": -0.401,
+    "t_stat": -2.536,
+    "worst_day": -412.92,
+    "max_drawdown_pct": 12.58,
+    "green_days": 13,
+    "red_days": 29,
+    "pnl_without_top3": -2964.1,
+    "top3_share_of_gross_pct": 32.6,
+    "up_days": {
+     "n": 27,
+     "pnl": -1166.26
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1230.96
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 68.43,
+    "costs": 2465.65,
+    "turnover": 315182.77,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2210.02
+   },
+   "why": [
+    "P&L after costs -2,397"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.2
+  },
+  {
+   "id": "G02",
+   "family": "gap_fade",
+   "wave": 3,
+   "parent": "G01",
+   "params": {
+    "gap_min": 0.05
+   },
+   "reason": "Only big no-news gaps (5%+): more overshoot to recover.",
+   "n_at_try": 35,
+   "tried_at": "2026-09-26T10:54:02",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 20,
+    "pnl": -129.97,
+    "fees": 264.0,
+    "win_rate_pct": 40.0,
+    "avg_r": -0.106,
+    "t_stat": -0.284,
+    "worst_day": -139.21,
+    "max_drawdown_pct": 1.6,
+    "green_days": 7,
+    "red_days": 9,
+    "pnl_without_top3": -668.41,
+    "top3_share_of_gross_pct": 76.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -409.91
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 279.94
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 513.42,
+    "costs": 643.39,
+    "turnover": 88523.18,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4477.27
+   },
+   "why": [
+    "P&L after costs -130"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.1
+  },
+  {
+   "id": "G03",
+   "family": "gap_fade",
+   "wave": 3,
+   "parent": "G01",
+   "params": {
+    "entry_at": "11:00"
+   },
+   "reason": "Wait until 11:00: the low is more often in by then.",
+   "n_at_try": 36,
+   "tried_at": "2026-09-26T10:54:03",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 78,
+    "pnl": -2536.39,
+    "fees": 1029.6,
+    "win_rate_pct": 30.8,
+    "avg_r": -0.431,
+    "t_stat": -2.706,
+    "worst_day": -410.62,
+    "max_drawdown_pct": 13.35,
+    "green_days": 13,
+    "red_days": 30,
+    "pnl_without_top3": -3185.51,
+    "top3_share_of_gross_pct": 40.6,
+    "up_days": {
+     "n": 27,
+     "pnl": -458.95
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2077.44
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 70.79,
+    "costs": 2607.18,
+    "turnover": 337606.99,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2070.85
+   },
+   "why": [
+    "P&L after costs -2,536"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.2
+  },
+  {
+   "id": "L01",
+   "family": "late_trend",
+   "wave": 3,
+   "parent": null,
+   "params": {},
+   "reason": "Intraday momentum into the close (Gao, Han, Li & Zhou 2018): the day's strong, heavy-volume movers keep rising into the closing auction.",
+   "n_at_try": 37,
+   "tried_at": "2026-09-26T10:54:04",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 130,
+    "pnl": -3803.1,
+    "fees": 1716.0,
+    "win_rate_pct": 22.3,
+    "avg_r": -0.487,
+    "t_stat": -6.214,
+    "worst_day": -241.56,
+    "max_drawdown_pct": 19.02,
+    "green_days": 8,
+    "red_days": 42,
+    "pnl_without_top3": -4155.19,
+    "top3_share_of_gross_pct": 38.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -1541.47
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2261.63
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": 1361.83,
+    "costs": 5164.93,
+    "turnover": 606394.09,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 804.14
+   },
+   "why": [
+    "P&L after costs -3,803"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.6
+  },
+  {
+   "id": "L02",
+   "family": "late_trend",
+   "wave": 3,
+   "parent": "L01",
+   "params": {
+    "catalyst": "news"
+   },
+   "reason": "Only movers with price-sensitive news today.",
+   "n_at_try": 38,
+   "tried_at": "2026-09-26T10:54:05",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 51,
+    "pnl": -1631.35,
+    "fees": 673.2,
+    "win_rate_pct": 19.6,
+    "avg_r": -0.794,
+    "t_stat": -3.692,
+    "worst_day": -192.84,
+    "max_drawdown_pct": 8.16,
+    "green_days": 7,
+    "red_days": 27,
+    "pnl_without_top3": -1959.11,
+    "top3_share_of_gross_pct": 72.6,
+    "up_days": {
+     "n": 27,
+     "pnl": -877.98
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -753.37
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 412.41,
+    "costs": 2043.76,
+    "turnover": 244915.21,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 2975.89
+   },
+   "why": [
+    "P&L after costs -1,631"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.9
+  },
+  {
+   "id": "L03",
+   "family": "late_trend",
+   "wave": 3,
+   "parent": "L01",
+   "params": {
+    "regime": "index_ma"
+   },
+   "reason": "Late momentum only in a rising market.",
+   "n_at_try": 39,
+   "tried_at": "2026-09-26T10:54:07",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 47,
+    "pnl": -1160.9,
+    "fees": 620.4,
+    "win_rate_pct": 29.8,
+    "avg_r": -0.421,
+    "t_stat": -2.726,
+    "worst_day": -189.85,
+    "max_drawdown_pct": 5.8,
+    "green_days": 5,
+    "red_days": 12,
+    "pnl_without_top3": -1501.5,
+    "top3_share_of_gross_pct": 71.1,
+    "up_days": {
+     "n": 27,
+     "pnl": -374.83
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -786.07
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 662.27,
+    "costs": 1823.17,
+    "turnover": 223033.42,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 3446.34
+   },
+   "why": [
+    "P&L after costs -1,161"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.0
+  },
+  {
+   "id": "R01",
+   "family": "reversal",
+   "wave": 3,
+   "parent": null,
+   "params": {},
+   "reason": "Short-term reversal: a liquid stock's big no-news drop is often liquidity demand that is repaid the next day (Lehmann 1990; Nagel 2012).",
+   "n_at_try": 40,
+   "tried_at": "2026-09-26T10:54:08",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 228,
+    "pnl": -12989.03,
+    "fees": 3009.6,
+    "win_rate_pct": 32.0,
+    "avg_r": null,
+    "t_stat": -4.103,
+    "worst_day": -1025.0,
+    "max_drawdown_pct": 65.51,
+    "green_days": 17,
+    "red_days": 39,
+    "pnl_without_top3": -14053.68,
+    "top3_share_of_gross_pct": 15.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -1840.5
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -11148.53
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -4385.58,
+    "costs": 8603.5,
+    "turnover": 910382.94,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -14724.96
+   },
+   "why": [
+    "P&L after costs -12,989",
+    "no better than the frozen rule bot (-14,725)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.4
+  },
+  {
+   "id": "R02",
+   "family": "reversal",
+   "wave": 3,
+   "parent": "R01",
+   "params": {
+    "hold": 3
+   },
+   "reason": "The same, held three sessions.",
+   "n_at_try": 41,
+   "tried_at": "2026-09-26T10:54:09",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 91,
+    "pnl": -1898.72,
+    "fees": 1201.2,
+    "win_rate_pct": 46.2,
+    "avg_r": null,
+    "t_stat": -0.576,
+    "worst_day": -1240.56,
+    "max_drawdown_pct": 17.62,
+    "green_days": 28,
+    "red_days": 28,
+    "pnl_without_top3": -4088.48,
+    "top3_share_of_gross_pct": 27.5,
+    "up_days": {
+     "n": 27,
+     "pnl": 3526.56
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -5425.28
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1391.57,
+    "costs": 3290.3,
+    "turnover": 363088.04,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3634.65
+   },
+   "why": [
+    "P&L after costs -1,899",
+    "no better than the frozen rule bot (-3,635)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.4
+  },
+  {
+   "id": "R03",
+   "family": "reversal",
+   "wave": 3,
+   "parent": "R01",
+   "params": {
+    "drop_min": 0.07
+   },
+   "reason": "Only big drops (7%+).",
+   "n_at_try": 42,
+   "tried_at": "2026-09-26T10:54:09",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 75,
+    "pnl": -6069.62,
+    "fees": 990.0,
+    "win_rate_pct": 30.7,
+    "avg_r": null,
+    "t_stat": -3.336,
+    "worst_day": -739.52,
+    "max_drawdown_pct": 31.34,
+    "green_days": 10,
+    "red_days": 40,
+    "pnl_without_top3": -6881.54,
+    "top3_share_of_gross_pct": 35.5,
+    "up_days": {
+     "n": 27,
+     "pnl": -1355.61
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -4714.01
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -2880.51,
+    "costs": 3189.15,
+    "turnover": 299623.35,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -7805.55
+   },
+   "why": [
+    "P&L after costs -6,070",
+    "no better than the frozen rule bot (-7,806)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.3
+  },
+  {
+   "id": "R04",
+   "family": "reversal",
+   "wave": 3,
+   "parent": "R01",
+   "params": {
+    "regime": "index_ma"
+   },
+   "reason": "Reversal only in a rising market (a falling one keeps falling).",
+   "n_at_try": 43,
+   "tried_at": "2026-09-26T10:54:10",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 90,
+    "pnl": -3585.41,
+    "fees": 1188.0,
+    "win_rate_pct": 37.8,
+    "avg_r": null,
+    "t_stat": -1.583,
+    "worst_day": -1025.0,
+    "max_drawdown_pct": 20.73,
+    "green_days": 7,
+    "red_days": 18,
+    "pnl_without_top3": -4603.77,
+    "top3_share_of_gross_pct": 25.7,
+    "up_days": {
+     "n": 27,
+     "pnl": 1336.29
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -4921.7
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -330.12,
+    "costs": 3255.29,
+    "turnover": 359243.7,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -5321.34
+   },
+   "why": [
+    "P&L after costs -3,585",
+    "no better than the frozen rule bot (-5,321)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.2
+  },
+  {
+   "id": "K01",
+   "family": "breakout20",
+   "wave": 3,
+   "parent": null,
+   "params": {},
+   "reason": "A 20-session high on double volume: momentum over the next week.",
+   "n_at_try": 44,
+   "tried_at": "2026-09-26T10:54:10",
+   "stage": "check",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 35,
+    "pnl": 2679.3,
+    "fees": 462.0,
+    "win_rate_pct": 57.1,
+    "avg_r": 0.24,
+    "t_stat": 1.229,
+    "worst_day": -497.54,
+    "max_drawdown_pct": 6.09,
+    "green_days": 24,
+    "red_days": 22,
+    "pnl_without_top3": -63.01,
+    "top3_share_of_gross_pct": 54.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 1203.56
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 1475.74
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 3729.65,
+    "costs": 1050.33,
+    "turnover": 139658.75,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": 943.37
+   },
+   "why": [
+    "P&L after costs -2,031",
+    "no better than the frozen rule bot (-1,782)",
+    "worst day -806 (below -3%)",
+    "t-statistic -1.52 below the bar 2.75 for 44 variants tried",
+    "loses with spread and impact doubled (-2,555)",
+    "carried by its best 3 trades (without them -2,857)"
+   ],
+   "check": {
+    "days": 33,
+    "trades": 24,
+    "pnl": -2030.8,
+    "fees": 316.8,
+    "win_rate_pct": 54.2,
+    "avg_r": -0.262,
+    "t_stat": -1.521,
+    "worst_day": -806.15,
+    "max_drawdown_pct": 10.51,
+    "green_days": 14,
+    "red_days": 17,
+    "pnl_without_top3": -2856.6,
+    "top3_share_of_gross_pct": 62.1,
+    "up_days": {
+     "n": 17,
+     "pnl": -851.55
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -1179.25
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": -1189.67,
+    "costs": 841.14,
+    "turnover": 94628.48,
+    "baseline_pnl_same_days": -248.4,
+    "vs_baseline": -1782.4,
+    "bar": 2.751
+   },
+   "check_2x": {
+    "days": 33,
+    "trades": 24,
+    "pnl": -2555.15,
+    "fees": 316.8,
+    "win_rate_pct": 45.8,
+    "avg_r": -0.331,
+    "t_stat": -1.796,
+    "worst_day": -860.46,
+    "max_drawdown_pct": 13.07,
+    "green_days": 13,
+    "red_days": 18,
+    "pnl_without_top3": -3324.19,
+    "top3_share_of_gross_pct": 70.6,
+    "up_days": {
+     "n": 17,
+     "pnl": -1115.36
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -1439.79
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": -1189.67,
+    "costs": 1365.5,
+    "turnover": 94628.48,
+    "baseline_pnl_same_days": -248.4,
+    "vs_baseline": -2306.75
+   },
+   "check_cheapest_broker": {
+    "days": 33,
+    "trades": 24,
+    "pnl": -1978.0,
+    "fees": 264.0,
+    "win_rate_pct": 54.2,
+    "avg_r": -0.255,
+    "t_stat": -1.489,
+    "worst_day": -799.55,
+    "max_drawdown_pct": 10.26,
+    "green_days": 14,
+    "red_days": 17,
+    "pnl_without_top3": -2810.4,
+    "top3_share_of_gross_pct": 61.3,
+    "up_days": {
+     "n": 17,
+     "pnl": -825.15
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -1152.85
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": -1189.67,
+    "costs": 788.34,
+    "turnover": 94628.48,
+    "baseline_pnl_same_days": -248.4,
+    "vs_baseline": -1729.6
+   },
+   "verdict": "failed check",
+   "seconds": 0.6
+  },
+  {
+   "id": "K02",
+   "family": "breakout20",
+   "wave": 3,
+   "parent": "K01",
+   "params": {
+    "hold": 10
+   },
+   "reason": "The same, held two weeks.",
+   "n_at_try": 45,
+   "tried_at": "2026-09-26T10:54:10",
+   "stage": "check",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 22,
+    "pnl": 3700.81,
+    "fees": 290.4,
+    "win_rate_pct": 63.6,
+    "avg_r": 0.527,
+    "t_stat": 1.92,
+    "worst_day": -532.43,
+    "max_drawdown_pct": 6.2,
+    "green_days": 28,
+    "red_days": 18,
+    "pnl_without_top3": 1327.42,
+    "top3_share_of_gross_pct": 46.5,
+    "up_days": {
+     "n": 27,
+     "pnl": 2801.2
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 899.61
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 4358.15,
+    "costs": 657.29,
+    "turnover": 87731.17,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": 1964.88
+   },
+   "why": [
+    "P&L after costs -2,122",
+    "19 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,874)",
+    "worst day -764 (below -3%)",
+    "t-statistic -1.62 below the bar 2.76 for 45 variants tried",
+    "loses with spread and impact doubled (-2,586)",
+    "carried by its best 3 trades (without them -3,193)"
+   ],
+   "check": {
+    "days": 33,
+    "trades": 19,
+    "pnl": -2121.97,
+    "fees": 250.8,
+    "win_rate_pct": 42.1,
+    "avg_r": -0.35,
+    "t_stat": -1.616,
+    "worst_day": -763.77,
+    "max_drawdown_pct": 10.96,
+    "green_days": 13,
+    "red_days": 19,
+    "pnl_without_top3": -3192.97,
+    "top3_share_of_gross_pct": 85.5,
+    "up_days": {
+     "n": 17,
+     "pnl": -731.91
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -1390.06
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1407.06,
+    "costs": 714.91,
+    "turnover": 75842.7,
+    "baseline_pnl_same_days": -248.4,
+    "vs_baseline": -1873.57,
+    "bar": 2.759
+   },
+   "check_2x": {
+    "days": 33,
+    "trades": 19,
+    "pnl": -2586.08,
+    "fees": 250.8,
+    "win_rate_pct": 31.6,
+    "avg_r": -0.427,
+    "t_stat": -1.834,
+    "worst_day": -817.38,
+    "max_drawdown_pct": 13.22,
+    "green_days": 13,
+    "red_days": 19,
+    "pnl_without_top3": -3591.9,
+    "top3_share_of_gross_pct": 93.4,
+    "up_days": {
+     "n": 17,
+     "pnl": -927.9
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -1658.18
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1407.06,
+    "costs": 1179.03,
+    "turnover": 75842.7,
+    "baseline_pnl_same_days": -248.4,
+    "vs_baseline": -2337.68
+   },
+   "check_cheapest_broker": {
+    "days": 33,
+    "trades": 19,
+    "pnl": -2080.17,
+    "fees": 209.0,
+    "win_rate_pct": 42.1,
+    "avg_r": -0.343,
+    "t_stat": -1.592,
+    "worst_day": -757.17,
+    "max_drawdown_pct": 10.76,
+    "green_days": 13,
+    "red_days": 19,
+    "pnl_without_top3": -3157.77,
+    "top3_share_of_gross_pct": 84.9,
+    "up_days": {
+     "n": 17,
+     "pnl": -715.41
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -1364.76
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -1407.06,
+    "costs": 673.11,
+    "turnover": 75842.7,
+    "baseline_pnl_same_days": -248.4,
+    "vs_baseline": -1831.77
+   },
+   "verdict": "failed check",
+   "seconds": 0.4
+  },
+  {
+   "id": "D01",
+   "family": "day2_orb",
+   "wave": 3,
+   "parent": null,
+   "params": {},
+   "reason": "The day after a 5%+ news reaction, the stock is still in play: its opening range break in the reaction's direction.",
+   "n_at_try": 46,
+   "tried_at": "2026-09-26T10:54:11",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 65,
+    "trades": 9,
+    "pnl": -312.47,
+    "fees": 118.8,
+    "win_rate_pct": 44.4,
+    "avg_r": -0.286,
+    "t_stat": -0.743,
+    "worst_day": -236.99,
+    "max_drawdown_pct": 1.66,
+    "green_days": 4,
+    "red_days": 4,
+    "pnl_without_top3": -613.87,
+    "top3_share_of_gross_pct": 99.8,
+    "up_days": {
+     "n": 27,
+     "pnl": -97.72
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -214.75
+    },
+    "stuck_at_close": 0,
+    "gaps": 1,
+    "raw_pnl": 15.95,
+    "costs": 328.42,
+    "turnover": 40246.78,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -2048.4
+   },
+   "why": [
+    "P&L after costs -312",
+    "9 trades (fewer than 20)",
+    "no better than the frozen rule bot (-2,048)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.6
+  },
+  {
+   "id": "D02",
+   "family": "day2_orb",
+   "wave": 3,
+   "parent": "D01",
+   "params": {
+    "react_min": 0.1
+   },
+   "reason": "Only after very big reactions (10%+).",
+   "n_at_try": 47,
+   "tried_at": "2026-09-26T10:54:12",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 65,
+    "trades": 5,
+    "pnl": 42.15,
+    "fees": 66.0,
+    "win_rate_pct": 60.0,
+    "avg_r": 0.036,
+    "t_stat": 0.122,
+    "worst_day": -236.99,
+    "max_drawdown_pct": 1.18,
+    "green_days": 3,
+    "red_days": 2,
+    "pnl_without_top3": -254.33,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 223.65
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -181.5
+    },
+    "stuck_at_close": 0,
+    "gaps": 1,
+    "raw_pnl": 277.39,
+    "costs": 235.24,
+    "turnover": 23998.85,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1693.78
+   },
+   "why": [
+    "5 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,694)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.5
+  },
+  {
+   "id": "A13",
+   "family": "orb_inplay",
+   "wave": 4,
+   "parent": "A03",
+   "params": {
+    "window": 15,
+    "max_value": 10000.0,
+    "min_adv": 50000000.0
+   },
+   "reason": "A03 moved +0.46% a trade raw but paid ~0.85%: $10,000 positions in $50m+ turnover names cut the round trip to roughly 0.3%.",
+   "n_at_try": 48,
+   "tried_at": "2026-09-26T10:56:01",
+   "stage": "check",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 38,
+    "pnl": 224.23,
+    "fees": 589.17,
+    "win_rate_pct": 44.7,
+    "avg_r": -0.003,
+    "t_stat": 0.189,
+    "worst_day": -301.36,
+    "max_drawdown_pct": 5.39,
+    "green_days": 12,
+    "red_days": 16,
+    "pnl_without_top3": -912.57,
+    "top3_share_of_gross_pct": 43.6,
+    "up_days": {
+     "n": 27,
+     "pnl": 671.51
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -447.28
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1237.01,
+    "costs": 1012.78,
+    "turnover": 308646.46,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4831.47
+   },
+   "why": [
+    "P&L after costs -477",
+    "t-statistic -0.81 below the bar 2.78 for 48 variants tried",
+    "loses with spread and impact doubled (-511)",
+    "carried by its best 3 trades (without them -1,039)"
+   ],
+   "check": {
+    "days": 33,
+    "trades": 24,
+    "pnl": -476.67,
+    "fees": 360.7,
+    "win_rate_pct": 37.5,
+    "avg_r": -0.135,
+    "t_stat": -0.81,
+    "worst_day": -314.73,
+    "max_drawdown_pct": 4.06,
+    "green_days": 8,
+    "red_days": 10,
+    "pnl_without_top3": -1038.92,
+    "top3_share_of_gross_pct": 63.5,
+    "up_days": {
+     "n": 17,
+     "pnl": -251.86
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -224.81
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 213.98,
+    "costs": 690.65,
+    "turnover": 193265.64,
+    "baseline_pnl_same_days": -3205.51,
+    "vs_baseline": 2728.84,
+    "bar": 2.783
+   },
+   "check_2x": {
+    "days": 33,
+    "trades": 21,
+    "pnl": -510.58,
+    "fees": 316.26,
+    "win_rate_pct": 33.3,
+    "avg_r": -0.153,
+    "t_stat": -0.916,
+    "worst_day": -344.42,
+    "max_drawdown_pct": 3.92,
+    "green_days": 7,
+    "red_days": 9,
+    "pnl_without_top3": -1039.59,
+    "top3_share_of_gross_pct": 74.5,
+    "up_days": {
+     "n": 17,
+     "pnl": -498.05
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -12.53
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 274.82,
+    "costs": 785.4,
+    "turnover": 168202.66,
+    "baseline_pnl_same_days": -3205.51,
+    "vs_baseline": 2694.93
+   },
+   "check_cheapest_broker": {
+    "days": 33,
+    "trades": 25,
+    "pnl": -530.03,
+    "fees": 275.0,
+    "win_rate_pct": 40.0,
+    "avg_r": -0.16,
+    "t_stat": -0.882,
+    "worst_day": -300.06,
+    "max_drawdown_pct": 4.46,
+    "green_days": 9,
+    "red_days": 10,
+    "pnl_without_top3": -1108.54,
+    "top3_share_of_gross_pct": 62.6,
+    "up_days": {
+     "n": 17,
+     "pnl": -192.91
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -337.12
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 97.24,
+    "costs": 627.27,
+    "turnover": 203260.38,
+    "baseline_pnl_same_days": -3205.51,
+    "vs_baseline": 2675.48
+   },
+   "verdict": "failed check",
+   "seconds": 14.7
+  },
+  {
+   "id": "A14",
+   "family": "orb_inplay",
+   "wave": 4,
+   "parent": "A11",
+   "params": {
+    "window": 15,
+    "exit": "trail",
+    "trail_r": 2.0,
+    "trail_after_r": 2.0,
+    "max_value": 10000.0,
+    "min_adv": 50000000.0
+   },
+   "reason": "A11 (the loose trail) in liquid names at $10,000: the same cost argument.",
+   "n_at_try": 49,
+   "tried_at": "2026-09-26T10:56:16",
+   "stage": "check",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 38,
+    "pnl": 163.38,
+    "fees": 589.11,
+    "win_rate_pct": 44.7,
+    "avg_r": -0.011,
+    "t_stat": 0.143,
+    "worst_day": -301.36,
+    "max_drawdown_pct": 5.39,
+    "green_days": 12,
+    "red_days": 16,
+    "pnl_without_top3": -912.57,
+    "top3_share_of_gross_pct": 42.3,
+    "up_days": {
+     "n": 27,
+     "pnl": 610.66
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -447.28
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1176.07,
+    "costs": 1012.69,
+    "turnover": 308646.46,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4770.62
+   },
+   "why": [
+    "P&L after costs -477",
+    "t-statistic -0.81 below the bar 2.79 for 49 variants tried",
+    "loses with spread and impact doubled (-511)",
+    "carried by its best 3 trades (without them -1,039)"
+   ],
+   "check": {
+    "days": 33,
+    "trades": 24,
+    "pnl": -476.67,
+    "fees": 360.7,
+    "win_rate_pct": 37.5,
+    "avg_r": -0.135,
+    "t_stat": -0.81,
+    "worst_day": -314.73,
+    "max_drawdown_pct": 4.06,
+    "green_days": 8,
+    "red_days": 10,
+    "pnl_without_top3": -1038.92,
+    "top3_share_of_gross_pct": 63.5,
+    "up_days": {
+     "n": 17,
+     "pnl": -251.86
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -224.81
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 213.98,
+    "costs": 690.65,
+    "turnover": 193265.64,
+    "baseline_pnl_same_days": -3205.51,
+    "vs_baseline": 2728.84,
+    "bar": 2.79
+   },
+   "check_2x": {
+    "days": 33,
+    "trades": 21,
+    "pnl": -510.58,
+    "fees": 316.26,
+    "win_rate_pct": 33.3,
+    "avg_r": -0.153,
+    "t_stat": -0.916,
+    "worst_day": -344.42,
+    "max_drawdown_pct": 3.92,
+    "green_days": 7,
+    "red_days": 9,
+    "pnl_without_top3": -1039.59,
+    "top3_share_of_gross_pct": 74.5,
+    "up_days": {
+     "n": 17,
+     "pnl": -498.05
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -12.53
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 274.82,
+    "costs": 785.4,
+    "turnover": 168202.66,
+    "baseline_pnl_same_days": -3205.51,
+    "vs_baseline": 2694.93
+   },
+   "check_cheapest_broker": {
+    "days": 33,
+    "trades": 25,
+    "pnl": -530.03,
+    "fees": 275.0,
+    "win_rate_pct": 40.0,
+    "avg_r": -0.16,
+    "t_stat": -0.882,
+    "worst_day": -300.06,
+    "max_drawdown_pct": 4.46,
+    "green_days": 9,
+    "red_days": 10,
+    "pnl_without_top3": -1108.54,
+    "top3_share_of_gross_pct": 62.6,
+    "up_days": {
+     "n": 17,
+     "pnl": -192.91
+    },
+    "down_days": {
+     "n": 16,
+     "pnl": -337.12
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 97.24,
+    "costs": 627.27,
+    "turnover": 203260.38,
+    "baseline_pnl_same_days": -3205.51,
+    "vs_baseline": 2675.48
+   },
+   "verdict": "failed check",
+   "seconds": 3.2
+  },
+  {
+   "id": "L04",
+   "family": "late_trend",
+   "wave": 4,
+   "parent": "L01",
+   "params": {
+    "max_value": 10000.0,
+    "min_adv": 50000000.0
+   },
+   "reason": "Late momentum moved +0.22% raw on 130 trades; in liquid names at $10,000 the round trip is ~0.25%, so the question is whether the move holds there.",
+   "n_at_try": 50,
+   "tried_at": "2026-09-26T10:56:19",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 7,
+    "pnl": -84.27,
+    "fees": 123.07,
+    "win_rate_pct": 42.9,
+    "avg_r": -0.079,
+    "t_stat": -0.44,
+    "worst_day": -158.26,
+    "max_drawdown_pct": 1.06,
+    "green_days": 3,
+    "red_days": 3,
+    "pnl_without_top3": -261.31,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -33.39
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -50.88
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 134.64,
+    "costs": 218.91,
+    "turnover": 69853.31,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4522.97
+   },
+   "why": [
+    "P&L after costs -84",
+    "7 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.9
+  },
+  {
+   "id": "G04",
+   "family": "gap_fade",
+   "wave": 4,
+   "parent": "G02",
+   "params": {
+    "gap_min": 0.05,
+    "max_value": 10000.0
+   },
+   "reason": "Big no-news gap fades moved +0.58% raw; larger positions dilute the brokerage.",
+   "n_at_try": 51,
+   "tried_at": "2026-09-26T10:56:20",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 21,
+    "pnl": -62.44,
+    "fees": 308.72,
+    "win_rate_pct": 52.4,
+    "avg_r": -0.032,
+    "t_stat": -0.078,
+    "worst_day": -235.29,
+    "max_drawdown_pct": 3.27,
+    "green_days": 8,
+    "red_days": 8,
+    "pnl_without_top3": -969.79,
+    "top3_share_of_gross_pct": 74.6,
+    "up_days": {
+     "n": 27,
+     "pnl": -661.09
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 598.65
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 831.42,
+    "costs": 893.86,
+    "turnover": 141877.11,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4544.8
+   },
+   "why": [
+    "P&L after costs -62"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.2
+  },
+  {
+   "id": "B16",
+   "family": "drift",
+   "wave": 4,
+   "parent": "B02",
+   "params": {
+    "buckets": [
+     "results",
+     "guidance_up"
+    ],
+    "entry": "open0",
+    "hold": 5
+   },
+   "reason": "Pre-open results and upgrades bought in day 0's opening auction when the auction gaps up 3-25%: the day-0 continuation is part of the drift that the close0 entry gave away.",
+   "n_at_try": 52,
+   "tried_at": "2026-09-26T10:56:21",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 22,
+    "pnl": -1538.31,
+    "fees": 290.4,
+    "win_rate_pct": 36.4,
+    "avg_r": null,
+    "t_stat": -0.852,
+    "worst_day": -784.52,
+    "max_drawdown_pct": 10.06,
+    "green_days": 19,
+    "red_days": 23,
+    "pnl_without_top3": -2660.27,
+    "top3_share_of_gross_pct": 68.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 493.94
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2032.25
+    },
+    "stuck_at_close": 1,
+    "gaps": 0,
+    "raw_pnl": -761.13,
+    "costs": 777.17,
+    "turnover": 87753.71,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3274.24
+   },
+   "why": [
+    "P&L after costs -1,538",
+    "no better than the frozen rule bot (-3,274)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.7
+  },
+  {
+   "id": "B17",
+   "family": "drift",
+   "wave": 4,
+   "parent": "B08",
+   "params": {
+    "entry": "open0",
+    "hold": 1
+   },
+   "reason": "Every brief type, bought in the opening auction on a 3-25% gap, sold at the next day's close: the short end of the drift.",
+   "n_at_try": 53,
+   "tried_at": "2026-09-26T10:56:24",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 46,
+    "pnl": -1908.75,
+    "fees": 607.2,
+    "win_rate_pct": 37.0,
+    "avg_r": null,
+    "t_stat": -0.863,
+    "worst_day": -1032.14,
+    "max_drawdown_pct": 11.42,
+    "green_days": 22,
+    "red_days": 25,
+    "pnl_without_top3": -3521.71,
+    "top3_share_of_gross_pct": 41.6,
+    "up_days": {
+     "n": 27,
+     "pnl": 806.04
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2714.79
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -83.49,
+    "costs": 1825.24,
+    "turnover": 179673.57,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3644.68
+   },
+   "why": [
+    "P&L after costs -1,909",
+    "no better than the frozen rule bot (-3,645)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 3.7
+  },
+  {
+   "id": "B18",
+   "family": "drift",
+   "wave": 4,
+   "parent": "B02",
+   "params": {
+    "buckets": [
+     "results"
+    ],
+    "hold": 5,
+    "react_min": 0.06,
+    "per_position": 6000.0
+   },
+   "reason": "Results with big reactions (B02 and B12 moved ~2% raw) at a size that dilutes the minimum brokerage.",
+   "n_at_try": 54,
+   "tried_at": "2026-09-26T10:56:28",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 9,
+    "pnl": 72.87,
+    "fees": 118.8,
+    "win_rate_pct": 55.6,
+    "avg_r": null,
+    "t_stat": 0.049,
+    "worst_day": -482.1,
+    "max_drawdown_pct": 4.3,
+    "green_days": 11,
+    "red_days": 15,
+    "pnl_without_top3": -828.22,
+    "top3_share_of_gross_pct": 85.6,
+    "up_days": {
+     "n": 27,
+     "pnl": 1332.28
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1259.41
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 475.62,
+    "costs": 402.77,
+    "turnover": 53916.52,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1663.06
+   },
+   "why": [
+    "9 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,663)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.7
+  },
+  {
+   "id": "B19",
+   "family": "drift",
+   "wave": 4,
+   "parent": "B14",
+   "params": {
+    "hold": 5,
+    "ps_only": false,
+    "react_min": 0.06
+   },
+   "reason": "B14 (all announcements of the types) moved +1.3% raw; with only big reactions (B12's filter) the move per trade should be larger.",
+   "n_at_try": 55,
+   "tried_at": "2026-09-26T10:56:30",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 30,
+    "pnl": 128.41,
+    "fees": 396.0,
+    "win_rate_pct": 56.7,
+    "avg_r": null,
+    "t_stat": 0.054,
+    "worst_day": -1080.69,
+    "max_drawdown_pct": 9.97,
+    "green_days": 29,
+    "red_days": 22,
+    "pnl_without_top3": -1371.93,
+    "top3_share_of_gross_pct": 46.4,
+    "up_days": {
+     "n": 27,
+     "pnl": 1543.65
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1415.24
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1559.12,
+    "costs": 1430.74,
+    "turnover": 118536.31,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1607.52
+   },
+   "why": [
+    "no better than the frozen rule bot (-1,608)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 7.5
+  },
+  {
+   "id": "K03",
+   "family": "breakout20",
+   "wave": 4,
+   "parent": "K01",
+   "params": {
+    "regime": "index_ma"
+   },
+   "reason": "Breakouts made +2.7% raw a trade in practice but lost on the check set, a momentum idea that may need a rising market: only when the index is above its 20-session average. (Proposed from practice, judged on check.)",
+   "n_at_try": 56,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 22,
+    "pnl": 670.8,
+    "fees": 290.4,
+    "win_rate_pct": 54.5,
+    "avg_r": 0.095,
+    "t_stat": 0.412,
+    "worst_day": -555.09,
+    "max_drawdown_pct": 5.76,
+    "green_days": 16,
+    "red_days": 15,
+    "pnl_without_top3": -995.93,
+    "top3_share_of_gross_pct": 64.3,
+    "up_days": {
+     "n": 27,
+     "pnl": -139.3
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 810.1
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1345.11,
+    "costs": 674.33,
+    "turnover": 87664.5,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1065.13
+   },
+   "why": [
+    "no better than the frozen rule bot (-1,065)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.1
+  },
+  {
+   "id": "K04",
+   "family": "breakout20",
+   "wave": 4,
+   "parent": "K02",
+   "params": {
+    "vol_mult": 3.0,
+    "hold": 10
+   },
+   "reason": "Only breakouts on triple volume: stronger demand, held two weeks.",
+   "n_at_try": 57,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 16,
+    "pnl": 1657.1,
+    "fees": 211.2,
+    "win_rate_pct": 50.0,
+    "avg_r": 0.326,
+    "t_stat": 1.248,
+    "worst_day": -433.63,
+    "max_drawdown_pct": 3.68,
+    "green_days": 25,
+    "red_days": 20,
+    "pnl_without_top3": -326.25,
+    "top3_share_of_gross_pct": 65.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 785.85
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 871.25
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 2145.58,
+    "costs": 488.45,
+    "turnover": 63754.46,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -78.83
+   },
+   "why": [
+    "16 trades (fewer than 20)",
+    "no better than the frozen rule bot (-79)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.1
+  },
+  {
+   "id": "W01",
+   "family": "rotation",
+   "wave": 4,
+   "parent": null,
+   "params": {
+    "side": "winners",
+    "lookback": 5,
+    "every": 5
+   },
+   "reason": "Weekly rotation into the four strongest liquid names of the week: short-horizon industry/stock momentum, traded once a week in $10m+ names.",
+   "n_at_try": 58,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 47,
+    "pnl": 428.6,
+    "fees": 620.4,
+    "win_rate_pct": 40.4,
+    "avg_r": null,
+    "t_stat": 0.136,
+    "worst_day": -940.99,
+    "max_drawdown_pct": 9.95,
+    "green_days": 30,
+    "red_days": 26,
+    "pnl_without_top3": -3583.72,
+    "top3_share_of_gross_pct": 53.2,
+    "up_days": {
+     "n": 27,
+     "pnl": 2445.07
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -2016.47
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 1915.92,
+    "costs": 1487.31,
+    "turnover": 222610.73,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1307.33
+   },
+   "why": [
+    "no better than the frozen rule bot (-1,307)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.1
+  },
+  {
+   "id": "W02",
+   "family": "rotation",
+   "wave": 4,
+   "parent": null,
+   "params": {
+    "side": "losers",
+    "lookback": 5,
+    "every": 5
+   },
+   "reason": "The opposite: weekly reversal (Lehmann 1990) - the week's biggest liquid losers bounce.",
+   "n_at_try": 59,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 47,
+    "pnl": -1592.22,
+    "fees": 620.4,
+    "win_rate_pct": 36.2,
+    "avg_r": null,
+    "t_stat": -0.377,
+    "worst_day": -1147.29,
+    "max_drawdown_pct": 17.42,
+    "green_days": 22,
+    "red_days": 34,
+    "pnl_without_top3": -4198.41,
+    "top3_share_of_gross_pct": 40.5,
+    "up_days": {
+     "n": 27,
+     "pnl": 4624.41
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -6216.63
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 21.09,
+    "costs": 1613.31,
+    "turnover": 222750.48,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -3328.15
+   },
+   "why": [
+    "P&L after costs -1,592",
+    "no better than the frozen rule bot (-3,328)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.1
+  },
+  {
+   "id": "W03",
+   "family": "rotation",
+   "wave": 4,
+   "parent": "W01",
+   "params": {
+    "side": "winners",
+    "lookback": 20,
+    "every": 10
+   },
+   "reason": "Monthly momentum, held a fortnight.",
+   "n_at_try": 60,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 19,
+    "pnl": -670.57,
+    "fees": 250.8,
+    "win_rate_pct": 47.4,
+    "avg_r": null,
+    "t_stat": -0.211,
+    "worst_day": -915.49,
+    "max_drawdown_pct": 14.81,
+    "green_days": 20,
+    "red_days": 26,
+    "pnl_without_top3": -3373.68,
+    "top3_share_of_gross_pct": 65.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 4442.57
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -5113.14
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -79.81,
+    "costs": 590.72,
+    "turnover": 89928.74,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -2406.5
+   },
+   "why": [
+    "P&L after costs -671",
+    "19 trades (fewer than 20)",
+    "no better than the frozen rule bot (-2,406)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.0
+  },
+  {
+   "id": "W04",
+   "family": "rotation",
+   "wave": 4,
+   "parent": "W02",
+   "params": {
+    "side": "losers",
+    "lookback": 20,
+    "every": 10
+   },
+   "reason": "Monthly losers, held a fortnight (medium-term reversal).",
+   "n_at_try": 61,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 20,
+    "pnl": -2957.01,
+    "fees": 264.0,
+    "win_rate_pct": 30.0,
+    "avg_r": null,
+    "t_stat": -0.867,
+    "worst_day": -1169.79,
+    "max_drawdown_pct": 18.74,
+    "green_days": 19,
+    "red_days": 27,
+    "pnl_without_top3": -4689.31,
+    "top3_share_of_gross_pct": 75.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 3266.97
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -6223.98
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -2188.28,
+    "costs": 768.68,
+    "turnover": 94822.51,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -4692.94
+   },
+   "why": [
+    "P&L after costs -2,957",
+    "no better than the frozen rule bot (-4,693)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.0
+  },
+  {
+   "id": "W05",
+   "family": "rotation",
+   "wave": 4,
+   "parent": "W01",
+   "params": {
+    "side": "winners",
+    "lookback": 5,
+    "every": 5,
+    "regime": "index_ma"
+   },
+   "reason": "Weekly winners only while the index is above its 20-session average.",
+   "n_at_try": 62,
+   "tried_at": "2026-09-26T10:56:38",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 16,
+    "pnl": 205.56,
+    "fees": 211.2,
+    "win_rate_pct": 43.8,
+    "avg_r": null,
+    "t_stat": 0.107,
+    "worst_day": -816.9,
+    "max_drawdown_pct": 7.61,
+    "green_days": 11,
+    "red_days": 9,
+    "pnl_without_top3": -1410.0,
+    "top3_share_of_gross_pct": 76.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 154.82
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 50.74
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 673.92,
+    "costs": 468.34,
+    "turnover": 75822.14,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -1530.37
+   },
+   "why": [
+    "16 trades (fewer than 20)",
+    "no better than the frozen rule bot (-1,530)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.0
+  },
+  {
+   "id": "X01",
+   "family": "index_timing",
+   "wave": 5,
+   "parent": null,
+   "params": {},
+   "reason": "Intraday index momentum (Gao et al. 2018): after a 0.5%+ index rise by 15:30, the last half-hour tends to follow; in STW the round trip is ~0.3%.",
+   "n_at_try": 63,
+   "tried_at": "2026-09-26T10:58:05",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 0,
+    "trades": 0,
+    "pnl": 0,
+    "fees": 0,
+    "win_rate_pct": null,
+    "avg_r": null,
+    "t_stat": 0.0,
+    "worst_day": 0.0,
+    "max_drawdown_pct": 0.0,
+    "green_days": 0,
+    "red_days": 0,
+    "pnl_without_top3": 0.0,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 0,
+     "pnl": 0
+    },
+    "down_days": {
+     "n": 0,
+     "pnl": 0
+    },
+    "stuck_at_close": 0,
+    "gaps": 66,
+    "raw_pnl": 0.0,
+    "costs": 0.0,
+    "turnover": 0.0,
+    "baseline_pnl_same_days": 0,
+    "vs_baseline": 0.0
+   },
+   "why": [
+    "no practice session had the data this idea trades"
+   ],
+   "verdict": "not run - no data",
+   "seconds": 11.9
+  },
+  {
+   "id": "X02",
+   "family": "index_timing",
+   "wave": 5,
+   "parent": "X01",
+   "params": {
+    "signal": "first30",
+    "threshold": 0.003
+   },
+   "reason": "The first half-hour's direction (0.3%+) held to the close in the index fund.",
+   "n_at_try": 64,
+   "tried_at": "2026-09-26T10:58:17",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 0,
+    "trades": 0,
+    "pnl": 0,
+    "fees": 0,
+    "win_rate_pct": null,
+    "avg_r": null,
+    "t_stat": 0.0,
+    "worst_day": 0.0,
+    "max_drawdown_pct": 0.0,
+    "green_days": 0,
+    "red_days": 0,
+    "pnl_without_top3": 0.0,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 0,
+     "pnl": 0
+    },
+    "down_days": {
+     "n": 0,
+     "pnl": 0
+    },
+    "stuck_at_close": 0,
+    "gaps": 66,
+    "raw_pnl": 0.0,
+    "costs": 0.0,
+    "turnover": 0.0,
+    "baseline_pnl_same_days": 0,
+    "vs_baseline": 0.0
+   },
+   "why": [
+    "no practice session had the data this idea trades"
+   ],
+   "verdict": "not run - no data",
+   "seconds": 0.6
+  },
+  {
+   "id": "X03",
+   "family": "index_timing",
+   "wave": 5,
+   "parent": "X01",
+   "params": {
+    "direction": "against",
+    "threshold": 0.008
+   },
+   "reason": "The opposite: after a 0.8%+ index FALL by 15:30, buy the fund for the late-day bounce (end-of-day rebalancing flows).",
+   "n_at_try": 65,
+   "tried_at": "2026-09-26T10:58:17",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 0,
+    "trades": 0,
+    "pnl": 0,
+    "fees": 0,
+    "win_rate_pct": null,
+    "avg_r": null,
+    "t_stat": 0.0,
+    "worst_day": 0.0,
+    "max_drawdown_pct": 0.0,
+    "green_days": 0,
+    "red_days": 0,
+    "pnl_without_top3": 0.0,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 0,
+     "pnl": 0
+    },
+    "down_days": {
+     "n": 0,
+     "pnl": 0
+    },
+    "stuck_at_close": 0,
+    "gaps": 66,
+    "raw_pnl": 0.0,
+    "costs": 0.0,
+    "turnover": 0.0,
+    "baseline_pnl_same_days": 0,
+    "vs_baseline": 0.0
+   },
+   "why": [
+    "no practice session had the data this idea trades"
+   ],
+   "verdict": "not run - no data",
+   "seconds": 0.7
+  },
+  {
+   "id": "V01",
+   "family": "vwap_fade",
+   "wave": 5,
+   "parent": null,
+   "params": {},
+   "reason": "Large caps stretched 1.5% under VWAP and 1% under the index without news are usually liquidity trades, not information: buy for the move back to VWAP.",
+   "n_at_try": 66,
+   "tried_at": "2026-09-26T10:58:18",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 72,
+    "pnl": -2939.55,
+    "fees": 1257.45,
+    "win_rate_pct": 34.7,
+    "avg_r": -0.401,
+    "t_stat": -3.128,
+    "worst_day": -420.62,
+    "max_drawdown_pct": 14.7,
+    "green_days": 9,
+    "red_days": 29,
+    "pnl_without_top3": -3578.04,
+    "top3_share_of_gross_pct": 28.5,
+    "up_days": {
+     "n": 27,
+     "pnl": -1340.74
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -1598.81
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -292.04,
+    "costs": 2647.51,
+    "turnover": 712890.66,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 1667.69
+   },
+   "why": [
+    "P&L after costs -2,940"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.7
+  },
+  {
+   "id": "V02",
+   "family": "vwap_fade",
+   "wave": 5,
+   "parent": "V01",
+   "params": {
+    "dev": 0.025,
+    "vs_index": 0.02
+   },
+   "reason": "Only bigger stretches (2.5% under VWAP, 2% under the index).",
+   "n_at_try": 67,
+   "tried_at": "2026-09-26T10:58:20",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 13,
+    "pnl": -264.64,
+    "fees": 228.47,
+    "win_rate_pct": 38.5,
+    "avg_r": -0.203,
+    "t_stat": -0.649,
+    "worst_day": -153.21,
+    "max_drawdown_pct": 3.02,
+    "green_days": 4,
+    "red_days": 7,
+    "pnl_without_top3": -782.95,
+    "top3_share_of_gross_pct": 91.7,
+    "up_days": {
+     "n": 27,
+     "pnl": -163.49
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -101.15
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 236.84,
+    "costs": 501.48,
+    "turnover": 129693.18,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4342.6
+   },
+   "why": [
+    "P&L after costs -265",
+    "13 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 1.6
+  },
+  {
+   "id": "B20",
+   "family": "drift",
+   "wave": 5,
+   "parent": "B02",
+   "params": {
+    "buckets": [
+     "results"
+    ],
+    "hold": 5,
+    "per_position": 10000.0,
+    "max_positions": 2
+   },
+   "reason": "B02 (results, a week) moved +2.2% raw a trade: two $10,000 slots halve the brokerage per dollar.",
+   "n_at_try": 68,
+   "tried_at": "2026-09-26T10:58:21",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 10,
+    "pnl": -2841.95,
+    "fees": 173.9,
+    "win_rate_pct": 30.0,
+    "avg_r": null,
+    "t_stat": -1.234,
+    "worst_day": -921.3,
+    "max_drawdown_pct": 16.77,
+    "green_days": 12,
+    "red_days": 21,
+    "pnl_without_top3": -3454.63,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": 1506.49
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -4348.44
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": -2213.27,
+    "costs": 628.68,
+    "turnover": 99906.95,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": -4577.88
+   },
+   "why": [
+    "P&L after costs -2,842",
+    "10 trades (fewer than 20)",
+    "no better than the frozen rule bot (-4,578)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 2.6
+  },
+  {
+   "id": "K05",
+   "family": "breakout20",
+   "wave": 5,
+   "parent": "K01",
+   "params": {
+    "per_position": 6600.0,
+    "max_positions": 3,
+    "min_turnover": 10000000.0
+   },
+   "reason": "Breakouts in $10m+ names at a third of the book each: cheaper to trade, and a different slice of the momentum question K01 failed on the check set.",
+   "n_at_try": 69,
+   "tried_at": "2026-09-26T10:58:24",
+   "stage": "practice",
+   "baseline": "v2",
+   "practice": {
+    "days": 66,
+    "trades": 11,
+    "pnl": 2873.94,
+    "fees": 146.24,
+    "win_rate_pct": 81.8,
+    "avg_r": 0.495,
+    "t_stat": 1.432,
+    "worst_day": -414.07,
+    "max_drawdown_pct": 3.37,
+    "green_days": 19,
+    "red_days": 23,
+    "pnl_without_top3": -263.27,
+    "top3_share_of_gross_pct": 89.1,
+    "up_days": {
+     "n": 27,
+     "pnl": 1378.33
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 1495.61
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 3215.43,
+    "costs": 341.49,
+    "turnover": 72523.26,
+    "baseline_pnl_same_days": 1735.93,
+    "vs_baseline": 1138.01
+   },
+   "why": [
+    "11 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.1
+  },
+  {
+   "id": "X04",
+   "family": "index_timing",
+   "wave": 5,
+   "parent": "X01",
+   "params": {
+    "etf": "INDEX_PROXY"
+   },
+   "reason": "X01 on the index proxy: intraday index momentum into the close.",
+   "n_at_try": 70,
+   "tried_at": "2026-09-26T10:59:31",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 15,
+    "pnl": -286.43,
+    "fees": 231.65,
+    "win_rate_pct": 13.3,
+    "avg_r": -0.217,
+    "t_stat": -3.152,
+    "worst_day": -50.7,
+    "max_drawdown_pct": 1.43,
+    "green_days": 2,
+    "red_days": 13,
+    "pnl_without_top3": -290.57,
+    "top3_share_of_gross_pct": 100.0,
+    "up_days": {
+     "n": 27,
+     "pnl": -286.43
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": 0.0
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 28.1,
+    "costs": 314.53,
+    "turnover": 131606.5,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4367.7
+   },
+   "why": [
+    "P&L after costs -286",
+    "15 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 11.8
+  },
+  {
+   "id": "X05",
+   "family": "index_timing",
+   "wave": 5,
+   "parent": "X02",
+   "params": {
+    "etf": "INDEX_PROXY",
+    "signal": "first30",
+    "threshold": 0.003
+   },
+   "reason": "X02 on the index proxy: the first half-hour's direction held to the close.",
+   "n_at_try": 71,
+   "tried_at": "2026-09-26T10:59:43",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 6,
+    "pnl": -84.94,
+    "fees": 93.35,
+    "win_rate_pct": 66.7,
+    "avg_r": -0.159,
+    "t_stat": -0.781,
+    "worst_day": -92.08,
+    "max_drawdown_pct": 0.46,
+    "green_days": 4,
+    "red_days": 2,
+    "pnl_without_top3": -132.81,
+    "top3_share_of_gross_pct": 88.4,
+    "up_days": {
+     "n": 27,
+     "pnl": 7.14
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -92.08
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 41.8,
+    "costs": 126.74,
+    "turnover": 53014.3,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4522.3
+   },
+   "why": [
+    "P&L after costs -85",
+    "6 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.7
+  },
+  {
+   "id": "X06",
+   "family": "index_timing",
+   "wave": 5,
+   "parent": "X03",
+   "params": {
+    "etf": "INDEX_PROXY",
+    "direction": "against",
+    "threshold": 0.008
+   },
+   "reason": "X03 on the index proxy: the late-day bounce after a 0.8%+ fall.",
+   "n_at_try": 72,
+   "tried_at": "2026-09-26T10:59:44",
+   "stage": "practice",
+   "baseline": "daytrader",
+   "practice": {
+    "days": 66,
+    "trades": 8,
+    "pnl": -159.52,
+    "fees": 121.92,
+    "win_rate_pct": 0.0,
+    "avg_r": -0.23,
+    "t_stat": -2.775,
+    "worst_day": -36.85,
+    "max_drawdown_pct": 0.8,
+    "green_days": 0,
+    "red_days": 8,
+    "pnl_without_top3": -117.0,
+    "top3_share_of_gross_pct": null,
+    "up_days": {
+     "n": 27,
+     "pnl": 0.0
+    },
+    "down_days": {
+     "n": 38,
+     "pnl": -159.52
+    },
+    "stuck_at_close": 0,
+    "gaps": 0,
+    "raw_pnl": 6.0,
+    "costs": 165.52,
+    "turnover": 69271.1,
+    "baseline_pnl_same_days": -4607.24,
+    "vs_baseline": 4465.01
+   },
+   "why": [
+    "P&L after costs -160",
+    "8 trades (fewer than 20)"
+   ],
+   "verdict": "failed practice",
+   "seconds": 0.7
+  }
+ ]
+}
