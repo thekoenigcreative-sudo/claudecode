@@ -11,9 +11,12 @@ Where the data lives (never in git):
   cache     derived arrays, rebuilt from the history on demand: <data>/search/cache.
 
 The minute grid runs 09:59 to 16:12 Sydney. In the IBKR bars (checked 26 Sep on three days,
-~1,000 stock-days) the OPENING AUCTION is a 09:59 bar of its own (grid index 0), and every
-opening group's continuous trading starts in the 10:00 bar (index 1) - the ASX's staggered open
-is not visible in them. Continuous trading ends with the 16:00 bar (zero volume in the sample);
+~1,000 stock-days) the OPENING AUCTION is in a 09:59 bar (grid index 0): that bar's OPEN equals
+Yahoo's official open on 1,174 of 1,174 stock-days checked (12 codes, May-Sep, dividend
+adjustment removed), but the bar also has a range in 88% of them - some continuous trades are
+folded into it - so the auction price is its open, and its volume is the auction plus a little.
+Every opening group's continuous trading starts in the 10:00 bar (index 1) - the ASX's
+staggered open is not visible in them. Continuous trading ends with the 16:00 bar (zero volume in the sample);
 the CLOSING AUCTION prints in the 16:10 bar. A bar with no volume is no trade: its prices are
 NaN in the grid, so nothing can fill on it.
 """
@@ -350,7 +353,7 @@ def summarise(p: DayPanel) -> pd.DataFrame:
     rows = np.arange(n)
     first_open = np.where(first >= 0, p.o[rows, np.maximum(first, 0)], np.nan)
     auc_open_vol = p.v[:, OPEN_AUCTION].astype(float)
-    auc_open_px = np.where(auc_open_vol > 0, p.c[:, OPEN_AUCTION], np.nan)
+    auc_open_px = np.where(auc_open_vol > 0, p.o[:, OPEN_AUCTION], np.nan)
     open_ = np.where(np.isfinite(auc_open_px), auc_open_px, first_open)
     auc_v = p.v[:, AUCTION_FROM:].sum(axis=1)
     last_idx = np.where(traded.any(axis=1), GRID_N - 1 - traded[:, ::-1].argmax(axis=1), -1)

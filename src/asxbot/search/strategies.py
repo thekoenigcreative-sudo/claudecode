@@ -184,12 +184,15 @@ def orb_inplay(ctx: Ctx, days: list[date], P: dict) -> list[dict]:
             if i is None:
                 continue
             f = int(row["first_idx"])
-            seg = slice(f, f + w)
+            # the opening range: the auction bar (it holds early continuous trades too) and the
+            # first w continuous minutes; the candle runs from the auction price
+            a0 = p.v[i, 0] > 0
+            seg = slice(0 if a0 else f, f + w)
             hi, lo = np.nanmax(p.h[i, seg]), np.nanmin(p.lo[i, seg])
             closes = p.c[i, seg][np.isfinite(p.c[i, seg])]
             if not np.isfinite(hi) or not np.isfinite(lo) or not len(closes) or hi <= lo:
                 continue
-            o0 = float(p.o[i, f])
+            o0 = float(p.o[i, 0] if a0 else p.o[i, f])
             sign = 1 if closes[-1] > o0 else -1 if closes[-1] < o0 else 0
             if sign == 0:
                 continue
