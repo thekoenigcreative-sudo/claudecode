@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 from asxbot.broker.base import Broker, OrderResult
 from asxbot.config import Config
 from asxbot.io import write_text_atomic
-from asxbot.log import EventLog, get_logger
+from asxbot.log import EventLog, event_day, get_logger
 
 log = get_logger("asxbot.broker.orders")
 SYD = ZoneInfo("Australia/Sydney")
@@ -166,7 +166,8 @@ def place_order(
         events.append(
             "fills",
             {"order_id": res.order_id, "ticker": ticker, "side": side, "qty": res.filled_qty,
-             "price": res.avg_price, "commission": res.commission, "proposal_id": proposal_id},
+             "price": res.avg_price, "commission": res.commission, "proposal_id": proposal_id,
+             "day": now.astimezone(SYD).date().isoformat()},
         )  # fmt: skip
     if side == "buy" and prop is not None:
         prop["status"] = "placed" if res.status in ("filled", "partial", "open") else "rejected"
@@ -180,7 +181,7 @@ def place_order(
 def _new_positions_today(events: EventLog, today: date) -> int:
     n = 0
     for f in events.read("fills"):
-        if f.get("side") == "buy" and f.get("ts", "")[:10] == today.isoformat():
+        if f.get("side") == "buy" and event_day(f) == today.isoformat():
             n += 1
     return n
 

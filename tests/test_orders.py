@@ -325,3 +325,22 @@ def test_ibkr_adapter_refuses_wrong_mode_and_missing_library(
         load_config(config_file(broker="live"), env_file=tmp_path / "none.env") if False else None
     )
     assert live is None  # live config cannot even load without the env key (tested in test_config)
+
+
+def test_new_positions_today_counts_the_sydney_day(tmp_path):
+    """The event log stamps in UTC. 10:30 Sydney on 6 Oct 2026 (daylight saving) is 23:30 UTC
+    on 5 Oct: until 26 Sep the "opened today" limit compared the UTC date, so that buy counted
+    on the day before and the per-day limit let one more through."""
+    from asxbot.broker.orders import _new_positions_today
+    from asxbot.log import event_day
+
+    ev = EventLog(tmp_path)
+    with open(ev.path("fills"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": "2026-10-05T23:30:00+00:00", "kind": "fills", "side": "buy",
+                             "ticker": "AAA", "qty": 100}) + "\n")  # fmt: skip
+        fh.write(json.dumps({"ts": "2026-10-05T05:00:00+00:00", "kind": "fills", "side": "buy",
+                             "ticker": "BBB", "qty": 100}) + "\n")  # fmt: skip
+    assert _new_positions_today(ev, datetime(2026, 10, 6).date()) == 1  # AAA, 10:30 on 6 Oct
+    assert _new_positions_today(ev, datetime(2026, 10, 5).date()) == 1  # BBB, 16:00 on 5 Oct
+    assert event_day({"ts": "2026-09-28T00:15:00+00:00"}) == "2026-09-28"  # 10:15 AEST
+    assert event_day({"ts": "2026-10-05T23:30:00+00:00", "day": "2026-10-06"}) == "2026-10-06"

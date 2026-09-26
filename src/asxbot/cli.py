@@ -452,7 +452,9 @@ def cmd_daily_report(args: argparse.Namespace) -> int:
         print(f"position {p.ticker} qty {p.qty} avg_cost {p.avg_cost:.3f}")
 
     def todays(kind: str) -> int:
-        return sum(1 for r in ev.read(kind) if r.get("ts", "")[:10] == today)
+        from asxbot.log import event_day
+
+        return sum(1 for r in ev.read(kind) if event_day(r) == today)
 
     print(
         f"today: {todays('announcements')} announcements seen, {todays('signals')} checked, "

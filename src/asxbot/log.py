@@ -20,6 +20,7 @@ import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 _configured = False
 KEEP_DAYS = 30
@@ -142,6 +143,24 @@ def mirror_logs(src: Path, dest: Path) -> list[str]:
         tmp.replace(target)
         copied.append(p.name)
     return copied
+
+
+def event_day(rec: dict[str, Any]) -> str:
+    """The Sydney date (ISO) of an event record: its "day" if it carries one, else its "ts"
+    converted from UTC. The log stamps in UTC, and 00:00-10:00 Sydney (to 11:00 in daylight
+    saving) is the previous day in UTC: until 26 Sep 2026 the "positions opened today" limit
+    compared the UTC date, so from 4 Oct a buy filled 10:00-11:00 would have counted on the
+    day before."""
+    if rec.get("day"):
+        return str(rec["day"])
+    ts = str(rec.get("ts") or "")
+    try:
+        t = datetime.fromisoformat(ts)
+    except ValueError:
+        return ts[:10]
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=UTC)
+    return t.astimezone(ZoneInfo("Australia/Sydney")).date().isoformat()
 
 
 class EventLog:
