@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from asxbot.config import load_config  # noqa: E402
+from asxbot.config import load_config, repo_root  # noqa: E402
 from asxbot.ibkr import doctor as D  # noqa: E402
 from asxbot.ibkr.gateway import market_hours, settings_from_config  # noqa: E402
 from asxbot.ibkr.live import LiveGateway  # noqa: E402
@@ -152,7 +152,7 @@ def main() -> int:
 
     rec["recorded_actions"] = recorded
     rec["passed"] = ok_all
-    out = REPO / "reports" / f"ibkr_doctor_live_{datetime.now(SYD):%Y%m%d_%H%M}.json"
+    out = repo_root() / "reports" / f"ibkr_doctor_live_{datetime.now(SYD):%Y%m%d_%H%M}.json"
     out.write_text(json.dumps(rec, indent=2, default=str), encoding="utf-8")
     print(f"{'ALL PASSED' if ok_all else 'FAILED'}; record {out}")
     return 0 if ok_all else 1

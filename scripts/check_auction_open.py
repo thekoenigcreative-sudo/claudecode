@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO / "src"))
 import pandas as pd  # noqa: E402
 
 from asxbot.arena.minutes import _on_tick  # noqa: E402
+from asxbot.config import repo_root  # noqa: E402
 
 SYD = ZoneInfo("Australia/Sydney")
 DEFAULT = (
@@ -165,7 +166,7 @@ The largest differences:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("codes", nargs="?", default=DEFAULT)
-    ap.add_argument("--out", default=str(REPO / "reports" / "auction_open_check.md"))
+    ap.add_argument("--out", default=str(repo_root() / "reports" / "auction_open_check.md"))
     ap.add_argument("--pause", type=float, default=1.0)
     a = ap.parse_args()
     codes = [c.strip().upper() for c in a.codes.split(",") if c.strip()]

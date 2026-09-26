@@ -51,7 +51,7 @@ from zoneinfo import ZoneInfo
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from asxbot.config import load_config  # noqa: E402
+from asxbot.config import load_config, repo_root  # noqa: E402
 from asxbot.ibkr.gateway import end_of, settings_from_config  # noqa: E402
 from asxbot.ibkr.live import LiveGateway  # noqa: E402
 from asxbot.io import safe_stem, write_parquet_atomic, write_text_atomic  # noqa: E402
@@ -436,7 +436,7 @@ def main() -> int:
         ea = coverage(root, extra, extra_sessions)
         ea.pop("per_code")
         stats["news_coverage"] = ea
-    out = REPO / "reports" / f"ibkr_history_fetch_{datetime.now(SYD):%Y%m%d_%H%M}.json"
+    out = repo_root() / "reports" / f"ibkr_history_fetch_{datetime.now(SYD):%Y%m%d_%H%M}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(stats, indent=2, default=str), encoding="utf-8")
     print(f"done: {json.dumps({k: v for k, v in stats.items() if k != 'coverage'}, default=str)}")
