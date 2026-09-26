@@ -263,6 +263,17 @@ IDEAS: list[dict] = [
      "params": {"per_position": 6600.0, "max_positions": 3, "min_turnover": 10e6},
      "reason": "Breakouts in $10m+ names at a third of the book each: cheaper to trade, and "
                "a different slice of the momentum question K01 failed on the check set."},
+    # X01-X03 could not run: the history holds STW (and VAS) only from 11 Sep 2026. The same
+    # three ideas on the index itself at a fund's costs, re-registered (still counted twice).
+    {"id": "X04", "family": "index_timing", "wave": 5, "parent": "X01",
+     "params": {"etf": "INDEX_PROXY"},
+     "reason": "X01 on the index proxy: intraday index momentum into the close."},
+    {"id": "X05", "family": "index_timing", "wave": 5, "parent": "X02",
+     "params": {"etf": "INDEX_PROXY", "signal": "first30", "threshold": 0.003},
+     "reason": "X02 on the index proxy: the first half-hour's direction held to the close."},
+    {"id": "X06", "family": "index_timing", "wave": 5, "parent": "X03",
+     "params": {"etf": "INDEX_PROXY", "direction": "against", "threshold": 0.008},
+     "reason": "X03 on the index proxy: the late-day bounce after a 0.8%+ fall."},
 ]
 
 

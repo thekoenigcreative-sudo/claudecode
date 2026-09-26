@@ -130,6 +130,14 @@ class Search:
             s, _ = self.run_idea(idea, self.win["tune"])
             b = self.base_card(idea, self.win["tune"])
             ok, why = gate("screen", s, b)
+            if not s["days"]:
+                rec.update(practice=_slim(s, b), stage="practice", verdict="not run - no data",
+                           why=["no practice session had the data this idea trades"])  # fmt: skip
+                rec["seconds"] = round(wall.time() - t0, 1)
+                self._append(rec)
+                if progress:
+                    progress(f"{idea['id']} {idea['family']}: not run - no data")
+                continue
             rec["practice"] = _slim(s, b)
             rec["why"] = why
             if ok and complexity(idea) > CRITERIA["max_params"]:

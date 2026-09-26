@@ -29,7 +29,14 @@ import pandas as pd
 
 from asxbot.search import sim
 from asxbot.search.costs import Costs, tick
-from asxbot.search.data import CONT_END, CONT_START, GRID_START, Market, minute_index
+from asxbot.search.data import (
+    CONT_END,
+    CONT_START,
+    GRID_START,
+    DayPanel,
+    Market,
+    minute_index,
+)
 
 START_CASH = 20_000.0
 
@@ -679,7 +686,10 @@ def rotation(ctx: Ctx, days: list[date], P: dict) -> list:
 
 
 INDEX_DEFAULTS = {
-    "etf": "STW",  # the SPDR ASX 200 fund: the index in one liquid, tight-spread line
+    # the SPDR ASX 200 fund (STW) - but the history holds it only from 11 Sep 2026, so
+    # "INDEX_PROXY" trades ^AXJO's own minute prices at a fund's costs (a $1bn-a-day tier
+    # spread, no volume cap at $10,000; closes only, so a stop is checked on closes)
+    "etf": "STW",
     "signal": "late",  # late: index move prev close -> `at`; first30: its move 10:00 -> 10:30
     "at": "15:30",
     "threshold": 0.005,  # the index's move that triggers (in its own direction)
@@ -701,9 +711,16 @@ def index_timing(ctx: Ctx, days: list[date], P: dict) -> list:
     for d in days:
         rows, p = ctx.rows(d), ctx.m.panel(d)
         ig = ctx.m.index_close_grid(d)
-        if rows is None or p is None or ig is None or P["etf"] not in rows.index:
+        proxy = P["etf"] == "INDEX_PROXY"
+        if rows is None or p is None or ig is None or (not proxy and P["etf"] not in rows.index):
             out.append(None)
             continue
+        if proxy:
+            g = ig.astype(np.float32)[None]
+            vol = np.where(np.isfinite(ig), 1e9, 0.0).astype(np.float32)[None]
+            p = DayPanel(d, ["INDEX_PROXY"], g, g, g, g, vol)
+            rows = pd.DataFrame({"adv_turnover": [1e9], "vol20": [0.01], "next_open": [np.nan]},
+                                index=["INDEX_PROXY"])  # fmt: skip
         ix = ctx.m.index.loc[pd.Timestamp(d)]
         ok = np.where(np.isfinite(ig[CONT_START: ai + 1]))[0]
         if not len(ok):

@@ -37,9 +37,14 @@ def _params(p: dict) -> str:
 
 
 def latest(tried: list[dict]) -> list[dict]:
-    """The last record per idea (a sealed record supersedes its finalist record)."""
+    """The last record per idea (a sealed record supersedes its finalist record). A record
+    written before 'not run - no data' existed, with no playable practice day, is shown as
+    what it was."""
     by = {}
     for r in tried:
+        if (r.get("practice") or {}).get("days") == 0 and r.get("verdict") == "failed practice":
+            r = {**r, "verdict": "not run - no data",
+                 "why": ["no practice session had the data this idea trades"]}  # fmt: skip
         by[r["id"]] = r
     return list(by.values())
 

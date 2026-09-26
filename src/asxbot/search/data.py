@@ -18,8 +18,7 @@ folded into it - so the auction price is its open, and its volume is the auction
 Every opening group's continuous trading starts in the 10:00 bar (index 1) - the ASX's
 staggered open is not visible in them. Continuous trading ends with the 16:00 bar (zero volume
 in the sample); the CLOSING AUCTION prints in the 16:10 bar. A bar with no volume is no trade:
-its prices are
-NaN in the grid, so nothing can fill on it.
+its prices are NaN in the grid, so nothing can fill on it.
 """
 
 from __future__ import annotations
