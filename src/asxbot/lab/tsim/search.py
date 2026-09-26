@@ -251,7 +251,10 @@ def research_packet(cfg) -> str:
         "results, guidance, acquisition, contract, exploration, clinical, ...); close_strength = "
         "buy strong closers in the closing auction, sell in the next opening auction (or fade "
         "them); pullback = first pullback to VWAP in a strong stock; index_revert = fade a "
-        "liquid stock's no-news divergence from the index.",
+        "liquid stock's no-news divergence from the index (direction revert|follow); "
+        "close_strength pick strong|weak; index_momentum = the market's move to 10:30 predicts "
+        "its last half hour (a basket of the largest stocks); sympathy = a leader's news move "
+        "spills to its no-news peers in the same industry group.",
     ]
     yard = store.read_json(lab_dir(cfg) / "yardsticks.json", {}) or {}
     if yard:

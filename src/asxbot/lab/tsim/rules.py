@@ -492,7 +492,8 @@ class CloseStrength(RuleTrader):
     family = "close_strength"
     defaults = {"min_chg_pct": 3.0, "min_rvol": 2.0, "near_high_pct": 1.0, "direction": "with",
                 "hold_days": 1, "stop_pct": 3.0, "max_trades": 3,
-                "min_turnover_aud": 2_000_000.0}  # fmt: skip
+                "min_turnover_aud": 2_000_000.0,
+                "pick": "strong"}  # strong | weak (I0088: weak no-news closers)  # fmt: skip
 
     def __init__(self, params=None, name=None):
         super().__init__(params, name)
@@ -525,11 +526,15 @@ class CloseStrength(RuleTrader):
             if (v.m.turnover(code) or 0) < self.p["min_turnover_aud"] or not (b.v[:slot] > 0).any():
                 continue
             chg, rv = v.change_pct(code), v.rvol(code)
-            if chg is None or rv is None or chg < self.p["min_chg_pct"] or rv < self.p["min_rvol"]:
+            weak = self.p["pick"] == "weak"
+            if chg is None or rv is None or rv < self.p["min_rvol"]:
                 continue
-            hi = float(np.nanmax(b.h[: slot + 1]))
+            if (-chg if weak else chg) < self.p["min_chg_pct"] or (weak and code in news):
+                continue
             last = float(b.c[slot]) if b.v[slot] > 0 else v.m.last(code)
-            if not last or (hi - last) / hi * 100 > self.p["near_high_pct"]:
+            ext = (float(np.nanmin(b.l[: slot + 1])) if weak
+                   else float(np.nanmax(b.h[: slot + 1])))  # fmt: skip
+            if not last or abs(last - ext) / ext * 100 > self.p["near_high_pct"]:
                 continue
             cands.append((rv, code, last, code in news))
         cands.sort(reverse=True)
@@ -538,7 +543,9 @@ class CloseStrength(RuleTrader):
             side = "buy" if self.p["direction"] == "with" else "short"
             stop = last * (1 - self.p["stop_pct"] / 100) if side == "buy" else last * (
                 1 + self.p["stop_pct"] / 100)  # fmt: skip
-            plan = Plan(code, side, None, stop, f"closed strong (+{v.change_pct(code):.1f}%)")
+            plan = Plan(
+                code, side, None, stop, f"closed {self.p['pick']} ({v.change_pct(code):+.1f}%)"
+            )
             a = self.enter(v, plan)
             if a:
                 a["type"] = "moc"
@@ -601,7 +608,8 @@ class IndexRevert(RuleTrader):
 
     family = "index_revert"
     defaults = {"from": "11:00", "last_entry": "15:00", "min_resid_pct": 3.0, "stop_mult": 0.5,
-                "min_turnover_aud": 10_000_000.0, "no_news": True}  # fmt: skip
+                "min_turnover_aud": 10_000_000.0, "no_news": True,
+                "direction": "revert"}  # revert | follow (I0081: WITH the divergence)  # fmt: skip
 
     def on_bar(self, v, slot):
         hh, mm = self.p["from"].split(":")
@@ -630,12 +638,13 @@ class IndexRevert(RuleTrader):
             last = float(b.c[slot])
             dist = last * abs(resid) / 100 * self.p["stop_mult"]
             vw = _vwap(b, slot + 1)
-            if resid < 0:
-                plan = Plan(code, "buy", None, last - dist, f"lagging the index by {resid:.1f}%",
-                            target=vw if vw and vw > last else None)  # fmt: skip
+            revert = self.p["direction"] == "revert"
+            if (resid < 0) == revert:
+                plan = Plan(code, "buy", None, last - dist, f"{resid:+.1f}% vs the index",
+                            target=vw if revert and vw and vw > last else None)  # fmt: skip
             else:
-                plan = Plan(code, "short", None, last + dist, f"leading the index by {resid:.1f}%",
-                            target=vw if vw and vw < last else None)  # fmt: skip
+                plan = Plan(code, "short", None, last + dist, f"{resid:+.1f}% vs the index",
+                            target=vw if revert and vw and vw < last else None)  # fmt: skip
             a = self.enter(v, plan)
             if a:
                 acts.append(a)
@@ -644,9 +653,133 @@ class IndexRevert(RuleTrader):
         return acts
 
 
+class IndexMomentumClose(RuleTrader):
+    """Intraday momentum (I0085; a published effect): the market's move from the prior close to
+    10:30 predicts its last half hour. At `at`, if that early move is at least `threshold_pct`,
+    buy (or short) a basket of the largest stocks (`vehicle`, comma-separated; the index ETFs are
+    in the history only from 11 Sep 2026) and sell in the closing auction."""
+
+    family = "index_momentum"
+    defaults = {"at": "15:30", "threshold_pct": 0.4, "vehicle": "BHP,CBA,CSL,NAB,WBC",
+                "stop_pct": 1.0, "risk_pct": 0.2, "cost_multiple": 0.0,
+                "max_trades": 5}  # fmt: skip
+
+    def on_bar(self, v, slot):
+        hh, mm = self.p["at"].split(":")
+        if self.state.get("done") or v.m.now.time() < time(int(hh), int(mm)):
+            return []
+        self.state["done"] = True
+        idx, prev = v.m.index, v.m.prev_close("^AXJO")
+        early = idx.last_close(32) if idx is not None else None  # through the 10:30 bar
+        if not prev or early is None:
+            return []
+        sig = (early / prev - 1) * 100
+        if abs(sig) < self.p["threshold_pct"]:
+            return []
+        acts = []
+        for code in str(self.p["vehicle"]).upper().split(",")[: int(self.p["max_trades"])]:
+            last = v.m.last(code.strip())
+            if not last or code.strip() not in v.m.bars:
+                continue
+            side = "buy" if sig > 0 else "short"
+            stop = last * (1 - self.p["stop_pct"] / 100) if side == "buy" else last * (
+                1 + self.p["stop_pct"] / 100)  # fmt: skip
+            a = self.enter(v, Plan(code.strip(), side, None, stop, f"index {sig:+.2f}% by 10:30"))
+            if a:
+                acts.append(a)
+        return acts
+
+
+_INDUSTRY: dict = {}
+
+
+def industry_of(code: str) -> str | None:
+    """The stock's industry group (data/universe/asx_directory.csv), read once."""
+    if not _INDUSTRY:
+        import csv
+
+        from asxbot.config import load_config
+
+        _INDUSTRY["_loaded"] = ""
+        try:
+            path = load_config().data_dir / "universe" / "asx_directory.csv"
+            with open(path, encoding="utf-8") as f:
+                for r in csv.DictReader(f):
+                    _INDUSTRY[str(r["code"]).upper()] = r.get("industry") or ""
+        except Exception:  # noqa: BLE001 - no directory: no peers
+            pass
+    return _INDUSTRY.get(code.upper()) or None
+
+
+class Sympathy(RuleTrader):
+    """Sympathy moves (I0083): a leader moves hard on its own price-sensitive news; its no-news
+    peers in the same industry group that have not moved yet are traded in the leader's
+    direction, stop at `stop_pct`, flat at the close."""
+
+    family = "sympathy"
+    defaults = {"from": "10:30", "last_entry": "12:30", "leader_min_chg_pct": 6.0,
+                "leader_min_rvol": 3.0, "leader_min_turnover_aud": 5_000_000.0,
+                "peer_max_move_frac": 0.33, "stop_pct": 2.0,
+                "min_turnover_aud": 5_000_000.0}  # fmt: skip
+
+    def on_bar(self, v, slot):
+        hh, mm = self.p["from"].split(":")
+        if v.m.now.time() < time(int(hh), int(mm)) or self.past_last_entry(v):
+            return []
+        if len(self.taken) >= self.p["max_trades"]:
+            return []
+        news = v.news_codes()
+        leaders = []
+        for code in news:
+            to = v.m.turnover(code) or 0
+            if code not in v.m.bars or to < self.p["leader_min_turnover_aud"]:
+                continue
+            chg, rv = v.change_pct(code), v.rvol(code)
+            if chg is None or rv is None or abs(chg) < self.p["leader_min_chg_pct"]:
+                continue
+            if rv < self.p["leader_min_rvol"] or not industry_of(code):
+                continue
+            leaders.append((abs(chg), code, chg))
+        leaders.sort(reverse=True)
+        acts = []
+        for _a, lead, lchg in leaders:
+            ind = industry_of(lead)
+            for code, b in v.m.bars.items():
+                if code == lead or code in news or code in self.taken or b.v[slot] <= 0:
+                    continue
+                if industry_of(code) != ind:
+                    continue
+                if (v.m.turnover(code) or 0) < self.p["min_turnover_aud"]:
+                    continue
+                chg = v.change_pct(code)
+                if chg is None or abs(chg) > abs(lchg) * self.p["peer_max_move_frac"]:
+                    continue
+                last = float(b.c[slot])
+                side = "buy" if lchg > 0 else "short"
+                stop = last * (1 - self.p["stop_pct"] / 100) if side == "buy" else last * (
+                    1 + self.p["stop_pct"] / 100)  # fmt: skip
+                a = self.enter(v, Plan(code, side, None, stop, f"sympathy with {lead}"))
+                if a:
+                    acts.append(a)
+                if len(self.taken) >= self.p["max_trades"]:
+                    return acts
+        return acts
+
+
 FAMILIES = {
     c.family: c
-    for c in (ORB, GapFade, VwapRev, HodMomentum, Drift, CloseStrength, Pullback, IndexRevert)
+    for c in (
+        ORB,
+        GapFade,
+        VwapRev,
+        HodMomentum,
+        Drift,
+        CloseStrength,
+        Pullback,
+        IndexRevert,
+        IndexMomentumClose,
+        Sympathy,
+    )
 }
 
 
