@@ -138,7 +138,7 @@ def update(cfg, idea: dict, **kw) -> dict:
 
 # --------------------------------------------------------------------------- bars
 def n_tried(cfg) -> int:
-    return sum(1 for i in load_ideas(cfg) if i["stage"] != "needs_build")
+    return sum(1 for i in load_ideas(cfg) if i["stage"] not in ("needs_build", "built"))
 
 
 def practice_bar(n: int) -> float:
