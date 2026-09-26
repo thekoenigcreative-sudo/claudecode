@@ -58,6 +58,17 @@ def exits(days: list[dict], key: str) -> dict:
     return dict(sorted(c.items(), key=lambda kv: -kv[1]))
 
 
+def first_held(code: str) -> str | None:
+    """The first day the local IBKR history cache holds bars for (None without a cache)."""
+    try:
+        from asxbot.localdir import asx_local
+
+        held = sorted(f.stem for f in (asx_local() / "ibkr" / "history" / code).glob("*.parquet"))
+    except Exception:  # noqa: BLE001
+        return None
+    return held[0] if held else None
+
+
 def main() -> int:
     src = Path(sys.argv[1])
     js = json.loads(src.read_text(encoding="utf-8"))
@@ -86,13 +97,40 @@ def main() -> int:
             "complete.")  # fmt: skip
         partial = cov.get("codes_partial") or []
         if partial:
-            worst = ", ".join(f"{c} ({n})" for c, n in sorted(partial, key=lambda x: -x[1])[:10])
-            lines.append(f"- codes with sessions missing (most first): {worst}")
+            worst = sorted(partial, key=lambda x: -x[1])[:10]
+            late = [f"{c} from {f}" for c, _ in worst[:4]
+                    if (f := first_held(c)) and f > (fetch.get("window") or ["0"])[0]]  # fmt: skip
+            lines.append("- codes with sessions missing (most first): "
+                         + ", ".join(f"{c} ({n})" for c, n in worst)
+                         + (f"; bars start later in the window for {', '.join(late)}"
+                            if late else ""))  # fmt: skip
+    window = fetch.get("window") or []
+    if window and window[0] < js["first"]:
+        lines.append(f"- {window[0]} to the day before {js['first']}: history only, not replayed - "
+                     "the prior sessions the first days' usual volume and previous close are "
+                     "measured over (5 sessions)")  # fmt: skip
+    news = fetch.get("news_coverage") or {}
+    if news:
+        lines.append(
+            f"- the live collector's small-cap news stocks: {news.get('codes')} codes x "
+            f"{news.get('sessions')} sessions, {news.get('stock_days_held'):,} stock-days held, "
+            f"{news.get('stock_days_missing'):,} missing (ETFs and hybrids IBKR has no contract "
+            "for, and stocks that did not trade)")  # fmt: skip
     gapped = [d for d in js["days"] if d.get("gaps")]
     lines.append(f"- sessions not replayed (data gaps): {len(gapped)}"
                  + (": " + "; ".join(f"{d['day']} {', '.join(d['gaps'])}" for d in gapped[:10])
                     if gapped else ""))  # fmt: skip
     lines += ["", "## By setup (descriptive - a slice is a hypothesis, not a finding)", ""]
+    marks = []
+    for key, name in (("daytrader", "day trader"), ("v2", "v2")):
+        closed = sum(t["net"] for d in days for t in (d.get(key) or {}).get("trades", []))
+        booked = sum(float((d.get(key) or {}).get("pnl", 0.0)) for d in days)
+        if abs(booked - closed) >= 0.5:
+            marks.append(f"{name} {booked - closed:+,.2f}")
+    if marks:
+        lines += ["*Net after fees here sums the trades as recorded; the engine's P&L below also "
+                  "marks the positions stuck at the close at that day's last price ("
+                  + ", ".join(marks) + "), so the day totals are the ones to read.*", ""]
     extra = {}
     for key, name in (("daytrader", "Day trader rule bot"), ("v2", "v2 rule bot")):
         rows = breakdown(days, key)
