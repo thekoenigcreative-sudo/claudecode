@@ -59,7 +59,8 @@ class AITrader(Trader):
         parts = [
             f"NOW: {v.when()}  [{phase}]",
             f"BROKERAGE: {fees.pct:g}% of value, minimum ${fees.minimum:.2f} per order (GST incl.)",
-            f"CALLS LEFT TODAY: {self.max_calls - self.calls_today}; LOOKS PER WAKE: {self.max_looks}",
+            f"CALLS LEFT TODAY: {self.max_calls - self.calls_today}; "
+            f"LOOKS PER WAKE: {self.max_looks}",
         ]
         if reasons:
             parts.append("WOKEN BY:\n" + "\n".join("- " + self._reason(v, r) for r in reasons[:25]))
@@ -140,9 +141,14 @@ class AITrader(Trader):
                 elif tool == "account":
                     r = v.account()
                 elif tool == "journal":
-                    r = [{"day": v.anon.text(str(e.get("label", ""))), "journal": v.anon.text(
-                        str(e.get("journal", ""))), "lessons": e.get("lessons")}
-                        for e in self.journal.entries(v.m.day.isoformat())[-int(q.get("n", 3)):]]
+                    r = [
+                        {
+                            "day": v.anon.text(str(e.get("label", ""))),
+                            "journal": v.anon.text(str(e.get("journal", ""))),
+                            "lessons": e.get("lessons"),
+                        }
+                        for e in self.journal.entries(v.m.day.isoformat())[-int(q.get("n", 3)) :]
+                    ]
                 else:
                     raise ValueError(f"tools: {', '.join(LOOK_TOOLS)}")
             except (ValueError, TypeError, KeyError) as e:
@@ -190,8 +196,10 @@ class AITrader(Trader):
                 looked = self._look(v, reply.get("look"))
                 v.m.now = saved
                 transcript.append("YOUR REPLY:\n" + json.dumps(reply, separators=(",", ":")))
-                transcript.append(f"LOOK RESULTS (as of {(t0 + timedelta(seconds=d.latency_s)):%H:%M:%S}):\n"
-                                  + json.dumps(looked, separators=(",", ":"), default=str))
+                transcript.append(
+                    f"LOOK RESULTS (as of {(t0 + timedelta(seconds=d.latency_s)):%H:%M:%S}):\n"
+                    + json.dumps(looked, separators=(",", ":"), default=str)
+                )
                 continue
             break
         if reply:
@@ -204,9 +212,12 @@ class AITrader(Trader):
                 self.notes.append(f"{(t0 + timedelta(seconds=d.latency_s)):%H:%M} {note[:400]}")
                 d.note = note
             if final_key == "journal":
-                d.journal = json.dumps({"journal": str(reply.get("journal", ""))[:4000],
-                                        "lessons": [str(x)[:300] for x in
-                                                    (reply.get("lessons") or [])][:10]})
+                d.journal = json.dumps(
+                    {
+                        "journal": str(reply.get("journal", ""))[:4000],
+                        "lessons": [str(x)[:300] for x in (reply.get("lessons") or [])][:10],
+                    }
+                )
         return d
 
     def _log(self, v: TraderView, prompt: str, res: dict) -> None:
@@ -250,14 +261,17 @@ class AITrader(Trader):
             {"order": o.id, "code": v.anon.alias(o.code), "side": o.side, "type": o.type,
              "filled": v.anon.shares_to_shown(o.code, o.filled),
              "avg": v.anon.price(o.code, o.avg_price), "why": o.why}
-            for o in acct.orders.values() if o.filled and any(f["at"][:10] == today for f in o.fills)
+            for o in acct.orders.values()
+            if o.filled and any(f["at"][:10] == today for f in o.fills)
         ]  # fmt: skip
         mark_prev = acct.marks[-1]["equity"] if acct.marks else acct.start_cash
         head = self._header(v, "END OF DAY", []) + "\nTODAY'S FILLS: " + json.dumps(fills) + (
             f"\nEQUITY NOW vs LAST CLOSE: {acct.equity(v.m.last):,.2f} vs {mark_prev:,.2f}"
             "\n\nWrite your journal for today (JSON with journal and lessons). You may also leave "
             "GTC orders and alerts for tomorrow.")  # fmt: skip
-        self.calls_today = min(self.calls_today, self.max_calls - 1)  # the journal always gets a call
+        self.calls_today = min(
+            self.calls_today, self.max_calls - 1
+        )  # the journal always gets a call
         d = self._session(v, head, final_key="journal")
         if d.journal:
             e = json.loads(d.journal)

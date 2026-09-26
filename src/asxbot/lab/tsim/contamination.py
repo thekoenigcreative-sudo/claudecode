@@ -56,7 +56,9 @@ def probe(cfg, run_id: str, n_days: int = 5, ask=None) -> dict:
         dg = g.get("date_guess")
         date_hit = False
         try:
-            date_hit = dg is not None and abs(date.fromisoformat(str(dg)) - truth_day) <= timedelta(3)
+            date_hit = dg is not None and abs(date.fromisoformat(str(dg)) - truth_day) <= timedelta(
+                3
+            )
         except ValueError:
             pass
         out.append({"day": truth_day.isoformat(), "code_hits": hits, "date_hit": date_hit,

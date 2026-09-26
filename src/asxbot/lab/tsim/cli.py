@@ -114,8 +114,18 @@ def cmd_yardsticks(a) -> int:
         return cache[k]
 
     y = search.ensure_yardsticks(cfg, inputs_for)
-    print(json.dumps({w: {k: {x: v[x] for x in ("net", "trades", "t_stat", "old_rules")}
-                          for k, v in y[w].items()} for w in ("practice", "check")}, indent=1))
+    print(
+        json.dumps(
+            {
+                w: {
+                    k: {x: v[x] for x in ("net", "trades", "t_stat", "old_rules")}
+                    for k, v in y[w].items()
+                }
+                for w in ("practice", "check")
+            },
+            indent=1,
+        )
+    )
     search.write_log(cfg)
     return 0
 
@@ -180,8 +190,11 @@ def add_parsers(ls) -> None:
     r.add_argument("--addendum", default="")
     r.add_argument("--max-calls", type=int, default=40)
     r.add_argument("--id", default=None)
-    r.add_argument("--calibration", action="store_true",
-                   help="allow sealed days for a calibration of the frozen live configuration")
+    r.add_argument(
+        "--calibration",
+        action="store_true",
+        help="allow sealed days for a calibration of the frozen live configuration",
+    )
     r.add_argument("--force", action="store_true")
     r.set_defaults(fn=cmd_run)
     y = ss.add_parser("yardsticks", help="run the yardsticks on the practice and check windows")

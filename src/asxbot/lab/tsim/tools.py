@@ -109,7 +109,9 @@ class TraderView:
         from asxbot.arena.intraday import prior_sessions
 
         prev = prior_sessions(self.m.day, 1)
-        since = datetime.combine(prev[0] if prev else self.m.day, t_(16, 10), tzinfo=self.m.now.tzinfo)
+        since = datetime.combine(
+            prev[0] if prev else self.m.day, t_(16, 10), tzinfo=self.m.now.tzinfo
+        )
         a = self.m.visible_announcements(since)
         if not len(a):
             return {}
@@ -209,9 +211,13 @@ class TraderView:
             return {"code": a.alias(code), "bars": [], "note": "no trades yet today"}
         df = b.frame(self.m.day, nv)
         if bar > 1 and len(df):
-            df = df.resample(f"{int(bar)}min", label="left", closed="left").agg(
-                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-            ).dropna()
+            df = (
+                df.resample(f"{int(bar)}min", label="left", closed="left")
+                .agg(
+                    {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+                )
+                .dropna()
+            )
         df = df[df.index >= df.index[-1] - pd.Timedelta(minutes=max(1, int(minutes)))] if len(
             df) else df  # fmt: skip
         rows = [
@@ -219,7 +225,11 @@ class TraderView:
              a.price(code, r.low), a.price(code, r.close), a.volume(code, r.volume)]
             for t, r in df.iterrows()
         ]  # fmt: skip
-        return {"code": a.alias(code), "cols": ["time", "o", "h", "l", "c", "v"], "bars": rows[-120:]}
+        return {
+            "code": a.alias(code),
+            "cols": ["time", "o", "h", "l", "c", "v"],
+            "bars": rows[-120:],
+        }
 
     def daily(self, code: str, n: int = 20) -> dict:
         a = self.anon
@@ -229,8 +239,16 @@ class TraderView:
             return {"code": a.alias(code), "days": []}
         rows = []
         for i, r in enumerate(s.itertuples()):
-            rows.append([f"-{len(s) - i}", a.price(code, r.open), a.price(code, r.high),
-                         a.price(code, r.low), a.price(code, r.close), a.volume(code, r.volume)])
+            rows.append(
+                [
+                    f"-{len(s) - i}",
+                    a.price(code, r.open),
+                    a.price(code, r.high),
+                    a.price(code, r.low),
+                    a.price(code, r.close),
+                    a.volume(code, r.volume),
+                ]
+            )
         return {"code": a.alias(code), "cols": ["sessions_ago", "o", "h", "l", "c", "v"],
                 "days": rows}  # fmt: skip
 
@@ -306,8 +324,10 @@ class TraderView:
             "buying_power_note": f"gross positions + working orders <= equity x {acct.leverage:g}",
             "positions": pos,
             "working_orders": [self.order_view(o) for o in acct.working()],
-            "closed_today": [{"code": a.alias(t.code), "direction": t.direction,
-                              "net": round(t.net, 2)} for t in closed],  # fmt: skip
+            "closed_today": [
+                {"code": a.alias(t.code), "direction": t.direction, "net": round(t.net, 2)}
+                for t in closed
+            ],  # fmt: skip
             "fees_paid_run": round(acct.fees, 2),
         }
 
@@ -370,7 +390,8 @@ class TraderView:
                 att["tif"] = str(action["attach"]["tif"])
             o = self.b.place(
                 code, str(action.get("side", "buy")), qty, typ, at=at,
-                limit=a.unprice(code, action.get("limit")), stop=a.unprice(code, action.get("stop")),
+                limit=a.unprice(code, action.get("limit")),
+                stop=a.unprice(code, action.get("stop")),
                 trail_pct=action.get("trail_pct"), tif=str(action.get("tif", "day")),
                 attach=att, by=by, why=str(action.get("why", "")),
             )  # fmt: skip

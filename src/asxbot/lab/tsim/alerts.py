@@ -133,7 +133,9 @@ class AlertBook:
                 for code in self._scan(view, s, slot):
                     if (aid, code) not in self.fired_scanner:
                         self.fired_scanner.add((aid, code))
-                        fired.append({"alert": aid, "type": k, "code": code, **self._why(view, code)})
+                        fired.append(
+                            {"alert": aid, "type": k, "code": code, **self._why(view, code)}
+                        )
                 continue
             if hit is not None:
                 fired.append({"alert": aid, "type": k, "code": s.get("code"), **hit})

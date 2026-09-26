@@ -19,17 +19,23 @@ def text(cfg) -> str:
         if ys:
             best = max(ys.items(), key=lambda kv: kv[1]["net"])
             anyv = next(iter(ys.values()))
-            lines.append(f"- {w.title()} days ({anyv['days']}): best yardstick {best[0]} "
-                         f"${best[1]['net']:,.0f}; old rules ${anyv.get('old_rules', 0):,.0f}.")
+            lines.append(
+                f"- {w.title()} days ({anyv['days']}): best yardstick {best[0]} "
+                f"${best[1]['net']:,.0f}; old rules ${anyv.get('old_rules', 0):,.0f}."
+            )
     ai = [i for i in ideas if i["spec"].get("kind") == "ai" and i["results"]]
     for i in ai[-3:]:
         r = i["results"].get("check") or i["results"].get("practice")
-        lines.append(f"- AI trader {i['id']}: ${r['net']:,.0f} over {r['days']} days, "
-                     f"{r['trades']} trades ({i['verdict'] or i['stage']}).")
+        lines.append(
+            f"- AI trader {i['id']}: ${r['net']:,.0f} over {r['days']} days, "
+            f"{r['trades']} trades ({i['verdict'] or i['stage']})."
+        )
     base = store.read_json(search.lab_dir(cfg) / "ai_baseline.json", None)
     if base:
-        lines.append(f"- AI trader (no added instructions): ${base['net']:,.0f} over "
-                     f"{base['days']} practice days, {base['trades']} trades.")
+        lines.append(
+            f"- AI trader (no added instructions): ${base['net']:,.0f} over "
+            f"{base['days']} practice days, {base['trades']} trades."
+        )
     trying = next((i for i in reversed(ideas) if i["stage"] in ("queued", "check", "finalist",
                                                                "shadow")), None)  # fmt: skip
     if trying:
@@ -39,10 +45,14 @@ def text(cfg) -> str:
     lines.append("- " + equestion.answer(cfg))
     n = search.n_tried(cfg)
     passed = [i for i in ideas if i["stage"] in ("shadow",)]
-    lines.append(f"- Ideas tried: {n}; in shadow trading: {len(passed)}; winners: 0 until one "
-                 "passes WINNER.md in full.")
+    lines.append(
+        f"- Ideas tried: {n}; in shadow trading: {len(passed)}; winners: 0 until one "
+        "passes WINNER.md in full."
+    )
     wk = llm.week_state()
-    lines.append(f"- Lab's Claude usage this week: {wk['lab_share']:.0%} of the allowance "
-                 f"(cap 15%), {wk['calls']} calls.")
+    lines.append(
+        f"- Lab's Claude usage this week: {wk['lab_share']:.0%} of the allowance "
+        f"(cap 15%), {wk['calls']} calls."
+    )
     lines.append(SURVIVORSHIP)
     return "\n".join(lines)

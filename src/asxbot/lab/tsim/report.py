@@ -73,8 +73,11 @@ def score(out: dict, cfg=None) -> dict:
         "red_days": int((daily < 0).sum()),
         "t_stat": round(t, 3),
         "tokens": usage,
-        "tokens_per_day": {k: round(v / n_days) for k, v in usage.items()
-                           if k in ("input", "cache_write", "cache_read", "output")},  # fmt: skip
+        "tokens_per_day": {
+            k: round(v / n_days)
+            for k, v in usage.items()
+            if k in ("input", "cache_write", "cache_read", "output")
+        },  # fmt: skip
         "think_s_per_day": round(sum(d.get("think_s", 0) for d in days) / n_days, 1),
         "calls_per_day": round(sum(d.get("calls", 0) for d in days) / n_days, 1),
         "wall_s_per_day": round(sum(d.get("wall_s", 0) for d in days) / n_days, 2),
@@ -87,9 +90,11 @@ def score(out: dict, cfg=None) -> dict:
 
 def line(name: str, s: dict) -> str:
     b = " / ".join(f"{k} ${v:,.0f}" for k, v in s["net_by_broker"].items())
-    return (f"| {name} | {s['days']} | {s['trades']} | ${s['net']:,.0f} | {b} | "
-            f"{'' if s['win_rate'] is None else f'{s['win_rate']:.0%}'} | "
-            f"${s['without_best3']:,.0f} | {s['max_drawdown_pct']:.1f}% | {s['t_stat']:.2f} |")
+    return (
+        f"| {name} | {s['days']} | {s['trades']} | ${s['net']:,.0f} | {b} | "
+        f"{'' if s['win_rate'] is None else f'{s["win_rate"]:.0%}'} | "
+        f"${s['without_best3']:,.0f} | {s['max_drawdown_pct']:.1f}% | {s['t_stat']:.2f} |"
+    )
 
 
 HEADER = ("| strategy | days | trades | net (primary) | net by broker | win rate | without best 3 "

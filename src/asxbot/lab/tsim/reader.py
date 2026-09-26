@@ -33,7 +33,13 @@ def pdf_text(cfg, row) -> str:
     from asxbot.io import safe_stem
 
     rel = str(row["released_at"])[:10]
-    p = Path(cfg.data_dir) / "announcements" / "pdf" / rel / f"{safe_stem(str(row['code']))}_{row['ids_id']}.pdf"
+    p = (
+        Path(cfg.data_dir)
+        / "announcements"
+        / "pdf"
+        / rel
+        / f"{safe_stem(str(row['code']))}_{row['ids_id']}.pdf"
+    )
     if not p.exists():
         return ""
     with p.open("rb") as f:

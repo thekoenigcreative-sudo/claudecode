@@ -157,8 +157,17 @@ class RuleTrader(Trader):
             for o in v.b.acct.working(code):
                 if o.reduce_only and o.type == "limit":
                     out.append({"op": "cancel", "id": o.id})
-            out.append({"op": "place", "code": code, "side": "sell" if p.qty > 0 else "cover",
-                        "qty": abs(p.qty), "type": "moc", "tif": "day", "why": "flat at close"})
+            out.append(
+                {
+                    "op": "place",
+                    "code": code,
+                    "side": "sell" if p.qty > 0 else "cover",
+                    "qty": abs(p.qty),
+                    "type": "moc",
+                    "tif": "day",
+                    "why": "flat at close",
+                }
+            )
         return out
 
     def past_last_entry(self, v: TraderView) -> bool:
@@ -197,7 +206,7 @@ class ORB(RuleTrader):
                 return []
             news = v.news_codes()
             cands = []
-            for code, b in v.m.bars.items():
+            for code in v.m.bars:
                 if (v.m.turnover(code) or 0) < p["min_turnover_aud"]:
                     continue
                 gap = v.gap_pct(code)
@@ -224,17 +233,22 @@ class ORB(RuleTrader):
                 from asxbot.lab.tsim.costs import tick_size
 
                 t = tick_size(hi)
-                plan = (Plan(code, "buy", hi + t, lo, f"ORB long: range {lo:.3f}-{hi:.3f}")
-                        if side == "buy" else
-                        Plan(code, "short", lo - t, hi, f"ORB short: range {lo:.3f}-{hi:.3f}"))
+                plan = (
+                    Plan(code, "buy", hi + t, lo, f"ORB long: range {lo:.3f}-{hi:.3f}")
+                    if side == "buy"
+                    else Plan(code, "short", lo - t, hi, f"ORB short: range {lo:.3f}-{hi:.3f}")
+                )
                 a = self.enter(v, plan)
                 if a:
                     acts.append(a)
             return acts
         if self.past_last_entry(v) and not self.state.get("expired"):
             self.state["expired"] = True
-            return [{"op": "cancel", "id": o.id} for o in v.b.acct.working()
-                    if not o.reduce_only and o.type == "stop" and o.filled == 0]
+            return [
+                {"op": "cancel", "id": o.id}
+                for o in v.b.acct.working()
+                if not o.reduce_only and o.type == "stop" and o.filled == 0
+            ]
         return []
 
 
@@ -266,11 +280,23 @@ class GapFade(RuleTrader):
                 continue
             dist = abs(last - prev)
             if gap > 0:
-                plan = Plan(code, "short", None, last + dist * self.p["stop_mult"],
-                            f"fade gap up {gap:.1f}%", target=prev)
+                plan = Plan(
+                    code,
+                    "short",
+                    None,
+                    last + dist * self.p["stop_mult"],
+                    f"fade gap up {gap:.1f}%",
+                    target=prev,
+                )
             else:
-                plan = Plan(code, "buy", None, last - dist * self.p["stop_mult"],
-                            f"fade gap down {gap:.1f}%", target=prev)
+                plan = Plan(
+                    code,
+                    "buy",
+                    None,
+                    last - dist * self.p["stop_mult"],
+                    f"fade gap down {gap:.1f}%",
+                    target=prev,
+                )
             if len(self.taken) >= self.p["max_trades"]:
                 break
             a = self.enter(v, plan)
@@ -307,8 +333,14 @@ class VwapRev(RuleTrader):
             last = float(b.c[slot])
             if not vw or (vw - last) / vw * 100 < self.p["stretch_pct"]:
                 continue
-            plan = Plan(code, "buy", None, last * (1 - self.p["stop_pct"] / 100),
-                        f"{(vw - last) / vw * 100:.1f}% below VWAP", target=vw)
+            plan = Plan(
+                code,
+                "buy",
+                None,
+                last * (1 - self.p["stop_pct"] / 100),
+                f"{(vw - last) / vw * 100:.1f}% below VWAP",
+                target=vw,
+            )
             a = self.enter(v, plan)
             if a:
                 acts.append(a)
@@ -379,9 +411,16 @@ class Drift(RuleTrader):
             if held[code] >= int(self.p["hold_days"]):
                 p = v.b.acct.positions.get(code)
                 if p:
-                    acts.append({"op": "place", "code": code,
-                                 "side": "sell" if p.qty > 0 else "cover", "qty": abs(p.qty),
-                                 "type": "moc", "why": f"drift exit after {held[code]} days"})
+                    acts.append(
+                        {
+                            "op": "place",
+                            "code": code,
+                            "side": "sell" if p.qty > 0 else "cover",
+                            "qty": abs(p.qty),
+                            "type": "moc",
+                            "why": f"drift exit after {held[code]} days",
+                        }
+                    )
                 del held[code]
         for code, side, why in self.state["keep_queue"][: int(self.p["max_trades"])]:
             last = v.m.prev_close(code)
@@ -420,7 +459,9 @@ class Drift(RuleTrader):
             up = chg > 0
             if self.p["direction"] == "against":
                 up = not up
-            q.append((abs(chg), code, "buy" if up else "short", f"{n['type']} {chg:+.1f}% on the day"))
+            q.append(
+                (abs(chg), code, "buy" if up else "short", f"{n['type']} {chg:+.1f}% on the day")
+            )
         q.sort(reverse=True)
         self.state["keep_queue"] = [(c, s, w) for _, c, s, w in q]
         return None

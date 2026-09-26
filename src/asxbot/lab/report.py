@@ -155,9 +155,9 @@ def weekly_summary(cfg) -> str:
     if board["contamination"]:
         lines.append(f"Contamination check: {board['contamination']}.")
     try:
-        from asxbot.lab.tsim import scoreboard
+        from asxbot.lab.tsim import scoreboard as tsim_board
 
-        lines.append(scoreboard.text(cfg))
+        lines.append(tsim_board.text(cfg))
     except Exception as e:  # noqa: BLE001 - the lab's own summary still goes
         lines.append(f"(trading simulator scoreboard unavailable: {type(e).__name__})")
     lines.append("All paper money; nothing real happens without your yes.")

@@ -31,7 +31,8 @@ def run(cfg, days: list[date], progress=None) -> dict:
             out.append(have[d.isoformat()])
             continue
         rec = sim.run_day(cfg, d, {"id": BASELINE}, books=["bot", "agent"], anon=False,
-                          codes=codes, shorts=shorts, ann=ann, hist=hist, universe=universe)  # fmt: skip
+                          codes=codes, shorts=shorts, ann=ann, hist=hist,
+                          universe=universe)  # fmt: skip
         books = (rec.get("daytrader") or {}).get("books") or {}
         row = {"day": d.isoformat(), "market_move_pct": rec.get("market_move_pct"),
                "gaps": rec.get("gaps")}  # fmt: skip
@@ -71,9 +72,11 @@ def answer(cfg) -> str:
                "the agent's choosing did NOT rescue the rules")  # fmt: skip
     rescue = "and both still lost money" if agent <= 0 and bot <= 0 else (
         "and the agent's book made money" if agent > 0 else "")  # fmt: skip
-    return (f"E over {len(rows)} days after the knowledge cutoff: rules alone ${bot:,.0f} "
-            f"({bt} trades), rules + AI agent ${agent:,.0f} ({at} trades); the agent's book was "
-            f"better on {better} of {len(rows)} days - {verdict} {rescue}.").strip()
+    return (
+        f"E over {len(rows)} days after the knowledge cutoff: rules alone ${bot:,.0f} "
+        f"({bt} trades), rules + AI agent ${agent:,.0f} ({at} trades); the agent's book was "
+        f"better on {better} of {len(rows)} days - {verdict} {rescue}."
+    ).strip()
 
 
 _ = json

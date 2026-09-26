@@ -1,7 +1,8 @@
 """The market, minute by minute, from the stored IBKR 1-minute history.
 
 One trading day is a grid of 373 one-minute slots, 09:59 to 16:11 Sydney (slot i starts at
-09:59 + i minutes; slot 0 is the opening auction's bar). Every stock in the universe and the ASX 200 index (^AXJO) are loaded onto
+09:59 + i minutes; slot 0 is the opening auction's bar). Every stock in the universe and the
+ASX 200 index (^AXJO) are loaded onto
 it as arrays, so the engine and the scanner work in plain numpy, not per-bar pandas.
 
 What a trader may see at the simulated time `now` (the rule the whole simulator keeps):
@@ -131,8 +132,9 @@ def to_grid(code: str, day: date, df: pd.DataFrame | None) -> DayBars | None:
     dead = v <= 0
     o[dead] = h[dead] = l[dead] = c[dead] = np.nan
     first = 0 if v[0] > 0 else open_offset(code)
-    traded = np.flatnonzero((v > 0) & (np.arange(SLOTS) >= first)
-                            & (np.arange(SLOTS) < CONTINUOUS_END_SLOT))
+    traded = np.flatnonzero(
+        (v > 0) & (np.arange(SLOTS) >= first) & (np.arange(SLOTS) < CONTINUOUS_END_SLOT)
+    )
     if len(traded):
         s = int(traded[0])
         ap, av = float(o[s]), float(v[s])

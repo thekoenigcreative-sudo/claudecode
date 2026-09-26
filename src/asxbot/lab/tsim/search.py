@@ -247,8 +247,11 @@ def research_packet(cfg) -> str:
             {k: {"net": v["net"], "trades": v["trades"], "t": v["t_stat"]} for k, v in
              yard.get("practice", {}).items()}))  # fmt: skip
     if exhausted:
-        lines.append("EXHAUSTED (5+ recent failures): " + ", ".join(exhausted)
-                     + " - widen the search: other families, holding periods, signals.")
+        lines.append(
+            "EXHAUSTED (5+ recent failures): "
+            + ", ".join(exhausted)
+            + " - widen the search: other families, holding periods, signals."
+        )
     lines.append("RECENT IDEAS (newest last):")
     for i in ideas[-40:]:
         r = i["results"].get("practice") or {}
@@ -316,10 +319,13 @@ def step(cfg, idea: dict, inputs_for, yard: dict) -> dict:
         idea["results"]["check"] = s
         idea = update(cfg, idea, stage="finalist" if ok else "done",
                       verdict="finalist" if ok else "failed",
-                      why=why or "passed the check set: a finalist for the sealed block")  # fmt: skip
+                      why=why or "passed the check set: a finalist for the sealed block",
+                      )  # fmt: skip
         if ok and kind == "rules":
             # SPEND AI WHERE IT PAYS: a rules idea that holds up is handed to the AI trader
-            desc = json.dumps({"family": idea["spec"]["family"], "params": idea["spec"].get("params")})
+            desc = json.dumps(
+                {"family": idea["spec"]["family"], "params": idea["spec"].get("params")}
+            )
             register(cfg, {"kind": "ai", "addendum": (
                 f"A setup that tested well rules-only after costs: {desc[:400]}. Use it, adapt it "
                 "or ignore it as you judge.")[:600]}, f"AI trader on {idea['id']}", "search",
@@ -431,24 +437,40 @@ def write_log(cfg) -> Path:
          "All money is simulated on stored history; every figure is after brokerage, spread and "
          "slippage (IBKR's fees; other brokers in each run's scores).", ""]  # fmt: skip
     if yard.get("practice"):
-        L += ["## Yardsticks (practice window, rules only)", "",
-              "| yardstick | days | trades | net | t | old rules same days |", "|---|---|---|---|---|---|"]
+        L += [
+            "## Yardsticks (practice window, rules only)",
+            "",
+            "| yardstick | days | trades | net | t | old rules same days |",
+            "|---|---|---|---|---|---|",
+        ]
         for k, v in yard["practice"].items():
-            L.append(f"| {k} | {v['days']} | {v['trades']} | ${v['net']:,.0f} | {v['t_stat']:.2f} "
-                     f"| ${v.get('old_rules', 0):,.0f} |")
+            L.append(
+                f"| {k} | {v['days']} | {v['trades']} | ${v['net']:,.0f} | {v['t_stat']:.2f} "
+                f"| ${v.get('old_rules', 0):,.0f} |"
+            )
         L.append("")
-    L += ["## Every idea", "", "| id | what | why it might work | practice | check | sealed | verdict |",
-          "|---|---|---|---|---|---|---|"]
+    L += [
+        "## Every idea",
+        "",
+        "| id | what | why it might work | practice | check | sealed | verdict |",
+        "|---|---|---|---|---|---|---|",
+    ]
     for i in ideas:
         sp_ = i["spec"]
-        what = (f"{sp_.get('family')} {json.dumps(sp_.get('params') or {})}" if sp_.get("kind") == "rules"
-                else f"AI: {sp_.get('addendum', '')[:120]}" if sp_.get("kind") == "ai"
-                else f"new family: {sp_.get('describe', '')[:120]}")
+        what = (
+            f"{sp_.get('family')} {json.dumps(sp_.get('params') or {})}"
+            if sp_.get("kind") == "rules"
+            else f"AI: {sp_.get('addendum', '')[:120]}"
+            if sp_.get("kind") == "ai"
+            else f"new family: {sp_.get('describe', '')[:120]}"
+        )
         cell = lambda r: "" if not r else f"${r['net']:,.0f}, {r['trades']} tr, t {r['t_stat']:.2f}"  # noqa: E731
-        L.append(f"| {i['id']} | {what.replace('|', '/')} | {i['reason'][:140].replace('|', '/')} | "
-                 f"{cell(i['results'].get('practice'))} | {cell(i['results'].get('check'))} | "
-                 f"{cell(i['results'].get('sealed'))} | {i['verdict'] or i['stage']}: "
-                 f"{i['why'][:140].replace('|', '/')} |")
+        L.append(
+            f"| {i['id']} | {what.replace('|', '/')} | {i['reason'][:140].replace('|', '/')} | "
+            f"{cell(i['results'].get('practice'))} | {cell(i['results'].get('check'))} | "
+            f"{cell(i['results'].get('sealed'))} | {i['verdict'] or i['stage']}: "
+            f"{i['why'][:140].replace('|', '/')} |"
+        )
     p = Path(cfg.root) / "reports" / "research_log.md"
     p.write_text("\n".join(L) + "\n", encoding="utf-8")
     return p

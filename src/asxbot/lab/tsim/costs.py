@@ -125,10 +125,13 @@ class CostModel:
         for name, b in (conf.get("brokers") or {}).items():
             fees[name] = Fees(name, float(b["pct"]), float(b["min_aud"]), str(b.get("source", "")))
         sp = conf.get("spread") or {}
-        tiers = tuple(
-            SpreadTier(float(t["min_turnover_aud"]), float(t["spread_pct"]))
-            for t in (sp.get("tiers") or [])
-        ) or DEFAULT_TIERS
+        tiers = (
+            tuple(
+                SpreadTier(float(t["min_turnover_aud"]), float(t["spread_pct"]))
+                for t in (sp.get("tiers") or [])
+            )
+            or DEFAULT_TIERS
+        )
         imp = conf.get("impact") or {}
         return cls(
             fees=fees,

@@ -152,9 +152,7 @@ class Account:
         return sum(abs(p.qty) * (price_of(c) or p.avg) for c, p in self.positions.items())
 
     def working(self, code: str | None = None) -> list[Order]:
-        return [
-            o for o in self.orders.values() if o.working and (code is None or o.code == code)
-        ]
+        return [o for o in self.orders.values() if o.working and (code is None or o.code == code)]
 
     # -- persistence (continuity from one simulated day to the next) --------
     def to_dict(self) -> dict:

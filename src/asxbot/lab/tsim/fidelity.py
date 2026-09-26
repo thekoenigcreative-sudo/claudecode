@@ -161,43 +161,62 @@ class _Wrap:
 
 def live_book_pnl(data_dir: Path, name: str, day: date) -> dict:
     d = json.loads((Path(data_dir) / "arena" / "accounts" / f"{name}.json").read_text("utf-8"))
-    orders = [o for o in d["orders"].values() if str(o.get("decided_at", ""))[:10] == day.isoformat()]
+    orders = [
+        o for o in d["orders"].values() if str(o.get("decided_at", ""))[:10] == day.isoformat()
+    ]
     realised = sum(float(o.get("realised") or 0) for o in orders)
     fees = sum(float(o.get("commission") or 0) for o in orders)
-    return {"realised": round(realised, 2), "fees": round(fees, 2), "net": round(realised - fees, 2)}
+    return {
+        "realised": round(realised, 2),
+        "fees": round(fees, 2),
+        "net": round(realised - fees, 2),
+    }
 
 
 def decisions_check(cfg, day: date) -> dict:
     """The frozen rule bots through the live code (the lab's time machine) vs the live bots."""
+    from datetime import timedelta
+
     from asxbot.arena import replay_ibkr as R
     from asxbot.data.universe import asx200_codes
-    from datetime import timedelta
 
     codes, universe = R.arena_universe(cfg)
     shorts = asx200_codes(cfg.data_dir, cfg.get("collector.user_agent"))
     ann = R.announcements(cfg, day - timedelta(days=5), day)
     rec = R.replay_day(cfg, day, codes, shorts, ann, universe=universe)
     out = {"gaps": rec.get("gaps")}
-    for key, live_name in (("daytrader", "asx_daytrader_v1__bot"), ("v2", "asx_announcements_v2__bot")):
+    for key, live_name in (
+        ("daytrader", "asx_daytrader_v1__bot"),
+        ("v2", "asx_announcements_v2__bot"),
+    ):
         part = rec.get(key) or {}
-        trades = [(t.get("ticker"), t.get("side"), t.get("first_fill"), t.get("net"))
-                  for t in part.get("trades") or []]
+        trades = [
+            (t.get("ticker"), t.get("side"), t.get("first_fill"), t.get("net"))
+            for t in part.get("trades") or []
+        ]
         live = [(o["ticker"], o["side"], (o.get("fill_minute") or "")[11:16])
                 for o in live_orders(cfg.data_dir, day).get(live_name, [])
                 if o["side"] in ("buy", "short")]  # fmt: skip
-        out[key] = {"lab_trades": trades, "live_entries": live,
-                    "lab_pnl": part.get("pnl"),
-                    "live": live_book_pnl(cfg.data_dir, live_name, day)}
+        out[key] = {
+            "lab_trades": trades,
+            "live_entries": live,
+            "lab_pnl": part.get("pnl"),
+            "live": live_book_pnl(cfg.data_dir, live_name, day),
+        }
     return out
 
 
 def report(cfg, days: list[date], inputs: Inputs, with_decisions: bool = True) -> str:
-    lines = ["# Fidelity: the simulator against the live 10-day paper test", "",
-             "The live paper test is the ground truth. Each live order is sent to this "
-             "simulator's broker at its live time; fills and costs are compared. "
-             "`sim` = this simulator's fill model (next bar's open, half a modelled spread, "
-             "impact); `live-style` = the same broker pricing like the live arena (bar close, "
-             "0.10% slippage) - the gap between them is the fill model's own effect.", ""]
+    lines = [
+        "# Fidelity: the simulator against the live 10-day paper test",
+        "",
+        "The live paper test is the ground truth. Each live order is sent to this "
+        "simulator's broker at its live time; fills and costs are compared. "
+        "`sim` = this simulator's fill model (next bar's open, half a modelled spread, "
+        "impact); `live-style` = the same broker pricing like the live arena (bar close, "
+        "0.10% slippage) - the gap between them is the fill model's own effect.",
+        "",
+    ]
     for d in days:
         books = live_orders(cfg.data_dir, d)
         lines.append(f"## {d:%a %d %b %Y}")
@@ -211,23 +230,35 @@ def report(cfg, days: list[date], inputs: Inputs, with_decisions: bool = True) -
             lines += ["", f"### {name}", "",
                       f"Live: realised ${live['realised']:,.2f}, brokerage ${live['fees']:,.2f}, "
                       f"net ${live['net']:,.2f}. Simulator: net ${sim['sim_equity_change']:,.2f} "
-                      f"(brokerage ${sim['sim_fees']:,.2f}); live-style ${ls['sim_equity_change']:,.2f}."
-                      + (f" Left open in the simulator: {sim['open_positions']}." if sim["open_positions"] else ""),
-                      "", "| order | stock | side | type | decided | live min | sim min | live px | sim px | diff bps | live-style px | live qty | sim qty |",
+                      f"(brokerage ${sim['sim_fees']:,.2f}); "
+                      f"live-style ${ls['sim_equity_change']:,.2f}."
+                      + (f" Left open in the simulator: {sim['open_positions']}."
+                         if sim["open_positions"] else ""),
+                      "", "| order | stock | side | type | decided | live min | sim min | live px "
+                      "| sim px | diff bps | live-style px | live qty | sim qty |",
                       "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
             lsr = {r["order"]: r for r in ls["rows"]}
             for r in sim["rows"]:
                 lines.append(
                     f"| {r['order']} | {r['code']} | {r['side']} | {r['type']} | {r['decided']} | "
-                    f"{r['live_minute']} | {r['sim_minute']} | {r['live_price']} | {r['sim_price']} | "
-                    f"{r['diff_bps']} | {lsr[r['order']]['sim_price']} | {r['live_filled']} | {r['sim_filled']} |")
+                    f"{r['live_minute']} | {r['sim_minute']} | {r['live_price']} | "
+                    f"{r['sim_price']} | "
+                    f"{r['diff_bps']} | {lsr[r['order']]['sim_price']} | {r['live_filled']} | "
+                    f"{r['sim_filled']} |"
+                )
             if sim["errors"]:
                 lines.append(f"\nRefused in the simulator: {sim['errors']}")
         if with_decisions:
             try:
                 dc = decisions_check(cfg, d)
-                lines += ["", "### Decisions: the frozen rule bots replayed vs live", "",
-                          "```", json.dumps(dc, indent=1, default=str)[:6000], "```"]
+                lines += [
+                    "",
+                    "### Decisions: the frozen rule bots replayed vs live",
+                    "",
+                    "```",
+                    json.dumps(dc, indent=1, default=str)[:6000],
+                    "```",
+                ]
             except Exception as e:  # noqa: BLE001 - reported, not hidden
                 lines += ["", f"Decision replay failed: {type(e).__name__}: {e}"]
         lines.append("")

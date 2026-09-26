@@ -156,7 +156,7 @@ def parse_json(text: str) -> dict | None:
     s = text.strip()
     if s.startswith("```"):
         s = s.strip("`")
-        s = s[s.find("{"):] if "{" in s else s
+        s = s[s.find("{") :] if "{" in s else s
     best = None
     depth, start, in_str, esc = 0, None, False, False
     for i, ch in enumerate(s):
