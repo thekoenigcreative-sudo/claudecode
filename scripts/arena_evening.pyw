@@ -11,7 +11,8 @@ does, in the same order and with the same log lines in arena_evening.log:
   * `asxbot arena evening-due` first; for the wrong slot today (daylight saving moves the
     report an hour) it logs "skipped <time>: not today's evening slot" and stops;
   * otherwise a blank line, "=== evening report <yyyy-mm-dd HH:MM> ===", then for each of
-    `arena resolve`, `arena mark` and `arena report --agent --send` a
+    `arena resolve`, `arena mark`, `arena journal` (since 26 Sep 2026: the day's trading
+    journal, whose three lines the report carries) and `arena report --agent --send` a
     "--- asxbot <args> ---" header followed by everything the step printed. A failed step
     does not stop the next one, as before.
 
@@ -86,6 +87,9 @@ FAILURES = Path(r"C:\venvs\asx-bot\task-failures.log")
 STEPS = (
     ("arena", "resolve"),
     ("arena", "mark"),
+    # The trading journal (26 Sep 2026): after the books are settled and marked, before the
+    # report, which carries its three lines (arena/journal.py; one model call per agent book).
+    ("arena", "journal"),
     ("arena", "report", "--agent", "--send"),
 )
 

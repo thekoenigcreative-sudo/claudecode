@@ -67,6 +67,9 @@ if args[:2] == ["arena", "resolve"]:
 if args[:2] == ["arena", "mark"]:
     print("asx_announcements__agent: equity 10,230.89 - ünïcode ok")
     sys.exit(0)
+if args[:2] == ["arena", "journal"]:
+    print("wrote the journal")
+    sys.exit(0)
 if args[:2] == ["arena", "report"]:
     print("the report, first line")
     if os.environ.get("STANDIN_HANG"):
@@ -148,13 +151,17 @@ def test_the_routine_runs_every_step_in_order_and_logs_as_the_powershell_did(rep
         "--- asxbot arena mark ---",
         "asx_announcements__agent: equity 10,230.89 - ünïcode ok",
         "--- exit 0 ---",
+        "--- asxbot arena journal ---",
+        "wrote the journal",
+        "--- exit 0 ---",
         "--- asxbot arena report --agent --send ---",
         "the report, first line",
         "[sent to Telegram: 1 message(s)]",
         "--- exit 0 ---",
     ]
     assert calls(repo) == [
-        "arena evening-due", "arena resolve", "arena mark", "arena report --agent --send"
+        "arena evening-due", "arena resolve", "arena mark", "arena journal",
+        "arena report --agent --send",
     ]  # fmt: skip
     # A reader of this log sees a finished evening.
     text = "\n".join(lines)
@@ -172,7 +179,7 @@ def test_a_failed_step_does_not_stop_the_next_and_the_task_still_gets_0(repo, mo
     assert load(repo).main() == 0
     lines = log_lines(repo)
     assert lines[lines.index("--- asxbot arena resolve ---") + 3] == "--- exit 2 ---"
-    assert lines[-1] == "--- exit 0 ---" and len(calls(repo)) == 4
+    assert lines[-1] == "--- exit 0 ---" and len(calls(repo)) == 5
 
 
 def test_no_repo_writes_to_the_local_failures_log_and_exits_1(repo):

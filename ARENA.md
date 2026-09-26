@@ -71,6 +71,10 @@ The goal at the start is profit every day. Each playbook has its own level, set 
 
 ### After the trade: learn
 - Journals every trade: the thesis before, the outcome after, what it got right or wrong.
+  Built 26 Sep 2026 for the live test (docs/journal.md): after the close each agent writes one
+  entry per book in one call with its own model, code writes the rule bots' facts, and the
+  evening report carries three lines. During the frozen 10-day test it is written only, never
+  fed back into the agents' prompts or decisions.
 - Not built: code scores the agent's calibration (do its 70%-confidence calls win about 70% of the time?) so its sizing gets sharper over time.
 - Keeps its own dated rulebook of lessons and follows it; updated at most weekly, never retroactively.
 

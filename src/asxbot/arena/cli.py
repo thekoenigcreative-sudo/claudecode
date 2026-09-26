@@ -307,6 +307,19 @@ def cmd_report(args) -> int:
             log.error("agent report failed (%s); sending the code version", e)
 
     text += f"\n\n<i>written by: {written_by}</i>"
+    # The day's trading journal, three lines, added by code AFTER the agent has written: the
+    # journal is never part of an agent's prompt during the frozen test (arena/journal.py).
+    try:
+        from datetime import date as _date
+
+        from asxbot.arena.journal import report_block
+
+        block = report_block(cfg.data_dir, _date.fromisoformat(facts["day"]), arena.playbooks())
+    except Exception as e:  # noqa: BLE001 - the journal must never stop the report
+        log.error("the journal's lines could not be added to the report: %s", e)
+        block = "<b>Journal</b>: its lines could not be read tonight (see asxbot.log)."
+    if block:
+        text += "\n\n" + block
 
     # Deliver FIRST. Printing is a convenience; delivery is the point, and a console that
     # cannot encode what the agent wrote must never stop the report going out.
@@ -329,6 +342,44 @@ def cmd_report(args) -> int:
     if sent_note:
         print(sent_note)
     return rc
+
+
+def cmd_journal(args) -> int:
+    """The day's trading journal: one file per book (arena/journal.py). The agent's books get
+    ONE model call each per day (the decider's model, directly, never OpenClaw); the rule
+    bots' get the same facts from code. Written only: no agent reads it during the test."""
+    from datetime import date, time
+
+    from asxbot.announcements.live import is_trading_day
+    from asxbot.arena import journal as J
+    from asxbot.arena.runtime import Arena, arena_broker
+
+    cfg = load_config()
+    setup_logging(cfg.logs_dir)
+    now = datetime.now(SYD)
+    day = date.fromisoformat(args.day) if args.day else now.date()
+    if day > now.date() or (day == now.date() and now.time() < time(16, 15)):
+        print(f"REFUSED: {day} is not over yet; the journal is written after the close.")
+        return 3
+    if not is_trading_day(day):
+        print(f"{day:%a %d %b %Y} is not an ASX trading day: no journal.")
+        return 0
+    broker = arena_broker(cfg)  # the books only: no universes, quotes or network
+    arena = Arena(cfg, broker, broker.store, set(), set())
+    for p in J.run(cfg, arena, day, agent=not args.no_agent, again=args.again):
+        print(f"wrote {p}")
+    lines = J.summary_lines(cfg.data_dir, day, arena.playbooks())
+    print("\n".join(["", f"journal {day}:", *lines]))
+    if args.send:
+        from asxbot.telegram import TelegramError, load_bot
+
+        try:
+            ids = load_bot(cfg).send(J.telegram_text(cfg.data_dir, day, arena.playbooks()))
+            print(f"[sent to Telegram: {len(ids)} message(s)]")
+        except TelegramError as e:
+            print(f"[Telegram NOT sent: {e}]")
+            return 3
+    return 0
 
 
 def watch_playbooks(arena) -> tuple:
@@ -737,6 +788,16 @@ def add_parsers(sub) -> None:
     rp.add_argument("--send", action="store_true", help="deliver it on Telegram")
     rp.add_argument("--agent", action="store_true", help="let the decider write it")
     rp.set_defaults(fn=cmd_report)
+
+    jn = a.add_parser("journal", help="the day's trading journal, one file per book "
+                      "(written only: no agent reads it during the test)")
+    jn.add_argument("--day", help="YYYY-MM-DD (default: today, after the close)")
+    jn.add_argument("--no-agent", action="store_true",
+                    help="facts only: no model call (keeps an entry already written)")
+    jn.add_argument("--again", action="store_true",
+                    help="ask the agents again though they were asked today (logged)")
+    jn.add_argument("--send", action="store_true", help="send its summary to the Trader chat")
+    jn.set_defaults(fn=cmd_journal)
 
     w = a.add_parser("watch", help="poll announcements and run the agents on each one")
     w.add_argument("--playbook")
