@@ -165,6 +165,13 @@ def cmd_contamination(a) -> int:
     return 0
 
 
+def cmd_compare(a) -> int:
+    from asxbot.lab.tsim import compare
+
+    print(compare.report(_cfg(), a.run_a, a.run_b))
+    return 0
+
+
 def cmd_scoreboard(a) -> int:
     from asxbot.lab.tsim import scoreboard
 
@@ -182,7 +189,7 @@ def add_parsers(ls) -> None:
     f.add_argument("--no-decisions", action="store_true")
     f.set_defaults(fn=cmd_fidelity)
     r = ss.add_parser("run", help="run a trader over days (one account, in date order)")
-    r.add_argument("--trader", required=True, help="rules:<family> or ai")
+    r.add_argument("--trader", required=True, help="rules:<family>, ai or team")
     r.add_argument("--from", dest="frm")
     r.add_argument("--to")
     r.add_argument("--days", default=None)
@@ -215,3 +222,7 @@ def add_parsers(ls) -> None:
     c.add_argument("--days", dest="n", default=5)
     c.set_defaults(fn=cmd_contamination)
     ss.add_parser("scoreboard", help="the weekly scoreboard text").set_defaults(fn=cmd_scoreboard)
+    cp = ss.add_parser("compare", help="two runs on the same days, side by side")
+    cp.add_argument("run_a")
+    cp.add_argument("run_b")
+    cp.set_defaults(fn=cmd_compare)
