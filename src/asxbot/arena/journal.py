@@ -253,9 +253,24 @@ def _stop_moves(data_dir, day: date, account: str, ticker: str) -> list[str]:
     for r in _read(data_dir, "arena_orders", day):
         if (r.get("event") == "stop_moved" and r.get("account") == account
                 and r.get("ticker") == ticker):  # fmt: skip
-            out.append(f"stop {r.get('from')} -> {float(r.get('to')):.4g} at {_hhmm(r.get('bar'))} "
-                       f"(+{float(r.get('r_gained') or 0):.2f}R gained)")  # fmt: skip
+            out.append(f"code moved the stop {r.get('from')} -> {float(r.get('to')):.4g} at "
+                       f"{_hhmm(r.get('bar'))}, +{float(r.get('r_gained') or 0):.2f}R in hand "
+                       "(trade management by code, not the agent)")  # fmt: skip
     return out
+
+
+def _slippage(orders) -> tuple[float, bool]:
+    """Dollars the fills gave up to slippage (the broker's adverse slippage on every fill,
+    inside the fill prices): each slice's |price - bar price| x shares. (total, known): known
+    is False when a slice has no bar price on record (filled before 24 Sep)."""
+    total, known = 0.0, True
+    for o in orders:
+        for f in o.fills or []:
+            if f.get("bar_price") is None:
+                known = False
+                continue
+            total += abs(float(f["price"]) - float(f["bar_price"])) * abs(int(f["qty"]))
+    return total, known
 
 
 def book_trades(acct, day: date, data_dir) -> list[dict]:
@@ -283,6 +298,7 @@ def book_trades(acct, day: date, data_dir) -> list[dict]:
             per = sgn * (avg_in - float(stop))
             risk = per * t.qty if per > 0 else None
         fees = t.entry_fees + t.exit_fees
+        slip, slip_known = _slippage(orders)
         out.append({
             "ticker": t.ticker, "side": t.side, "qty": t.qty,
             "opened": _hhmm(t.opened), "closed": _hhmm(t.closed) if t.closed else "",
@@ -291,10 +307,14 @@ def book_trades(acct, day: date, data_dir) -> list[dict]:
             "exit": round(avg_out, 4) if avg_out else None,
             "initial_stop": stop, "risk_aud": round(risk, 2) if risk else None,
             "gross": round(t.gross, 2), "fees": round(fees, 2), "borrow": round(t.borrow, 2),
+            "slippage": round(slip, 2), "slippage_known": slip_known,
+            "costs_all_in": round(fees + slip + t.borrow, 2),
             "net": round(t.net, 2),
             "r_net": round(t.net / risk, 2) if risk else None,
             "r_gross": round(t.gross / risk, 2) if risk else None,
             "entry_order": entry.order_id if entry else None,
+            "entry_limit": entry.limit if entry else None,
+            "decided": _hhmm(entry.decided_at) if entry else "",
             "entry_reason": _clip(entry.reason if entry else ""),
             "model": entry.model if entry else "",
             "exits": [f"{o.order_id} {o.side} {o.filled_qty} @ {o.avg_price} at "
@@ -561,7 +581,10 @@ def agent_brief(facts: dict, pb) -> str:
         "characters>\n\n"
         "Be honest. A skip that would have lost money was a good skip. A skip that would have "
         "won may still have been right on what you could see then - say which, and why. `after` "
-        "is hindsight: the plain price path before costs and without trade management. Setups and "
+        "is hindsight: the plain price path before costs and without trade management. Costs "
+        "are brokerage (fees) plus slippage, which is inside the fill prices and shown as its "
+        "own figure on each trade. Stop moves (breakeven at +1R, the trail) and the 15:50 "
+        "close-out are code's trade management, not your decisions. Setups and "
         "stocks listed as nobody's decision were never yours to decide (too stale, no data, or "
         "you could not be asked): mention them only as the system's facts. Under 450 words.\n\n"
         "This journal is written only: during the test it is never shown to you or any agent "
@@ -735,7 +758,10 @@ def agent_entry(cfg, pb, facts: dict, *, again: bool = False, ask=ask_model) -> 
     events.append(CALLS, {**base, "stage": "started", "chars_in": len(prompt) + len(system)})
     r = ask(prompt, system + SYSTEM_TAIL, model, effort)
     # The text is kept in the record too: a paid call is never lost to a failed file write.
-    rec = {**base, "stage": "done", **{k: v for k, v in r.items() if k != "text"},
+    # `kind` is the event log's own field: why a call failed is recorded as `failure`.
+    rec = {**base, "stage": "done",
+           **{k: v for k, v in r.items() if k not in ("text", "kind")},
+           "failure": r.get("kind") or "",
            "chars_out": len(r.get("text") or ""), "entry_text": r.get("text") or ""}  # fmt: skip
     rec["model_matches"] = bool(r.get("model_ran")) and same_model(r["model_ran"], model)
     events.append(CALLS, rec)
@@ -744,8 +770,10 @@ def agent_entry(cfg, pb, facts: dict, *, again: bool = False, ask=ask_model) -> 
     if not r.get("ok"):
         log.error("journal call for %s failed (%s): %s", acct, r.get("kind"), r.get("reason"))
         return {"text": "", "lesson": "", "by": "", "call": rec}
+    tokens_in = sum(int(r.get(k) or 0) for k in ("input_tokens", "cache_read_tokens",
+                                                   "cache_creation_tokens"))
     log.info("journal for %s: %s answered in %.0fs (%d in / %d out tokens, $%.3f list)", acct,
-             r.get("model_ran"), r.get("seconds") or 0, r.get("input_tokens") or 0,
+             r.get("model_ran"), r.get("seconds") or 0, tokens_in,
              r.get("output_tokens") or 0, r.get("cost_usd_list") or 0)  # fmt: skip
     return {"text": r["text"], "lesson": parse_lesson(r["text"]),
             "by": f"{r.get('model_ran') or model} at {effort} effort (trader-decider's model, "
@@ -758,7 +786,8 @@ def usage_line(call: dict | None) -> str:
     if call.get("stage") != "done":
         return "a call was started but never finished (no record of its answer)"
     if not call.get("ok"):
-        return f"the call failed ({call.get('kind')}): {str(call.get('reason'))[:160]}"
+        why = call.get("failure") or call.get("kind")
+        return f"the call failed ({why}): {str(call.get('reason'))[:160]}"
     wk = call.get("weekly_usage")
     return (f"{call.get('model_ran')}, {call.get('effort')} effort, {call.get('seconds')}s, "
             f"{call.get('input_tokens', 0)} in + {call.get('cache_read_tokens', 0)} cached + "
@@ -778,10 +807,15 @@ def _trade_lines(trades: list[dict]) -> list[str]:
     for t in trades:
         r = f"{t['r_net']:+.2f}R net" if t.get("r_net") is not None else "R n/a (no usable stop)"
         state = "STILL OPEN" if t["still_open"] else f"closed {t['closed']}"
+        slip = f"{t.get('slippage', 0):.2f}" + ("" if t.get("slippage_known", True)
+                                                  else " (part unknown)")  # fmt: skip
         out.append(
-            f"- {t['ticker']} {t['side']} {t['qty']}: in {t['entry']} at {t['opened']}, out "
-            f"{t['exit']} ({state}); stop {t['initial_stop']} (risk ${t['risk_aud']}); gross "
-            f"{t['gross']:+.2f}, fees {t['fees']:.2f}, net {t['net']:+.2f} ({r})"
+            f"- {t['ticker']} {t['side']} {t['qty']}: decided {t.get('decided')}, limit "
+            f"{t.get('entry_limit')}; in {t['entry']} at {t['opened']}, out {t['exit']} "
+            f"({state}); stop {t['initial_stop']} (risk ${t['risk_aud']}); gross after "
+            f"slippage {t['gross']:+.2f}, net {t['net']:+.2f} ({r}); costs "
+            f"{t.get('costs_all_in', t['fees']):.2f} = brokerage {t['fees']:.2f} + slippage "
+            f"{slip} (in the fill prices)" + (f" + borrow {t['borrow']:.2f}" if t["borrow"] else "")
         )
         if t.get("entry_reason"):
             out.append(f"  - why in: {t['entry_reason']}")
@@ -793,9 +827,11 @@ def _trade_lines(trades: list[dict]) -> list[str]:
 def facts_lines(f: dict) -> list[str]:
     res = f["result"]
     today = res.get("today_after_fees")
+    slip = sum(t.get("slippage", 0) for t in f["trades"])
     lines = [
         f"- Result: {res['round_trips_closed']} round trips closed, {res['wins_after_fees']} won "
-        f"after all costs; net {res['net_closed']:+.2f}, fees {res['fees']:.2f}"
+        f"after all costs; net {res['net_closed']:+.2f}, brokerage {res['fees']:.2f}, slippage "
+        f"{slip:.2f}"
         + (f"; the book's day after fees (marked) {today:+.2f}" if today is not None else ""),
     ]
     if res.get("still_open"):

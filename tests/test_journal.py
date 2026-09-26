@@ -120,7 +120,8 @@ def order(acct, oid, ticker, side, qty, price, minute, fee, *, stop=None, reason
         order_id=oid, account=acct.name, ticker=ticker, side=side, qty=qty, limit=price,
         decided_at=f"2026-09-25T{minute}:00+10:00", status="filled", filled_qty=qty,
         avg_price=price, commission=fee, fill_minute=f"2026-09-25T{minute}+10:00",
-        fills=[{"minute": f"2026-09-25T{minute}+10:00", "qty": qty, "price": price}],
+        fills=[{"minute": f"2026-09-25T{minute}+10:00", "qty": qty, "price": price,
+                "bar_price": price * (1.001 if side in ("sell", "short") else 0.999)}],
         stop=stop, reason=reason, placed_by=by, order_type=otype, realised=realised,
         model="claude-opus-5-5" if by == "agent" else "none (rule-based bot)",
     )  # fmt: skip
@@ -153,6 +154,10 @@ def day_on_the_books(cfg, arena):
           reason="flat at the close", realised=151.20)
     for a in (ag, bot):
         arena.store.save(a)
+    write_events(d, "arena_orders", [
+        {"ts": "2026-09-25T05:49:30+00:00", "account": ag.name, "ticker": "REG",
+         "event": "stop_moved", "from": 4.57, "to": 4.5165, "bar": "2026-09-25T15:49+10:00",
+         "r_gained": 1.06}])  # fmt: skip
     signals = [
         {"at": "2026-09-25T11:27:59+10:00", "ticker": "REG", "setup": "vwap_reclaim",
          "side": "short", "last": 4.535, "stop": 4.565, "rvol": 1.33, "why": "closed below VWAP",
@@ -244,6 +249,18 @@ def test_the_day_trader_agents_setups_and_trades_from_its_side(cfg, day_on_the_b
     assert reg["risk_aud"] == pytest.approx((4.57 - 4.5165) * 1111, abs=0.01)
     assert reg["r_net"] == pytest.approx(reg["net"] / reg["risk_aud"], abs=0.01)
     assert reg["entry_reason"].startswith("[vwap_reclaim] agent confirmed")
+    # costs are brokerage AND slippage, each shown (25 Sep's first journal: slippage hidden in
+    # the prices made the agent call its correct ~$23 round trip a mistake)
+    slip = 1111 * 4.5165 * 0.001 + 1111 * 4.4749 * 0.001
+    assert reg["slippage"] == pytest.approx(slip, abs=0.02) and reg["slippage_known"]
+    assert reg["costs_all_in"] == pytest.approx(13.20 + slip, abs=0.02)
+    assert reg["entry_limit"] == 4.5165 and reg["decided"] == "11:31"
+    # a stop moved by code is never the agent's (it wrote "I tightened the stop" on 25 Sep)
+    (moved,) = reg["management"]
+    assert moved.startswith("code moved the stop 4.57 -> 4.516 at 15:49")
+    assert "not the agent" in moved
+    text = "\n".join(J.facts_lines(f))
+    assert "brokerage 13.20 + slippage" in text and "(in the fill prices)" in text
     took, skipped = f["setups_decided"]
     assert took["ticker"] == "REG" and took["decision"] == "took"
     assert took["why"] == "REG shows stock-specific weakness"  # its own words, prefix dropped
@@ -320,6 +337,7 @@ def test_one_file_per_book_the_frozen_rule_and_one_call_per_agent_per_day(cfg,
     assert done["ok"] and done["model_ran"] == "claude-opus-5-5" and done["model_matches"]
     assert done["cost_usd_list"] == 0.19 and done["weekly_usage"] == 0.41
     assert done["via"].startswith("claude -p") and "not OpenClaw" in done["via"]
+    assert all(r["kind"] == "arena_journal_calls" for r in recs)  # never overwritten
 
     # the evening runs again (a restart): nobody is asked twice, and the entries stay
     J.run(cfg, arena, DAY, ask=model)
