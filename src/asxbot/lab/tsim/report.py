@@ -81,6 +81,7 @@ def score(out: dict, cfg=None) -> dict:
         "partial_news_days": sum(1 for d in days if d.get("news_coverage") != "full"),
         "stuck_days": stuck,
         "n_trades_all": len(trades),
+        "daily": {d["day"]: round(float(p), 2) for d, p in zip(days, daily, strict=False)},
     }
 
 
