@@ -62,6 +62,12 @@ MIN_STOCKS_WITH_BARS = 100  # fewer on a day and the day is a data gap, not a qu
 
 
 def history_root() -> Path:
+    """%LOCALAPPDATA%\\asx-bot\\ibkr\\history; ASXBOT_IBKR_HISTORY points elsewhere (a cloud
+    session's unzipped copy on Linux)."""
+    import os
+
+    if os.environ.get("ASXBOT_IBKR_HISTORY"):
+        return Path(os.environ["ASXBOT_IBKR_HISTORY"])
     from asxbot.localdir import asx_local
 
     return asx_local() / "ibkr" / "history"

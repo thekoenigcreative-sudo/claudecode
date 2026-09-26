@@ -161,3 +161,6 @@ def add_parsers(sub) -> None:
     d.add_argument("--books", default="bot")
     d.add_argument("--anon", action="store_true")
     d.set_defaults(fn=cmd_day)
+    from asxbot.lab.tsim.cli import add_parsers as tsim_parsers
+
+    tsim_parsers(ls)

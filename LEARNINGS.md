@@ -766,6 +766,29 @@ PC's own history reproduces the cloud's results to the dollar.
 
 ---
 
+## 31. A partly filled limit is not a resting limit (26 Sep, the new simulator)
+
+The first fidelity check of the new simulator (lab/tsim) against the live paper test's orders
+on 25 Sep showed a cover of REG at 4.61 when every bar traded 4.47. The order's limit was 4.625
+(a marketable limit, placed far through the market); the first bar filled only 82 shares (the
+20% volume cap), and the broker then treated the rest as a RESTING limit, which fills at its
+limit when the price trades through it. A limit still marketable after a partial fill keeps
+taking the market. Found only because the check compared against real fills: every unit test
+passed. The same check found a triggered stop that stopped selling when the next bar did not
+reach its level again (HLS, 11,874 shares left open): a triggered stop is a market order until
+it is done.
+
+---
+
+## 32. IBKR's history stamps every opening auction 09:59 (26 Sep)
+
+Every stock in the IBKR 1-minute history has a 09:59 bar carrying its opening auction's volume
+and price - S-Z included, whose auction is struck around 10:09. The ASX's staggered open does
+not show in IBKR's stamps (TRACKER #33 suspected the same of Yahoo). A simulator that starts its
+day at 10:00 silently loses every auction. The 16:10 bar is the closing auction.
+
+---
+
 ## Standing rules
 
 1. Read the file. A summary, a commit message or a passing test count is not

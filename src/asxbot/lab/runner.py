@@ -353,6 +353,11 @@ def _work(cfg, deadline: float) -> str:
 
     reg = Registry(store.lab_data(cfg))
     did = []
+    # 0. the proper trading simulator gets the first half of every tick (CLOUD_BRIEF: the
+    # search, the AI trader and the AI experiments run on it); the time machine the rest
+    from asxbot.lab.tsim import nightly
+
+    did += nightly.work(cfg, time.monotonic() + (deadline - time.monotonic()) / 2)
     # 1. the baseline the gates compare with
     for window in ("tune", "validate"):
         r = run_days(
@@ -402,6 +407,8 @@ def _work(cfg, deadline: float) -> str:
     if r:
         did.append(r)
         return _finish(cfg, reg, did, busy=True)
+    # 7. whatever time is left: the trading simulator's search again
+    did += nightly.work(cfg, deadline)
     report.write(cfg, reg)
     return _finish(cfg, reg, did, busy=False)
 
