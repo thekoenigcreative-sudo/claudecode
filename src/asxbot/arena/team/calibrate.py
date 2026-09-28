@@ -183,7 +183,7 @@ def same_decisions(cfg, day: date, root: Path | None = None) -> dict:
         "orders": len(rows),
         "filled_the_same": same,
         "refused_in_sim": refused,
-        "median_sim_worse_bps": round(statistics.median(bps), 1) if bps else None,
+        "median_sim_worse_bps": round(float(statistics.median(bps)), 1) + 0.0 if bps else None,
         "live_pnl": live.get("pnl"),
         "sim_pnl": round(eq - start_eq, 2),
         "rows": rows,

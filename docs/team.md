@@ -104,6 +104,14 @@ never counted in the lab's weekly share.
 
 Results: `data/arena/team/calibration/<day>.json`, `reports/team_calibration_<day>.md`.
 
+## Measured before it went live (28 Sep, dry run on 25 Sep)
+
+A whole day through the live driver on stored history, real models: 21 wakes, 173 calls
+(Opus 255k and Sonnet 790k tokens, ~$5.82 API-equivalent), about 2% of the weekly allowance
+(79% -> 81%). Calibration B costs about as much again each evening (capped at 3%). It used 16
+of its 18 daily wakes in the first half hour - many on its own order confirmations - and then
+slept until its 15:40 call-back: the simulator team's design, recorded, not tuned.
+
 ## Commands
 
     asxbot arena team status                    # the book, its thread, the kill switch

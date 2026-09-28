@@ -72,7 +72,7 @@ def team_day(cfg, day: date) -> dict | None:
 def _row(name: str, today, total, g, r, trades, won, dd, fees) -> str:
     t = "-" if today is None else f"{today:+,.0f}"
     return (
-        f"{name[:18]:18s} {t:>7s} {total:>+8,.0f} {f'{g}/{r}':>5s} "
+        f"{name[:20]:20s} {t:>7s} {total:>+8,.0f} {f'{g}/{r}':>5s} "
         f"{f'{won}/{trades}':>6s} {dd:>5.1f} {fees:>6,.0f}"
     )
 
@@ -82,7 +82,7 @@ def side_by_side(cfg, facts: dict, day: date) -> list[str]:
     every cost, green/red days, round trips won after costs, worst drop %, fees)."""
     s = team_score(cfg)
     d = team_day(cfg, day)
-    head = f"{'book':18s} {'today':>7s} {'total':>8s} {'G/R':>5s} {'won':>6s} {'drop':>5s} {'fees':>6s}"
+    head = f"{'book':20s} {'today':>7s} {'total':>8s} {'G/R':>5s} {'won':>6s} {'drop':>5s} {'fees':>6s}"
     rows = [head]
     if s is not None:
         rows.append(
@@ -102,7 +102,7 @@ def side_by_side(cfg, facts: dict, day: date) -> list[str]:
         short = (
             "day trader"
             if "daytrader" in row["key"]
-            else "announcements v2"
+            else "v2 (news)"
             if "v2" in row["key"]
             else row["key"]
         )

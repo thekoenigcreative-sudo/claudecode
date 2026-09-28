@@ -527,11 +527,14 @@ class TeamSession:
                 self.deferred.pop(code, None)
 
     def _await_close(self, slot: int, delivered: datetime, stop) -> None:
-        """Before the closing auction's day-order expiry: the team's late stocks caught up."""
+        """Before the closing auction's day-order expiry: the team's late stocks caught up
+        (at most `max_wait`; the wait goes through the session's clock)."""
         while self.deferred and self.clock.now() - delivered < self.max_wait:
             self._ingest()
             self._work_deferred(slot)
-            if stop.wait(5.0):
+            if not self.deferred:
+                return
+            if not self.clock.wait_until(self.clock.now() + timedelta(seconds=5), stop):
                 return
 
     # -------------------------------------------------------------- the team

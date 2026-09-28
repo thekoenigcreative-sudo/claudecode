@@ -577,3 +577,24 @@ def test_nothing_in_the_team_can_reach_a_real_broker():
     for p in base.glob("*.py"):
         t = p.read_text(encoding="utf-8")
         assert "place_order" not in t and "ib_async" not in t and "asxbot.broker" not in t, p
+
+
+def test_the_close_waits_for_late_stocks_on_the_sessions_own_clock(cfg, world, tmp_path):
+    """28 Sep: the closing-auction wait slept on the wall clock, so a session on any other
+    clock (the live-path check on a fast clock) waited for ever; it now waits through the
+    session's clock and gives up after max_wait."""
+    from asxbot.arena.team.market import LiveMarket, build_summaries
+    from asxbot.arena.team.session import TeamSession, VirtualClock
+
+    day = world["days"][5]
+    m = LiveMarket(day, CODES, build_summaries(CODES, day), set(), lambda c, d: None)
+    due = slot_time(day, 372) + timedelta(seconds=20)  # 16:10's bar delivered
+    clock = VirtualClock(due)
+    clock.live = True
+    s = TeamSession(cfg, day, tmp_path / "book", market=m, clock=clock, ask=FakeTeam(),
+                    budget=None, conf={}, feed=None, state={}, max_wait_s=60)
+    # the 16:09 minute is only just due: waited for (on the session's clock), then given up
+    s.deferred = {"AAX": 370}
+    s._await_close(371, due, threading.Event())
+    assert not s.deferred  # waited on its own clock, then given up as overdue
+    assert due < clock.now() <= due + timedelta(seconds=65)
