@@ -1092,3 +1092,48 @@ def report_block(data_dir, day: date, pbs) -> str:
         ["<b>Journal - the day's lessons</b> (written only: no agent reads it during the test)"]
         + [f"- {escape(x, quote=False)}" for x in lines]
     )
+
+
+# --------------------------------------------------------------------------
+# the AI team's book (28 Sep 2026, arena/team)
+# --------------------------------------------------------------------------
+TEAM_ACCOUNT = "asx_team"
+
+
+def team_file(cfg, day: date) -> Path | None:
+    """The AI team's file for the day, beside the frozen books': its own after-close entry
+    (the decision-maker's notes and lessons, the researcher's lessons and ideas - written in
+    the team's 16:20 call, no extra model call) and the day's facts from its book. The team is
+    not frozen and reads its OWN lessons the next morning, as in the simulator; no frozen
+    agent ever reads this file, and the team never reads the frozen books' files."""
+    from asxbot.arena.team.runner import team_root
+    from asxbot.arena.team.session import Book
+    from asxbot.io import write_text_atomic
+    from asxbot.lab.tsim import live as tlive
+
+    rec = Book(team_root(cfg)).read_day(day.isoformat())
+    if rec is None:
+        return None
+    e = tlive.day_entry(team_root(cfg), day.isoformat()) or {}
+    lessons = [str(x) for x in e.get("lessons") or []]
+    facts = {k: rec.get(k) for k in ("pnl", "start_equity", "equity_close", "trades", "carried",
+                                      "wakes", "calls", "orders_placed", "fees_today",
+                                      "refused_by_limits", "silenced", "loss_hit", "killed",
+                                      "models")}  # fmt: skip
+    data = {"facts": facts, "entry": str(e.get("journal") or ""),
+            "lesson": lessons[0] if lessons else "", "lessons": lessons,
+            "ideas": e.get("ideas") or [],
+            "written_by": "the team's decision-maker and researcher (Opus 5.5, high), in its "
+                          "after-close call" if e else "nobody: no after-close entry",
+            "call": None}  # fmt: skip
+    body = [f"# {day:%a %d %b %Y} - AI team (paper, its own book)", "",
+            f"P&L after all costs {rec['pnl']:+,.2f}; {len(rec.get('trades') or [])} round trips; "
+            f"woken {rec.get('wakes')} times, {rec.get('calls')} model calls.", "",
+            "## Its own entry", "", data["entry"] or "(none)", "", "## Lessons", ""]  # fmt: skip
+    body += [f"- {x}" for x in lessons] or ["- none"]
+    body += ["", "## Data (for the Practice Lab)", "", DATA_FENCE,
+             json.dumps(data, indent=1, default=str), "```", ""]
+    p = journal_path(cfg.data_dir, day, TEAM_ACCOUNT)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic("\n".join(body), p)
+    return p

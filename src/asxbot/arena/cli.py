@@ -320,6 +320,19 @@ def cmd_report(args) -> int:
         block = "<b>Journal</b>: its lines could not be read tonight (see asxbot.log)."
     if block:
         text += "\n\n" + block
+    # The AI team's paper book beside the frozen books (28 Sep 2026, arena/team): added by
+    # code AFTER the frozen agent has written, so no frozen agent is shown the team's results.
+    try:
+        from datetime import date as _date
+
+        from asxbot.arena.team.score import report_block as team_block
+
+        tb = team_block(cfg, facts, _date.fromisoformat(facts["day"]))
+    except Exception as e:  # noqa: BLE001 - the team must never stop the report
+        log.error("the AI team's lines could not be added to the report: %s", e)
+        tb = "<b>AI team</b>: its lines could not be read tonight (see asxbot.log)."
+    if tb:
+        text += "\n\n" + tb
 
     # Deliver FIRST. Printing is a convenience; delivery is the point, and a console that
     # cannot encode what the agent wrote must never stop the report going out.
@@ -368,6 +381,12 @@ def cmd_journal(args) -> int:
     arena = Arena(cfg, broker, broker.store, set(), set())
     for p in J.run(cfg, arena, day, agent=not args.no_agent, again=args.again):
         print(f"wrote {p}")
+    try:  # the AI team's book: its own after-close entry, no extra model call (arena/team)
+        p = J.team_file(cfg, day)
+        if p:
+            print(f"wrote {p}")
+    except Exception as e:  # noqa: BLE001 - the team must never stop the frozen books' files
+        print(f"the AI team's file could not be written: {e}")
     lines = J.summary_lines(cfg.data_dir, day, arena.playbooks())
     print("\n".join(["", f"journal {day}:", *lines]))
     if args.send:
@@ -380,6 +399,80 @@ def cmd_journal(args) -> int:
             print(f"[Telegram NOT sent: {e}]")
             return 3
     return 0
+
+
+def cmd_team(args) -> int:
+    """The AI team's paper book (arena/team, docs/team.md)."""
+    from datetime import date, time
+    from pathlib import Path
+
+    from asxbot.arena.team import calibrate as C
+    from asxbot.arena.team import limits as L
+    from asxbot.arena.team import runner as R
+
+    cfg = load_config()
+    setup_logging(cfg.logs_dir)
+    root = R.team_root(cfg)
+    now = datetime.now(SYD)
+    day = date.fromisoformat(args.day) if getattr(args, "day", None) else now.date()
+    cmd = args.team_cmd
+    if cmd == "status":
+        from asxbot.arena.team.score import team_score
+
+        conf = L.conf_of(cfg)
+        print(f"enabled: {conf.get('enabled')}, from {conf.get('start')}; book: {root}")
+        k, why = L.killed(root)
+        print(f"kill switch: {why if k else 'off'}")
+        st = root / "status.json"
+        print(st.read_text(encoding="utf-8") if st.exists() else "(no status yet)")
+        s = team_score(cfg)
+        if s:
+            print(f"equity {s.equity:,.2f}, P&L {s.pnl:+,.2f} over {s.days} day(s), green/red "
+                  f"{s.green_days}/{s.red_days}, round trips {s.trades} ({s.wins} won after "
+                  f"costs), worst drop {s.max_drawdown_pct:.2f}%, "
+                  f"fees {s.fees_paid:,.2f}")  # fmt: skip
+        return 0
+    if cmd == "kill":
+        p = L.set_kill(root, args.why or "", by="Rick")
+        print(f"KILL SWITCH ON ({p}): the team's working orders are cancelled and its positions "
+              "closed at market at the watcher's next minute; the team is asked nothing until "
+              "`asxbot arena team unkill`.")  # fmt: skip
+        return 0
+    if cmd == "unkill":
+        print("kill switch lifted" if L.lift_kill(root) else "the kill switch was not on")
+        return 0
+    if cmd in ("evening", "calibrate"):
+        if day > now.date() or (day == now.date() and now.time() < time(16, 25)):
+            print(f"REFUSED: {day} is not over yet (after 16:25 only).")
+            return 3
+        d = C.calibrate(cfg, day, rerun=cmd == "calibrate" and args.rerun)
+        if d.get("nothing"):
+            print(f"{day}: {d['nothing']}; nothing to check")
+        for x in C.lines(d):
+            print(x)
+        return 0
+    if cmd == "replay":
+        from asxbot.lab.tsim.run import tsim_local
+
+        if day >= now.date() and now.time() < time(16, 25):
+            print("REFUSED: a replay runs on a finished day only.")
+            return 3
+        stamp = f"dry_{day.isoformat()}_{now:%Y%m%d%H%M%S}"
+        out = Path(args.out) if args.out else tsim_local() / "team_replays" / stamp
+        codes = R.universe(cfg, day)
+        if not codes:
+            print(f"no universe recorded for {day} (data/arena/daytrader/{day}.json)")
+            return 3
+        s = R.replay_session(cfg, day, out, codes=codes, max_rise=args.max_rise,
+                             register_ideas=False)  # fmt: skip
+        print(f"replaying {day} for the team: {len(codes)} stocks, book in {out}")
+        res = s.run()
+        p = C.write_dry_run(cfg, day, res, out)
+        print(f"{res['how']}: P&L {res['pnl']:+,.2f}, {res['wakes']} wakes, {res['calls']} calls, "
+              f"{res['orders_placed']} orders, {len(res['trades'])} round trips; "
+              f"report {p}")  # fmt: skip
+        return 0 if res["how"] == "done" and not res.get("silenced") else 2
+    return 1
 
 
 def watch_playbooks(arena) -> tuple:
@@ -798,6 +891,32 @@ def add_parsers(sub) -> None:
                     help="ask the agents again though they were asked today (logged)")
     jn.add_argument("--send", action="store_true", help="send its summary to the Trader chat")
     jn.set_defaults(fn=cmd_journal)
+
+    tm = a.add_parser("team", help="the AI team's own paper book (docs/team.md)")
+    tms = tm.add_subparsers(dest="team_cmd", required=True)
+    tms.add_parser("status", help="its book, its thread's status, the kill switch").set_defaults(
+        fn=cmd_team)  # fmt: skip
+    tk = tms.add_parser("kill", help="KILL SWITCH: cancel its orders, close its positions, "
+                        "ask it nothing until lifted")  # fmt: skip
+    tk.add_argument("--why", default="")
+    tk.set_defaults(fn=cmd_team)
+    tms.add_parser("unkill", help="lift the kill switch").set_defaults(fn=cmd_team)
+    te = tms.add_parser("evening", help="the day's check A: its own orders on the simulator's "
+                        "market (plain code)")  # fmt: skip
+    te.add_argument("--day")
+    te.set_defaults(fn=cmd_team)
+    tc = tms.add_parser("calibrate", help="check A, and with --rerun check B: the simulated "
+                        "team re-runs the live day (model calls)")  # fmt: skip
+    tc.add_argument("--day")
+    tc.add_argument("--rerun", action="store_true")
+    tc.set_defaults(fn=cmd_team)
+    tr = tms.add_parser("replay", help="the team's day on stored history, a scratch book (the "
+                        "dry run; model calls)")  # fmt: skip
+    tr.add_argument("--day", required=True)
+    tr.add_argument("--out")
+    tr.add_argument("--max-rise", type=float, default=0.04,
+                    help="the most of the week's Claude usage this run may add (0.04 = 4%%)")
+    tr.set_defaults(fn=cmd_team)
 
     w = a.add_parser("watch", help="poll announcements and run the agents on each one")
     w.add_argument("--playbook")

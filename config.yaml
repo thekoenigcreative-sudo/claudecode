@@ -297,6 +297,39 @@ arena:
   selfcheck:
     repeat_minutes: 60         # a standing failure is re-alerted at most this often
 
+  # The AI trading TEAM's own paper book, live beside the frozen 10-day test (added
+  # 2026-09-28, Rick 26 Sep: "i'll want to actually test the agent team like the other trader
+  # on a live environment"; docs/team.md). A NEW book, not a change to any frozen playbook:
+  # the frozen books, their rules and their agents are untouched. The team is the simulator's
+  # (lab/tsim/team.py) as built and compared on 26 Sep - same prompts, stages and models; its
+  # broker and costs are the simulator's (config tradesim: brokerage 0.088% min $6.60, the
+  # spread tiers, impact, the 20%-of-bar-volume cap, borrow 3%). Set before it ever traded
+  # live; nothing here was tuned on a result.
+  team:
+    enabled: true
+    start: "2026-09-30"        # its first live day (the bots are off until 29 Sep 15:00)
+    start_cash_aud: 20000
+    leverage: 1.0              # the account's own limit; shorts only in the ASX 200 (broker)
+    broker: ibkr               # the commission schedule charged (config tradesim.brokers)
+    max_volume_share: 0.20     # no bar fills more than 20% of what it traded (the arena's figure)
+    daily_loss_limit_pct: 15.0 # Level 1's figure (ARENA.md): then no NEW position until tomorrow
+    close_volume_cap: 0.20     # a position never above 20% of the stock's usual closing auction
+    usage_stop: 0.70           # Rick's weekly Claude stop for every bot: no model call at or above
+    polled_fresh_s: 180        # a stock without a streaming line: no entry on bars older than this
+    call_timeout_s: 300
+    max_wakes_per_day: 18      # the simulator's budget guard for the team (tradesim team)
+    scan_every_min: 10
+    specialists_every_min: 20  # specialists re-run on a new watchlist, a move, or after 20 min
+    max_readers: 12
+    register_ideas: true       # the researcher's ideas go to the lab's search, as in the lab
+    models:                    # CLOUD_BRIEF: every trading decision on Opus 5.5 at high
+      decider: {model: claude-opus-5-5, effort: high}
+      risk: {model: claude-opus-5-5, effort: high}
+      staff: {model: claude-sonnet-5, effort: medium}   # the scanner and the five specialists
+      reader: {model: claude-sonnet-5, effort: low}     # one per announcement
+    calibration:
+      max_rise: 0.03           # check B (the simulated team re-run) may add at most 3% of the week
+
   alerts:
     telegram: true             # instant alerts: decisions, fills, stops, closes, refusals
     pass_digest_minutes: 60    # passes are not instant: one digest this often instead

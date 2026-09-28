@@ -54,7 +54,8 @@ def pdf_text(cfg, row) -> str:
         return ""
 
 
-def cached_reader(cfg):
+def cached_reader(cfg, ask=None):
+    """`ask`: the model call (llm.ask; the live team passes one with its own budget)."""
     model, effort = llm.READER
     conf = (cfg.get("tradesim") or {}).get("reader") or {}
     model = str(conf.get("model", model))
@@ -69,7 +70,7 @@ def cached_reader(cfg):
         if not text.strip():
             return None
         try:
-            res = llm.ask(f"HEADLINE: {row['headline']}\n\nTEXT:\n{text}", system=SYSTEM,
+            res = (ask or llm.ask)(f"HEADLINE: {row['headline']}\n\nTEXT:\n{text}", system=SYSTEM,
                           model=model, effort=effort, cfg=cfg)  # fmt: skip
         except llm.UsageStop:
             return None

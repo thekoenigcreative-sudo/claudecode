@@ -1267,6 +1267,12 @@ def _watch(arena, pb, once, interval_s, until, others) -> None:
             # agent. On 25 Sep the 10:30 decision could wait behind reaction looks.
             _fast_stages(arena, pb, others)
 
+            # The AI team's own paper book (28 Sep 2026, arena/team): one thread of its own,
+            # started or checked here. It only reads the bars this feed already holds; the
+            # frozen books never wait for it.
+            if not once:  # a --once test never starts the team's day
+                _guard("the AI team", _team_tick, arena, datetime.now(SYD))
+
             _poll_and_handle(arena, pb, others, poller, handled, now)
 
             # Every stage below reads the clock again. `now` from the top of the cycle can be
@@ -1391,6 +1397,14 @@ def _fast_stages(arena: Arena, pb: Playbook, others) -> None:
     _work_all(arena, pbs)
     _v2_bot_now(arena, pb)
     _flat_sweeps(arena, pbs, datetime.now(SYD))
+
+
+def _team_tick(arena: Arena, now: datetime) -> None:
+    from asxbot.arena.team.runner import tick
+
+    did = tick(arena, now)
+    if did == "started":
+        log.info("the AI team's thread was started")
 
 
 def _v2_bot_now(arena: Arena, pb: Playbook) -> None:

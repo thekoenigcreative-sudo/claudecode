@@ -133,6 +133,14 @@ every one. Code sizes at 0.5% risk, enforces the stop at the setup's invalidatio
 to breakeven at +1R, takes half at +2R and trails 1R behind, allows one re-entry per stock
 per day, and is flat at 15:50. Exact rules: config.yaml `asx_daytrader`.
 
+**2c. The AI trading team, its own paper book (from 30 Sep 2026; docs/team.md).** Not a
+playbook with a yardstick and not part of the frozen test: the simulator's team (readers, a
+scanner, five specialists, a risk manager with a veto, the Opus 5.5 decision-maker, a
+researcher after the close) trades an A$20,000 book on the live bars inside the watcher, with
+the simulator's broker and costs, hard limits in code (kill switch, 15% daily loss limit,
+Rick's pause, stale feed, the closing-volume cap) and no model call at 70% weekly usage. It
+is scored beside every book each evening, and each live day is replayed in the simulator.
+
 Both run on IBKR real-time prices through IB Gateway (read-only; no order call in that code).
 When the live feed is down, delayed or stale, no new entry is decided: the day trader stops
 scanning, reaction looks and the v2 rule bot wait (a window that closes meanwhile is recorded

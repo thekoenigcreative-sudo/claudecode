@@ -56,7 +56,8 @@ def summarise(code: str, day: date, df: pd.DataFrame | None) -> dict | None:
 
 
 def _build_code(args) -> tuple[str, int]:
-    root, out_dir, code = args
+    root, out_dir, code, *rest = args
+    until = rest[0] if rest else None
     hist = History(Path(root))
     p = Path(out_dir) / f"{code.replace('^', '_')}.parquet"
     old = pd.read_parquet(p) if p.exists() else None
@@ -64,6 +65,10 @@ def _build_code(args) -> tuple[str, int]:
     rows = []
     for d in hist.days(code):
         if d.isoformat() in have:
+            continue
+        # The day being traded is never summarised (28 Sep, the live team): a part-day would
+        # stay that day's summary for good (a summarised day is never re-read).
+        if until is not None and d >= until:
             continue
         r = summarise(code, d, hist.load(code, d))
         if r is not None:
@@ -88,8 +93,10 @@ class Summaries:
     def path(self, code: str) -> Path:
         return self.dir / f"{code.upper().replace('^', '_')}.parquet"
 
-    def build(self, history: History, codes: list[str], workers: int = 4) -> int:
-        jobs = [(str(history.root), str(self.dir), c) for c in codes]
+    def build(self, history: History, codes: list[str], workers: int = 4,
+              until: date | None = None) -> int:  # fmt: skip
+        """Summarise the history's days not summarised yet (only days before `until`)."""
+        jobs = [(str(history.root), str(self.dir), c, until) for c in codes]
         self.dir.mkdir(parents=True, exist_ok=True)
         if workers <= 1:
             done = [_build_code(j) for j in jobs]

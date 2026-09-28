@@ -90,7 +90,13 @@ STEPS = (
     # The trading journal (26 Sep 2026): after the books are settled and marked, before the
     # report, which carries its three lines (arena/journal.py; one model call per agent book).
     ("arena", "journal"),
+    # The AI team's paper book (28 Sep 2026, arena/team): check A - its own orders on the
+    # simulator's market, plain code - before the report, which carries its line...
+    ("arena", "team", "evening"),
     ("arena", "report", "--agent", "--send"),
+    # ... and check B after it: the simulated team re-runs the day (model calls, budgeted);
+    # its line is in the next evening's report.
+    ("arena", "team", "calibrate", "--rerun"),
 )
 
 

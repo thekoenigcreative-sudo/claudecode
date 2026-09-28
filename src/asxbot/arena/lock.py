@@ -86,6 +86,20 @@ def open_exposure(data_dir: Path) -> list[str]:
         ]
         if held or working:
             out.append(f"{raw.get('name', p.stem)}: " + ", ".join(held + working))
+    # The AI team's paper book (28 Sep 2026, arena/team): the simulator's account format.
+    team = Path(data_dir) / "arena" / "team" / "state.json"
+    if team.exists():
+        try:
+            acct = (json.loads(team.read_text(encoding="utf-8")).get("account") or {})
+        except (OSError, ValueError):
+            out.append("asx_team: unreadable book (arena/team/state.json)")
+            acct = {}
+        pos, orders = acct.get("positions") or {}, acct.get("orders") or {}
+        held = [f"{c} {int(v.get('qty') or 0):+d}" for c, v in pos.items()]
+        working = [f"{i} {o.get('side')} {o.get('code')}" for i, o in orders.items()
+                   if o.get("status") == "working"]  # fmt: skip
+        if held or working:
+            out.append("asx_team: " + ", ".join(held + working))
     return out
 
 

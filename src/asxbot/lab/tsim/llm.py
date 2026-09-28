@@ -102,15 +102,19 @@ def _stop(why: str) -> UsageStop:
 
 
 def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_s: int = 300,
-        use_cache: bool = True) -> dict:  # fmt: skip
+        use_cache: bool = True, budget=None, ledger: bool = True) -> dict:  # fmt: skip
     """{'text', 'seconds', 'usage': {input, cache_write, cache_read, output, cost_usd},
-    'cached', 'error'?}. Raises UsageStop when the budget is spent."""
+    'cached', 'error'?}. Raises UsageStop when the budget is spent.
+
+    `budget(cfg) -> (ok, why)` replaces the lab's own check, and `ledger=False` keeps the call
+    out of the lab's weekly share (28 Sep: the live AI team's calls are a bot's, stopped at
+    Rick's weekly stop by arena/team/limits.py; they never spend the lab's 15%)."""
     k = hashlib.sha256("\x1f".join((model, effort, system, prompt)).encode()).hexdigest()
     cp = cache_file(k)
     if use_cache and cp.exists():
         d = json.loads(cp.read_text(encoding="utf-8"))
         return {**d, "cached": True}
-    ok, why = budget_ok(cfg)
+    ok, why = (budget or budget_ok)(cfg)
     if not ok:
         raise _stop(why)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
@@ -129,6 +133,10 @@ def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_
              "--disable-slash-commands"],
             input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout_s, cwd=str(cwd),
+            # a call started from inside a Claude Code session (a build's dry run) is its own
+            # session, as the evening's journal call is (arena/journal.py ask_model)
+            env={k: v for k, v in os.environ.items()
+                 if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")},
         )  # fmt: skip
     except proc.subprocess.TimeoutExpired:
         return {"text": "", "seconds": float(timeout_s), "usage": {}, "cached": False,
@@ -161,7 +169,8 @@ def ask(prompt: str, *, system: str, model: str, effort: str, cfg=None, timeout_
             api_s = (ev.get("duration_ms") or 0) / 1000.0 or None
             if ev.get("is_error"):
                 err = text[:300]
-    _account(util, usage)
+    if ledger:
+        _account(util, usage)
     low = (text + (r.stderr or "")).lower()
     if "hit your" in low and "limit" in low:
         raise _stop(text[:200] or "plan limit reached")
